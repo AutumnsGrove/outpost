@@ -1,0 +1,101 @@
+#cloud-config
+# GroveMC VPS Setup Script
+# This file is used as cloud-init user-data when provisioning Hetzner VPS
+# Variables like ${R2_ACCESS_KEY} are substituted by the Worker before sending
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - openjdk-17-jdk-headless   # Java 17 for MC 1.20.1
+  - rclone
+  - jq
+  - tmux
+  - screen
+
+write_files:
+  # Rclone config for R2
+  - path: /root/.config/rclone/rclone.conf
+    content: |
+      [r2]
+      type = s3
+      provider = Cloudflare
+      access_key_id = ${R2_ACCESS_KEY}
+      secret_access_key = ${R2_SECRET_KEY}
+      endpoint = https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com
+      acl = private
+
+  # Systemd service for Minecraft
+  - path: /etc/systemd/system/minecraft.service
+    content: |
+      [Unit]
+      Description=Minecraft Server
+      After=network.target
+
+      [Service]
+      User=minecraft
+      WorkingDirectory=/opt/minecraft
+      ExecStart=/opt/minecraft/start.sh
+      ExecStop=/opt/minecraft/stop.sh
+      Restart=on-failure
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Systemd service for Watchdog
+  - path: /etc/systemd/system/mc-watchdog.service
+    content: |
+      [Unit]
+      Description=Minecraft Watchdog
+      After=minecraft.service
+
+      [Service]
+      User=minecraft
+      ExecStart=/opt/minecraft/watchdog.sh
+      Restart=always
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Create minecraft user
+  - useradd -m -s /bin/bash minecraft
+  - mkdir -p /opt/minecraft
+  - chown minecraft:minecraft /opt/minecraft
+
+  # Download assets from R2
+  - rclone sync r2:mc-assets/server/ /opt/minecraft/
+  - rclone sync r2:mc-assets/mods/ /opt/minecraft/mods/
+  - rclone sync r2:mc-assets/config/ /opt/minecraft/config/
+  - rclone sync r2:mc-assets/scripts/ /opt/minecraft/
+
+  # Download world from R2
+  - rclone copy r2:mc-worlds/current/world.tar.gz /tmp/
+  - |
+    if [ -f /tmp/world.tar.gz ]; then
+      tar -xzf /tmp/world.tar.gz -C /opt/minecraft/
+      rm /tmp/world.tar.gz
+    fi
+
+  # Set permissions
+  - chown -R minecraft:minecraft /opt/minecraft
+  - chmod +x /opt/minecraft/*.sh
+
+  # Install cloudflared for Dynmap tunnel
+  - curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+  - chmod +x /usr/local/bin/cloudflared
+  # Tunnel config injected via secrets
+
+  # Start services
+  - systemctl daemon-reload
+  - systemctl enable minecraft mc-watchdog
+  - systemctl start minecraft mc-watchdog
+
+  # Notify worker that server is ready (includes IP for DNS update)
+  - |
+    VPS_IP=$(curl -s http://169.254.169.254/hetzner/v1/metadata/public-ipv4)
+    curl -X POST "${WEBHOOK_URL}/ready" \
+      -H "Authorization: Bearer ${WEBHOOK_SECRET}" \
+      -H "Content-Type: application/json" \
+      -d "{\"serverId\": \"$(curl -s http://169.254.169.254/hetzner/v1/metadata/instance-id)\", \"ip\": \"$VPS_IP\"}"

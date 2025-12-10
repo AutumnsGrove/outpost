@@ -1,0 +1,34 @@
+name = "mc-control"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# R2 Buckets
+[[r2_buckets]]
+binding = "MC_ASSETS"
+bucket_name = "mc-assets"
+
+[[r2_buckets]]
+binding = "MC_WORLDS"
+bucket_name = "mc-worlds"
+
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "mc-state"
+database_id = "" # Fill after creating: wrangler d1 create mc-state
+
+# Environment variables (non-secret)
+[vars]
+ENVIRONMENT = "development"
+
+# Secrets (set via wrangler secret put):
+# - CF_ACCOUNT_ID
+# - CF_API_TOKEN
+# - CF_ZONE_ID
+# - CF_MC_RECORD_ID
+# - HETZNER_API_TOKEN
+# - HETZNER_SSH_KEY_ID
+# - WEBHOOK_SECRET
+# - ADMIN_AUTH_SECRET
+# - R2_ACCESS_KEY (for VPS cloud-init)
+# - R2_SECRET_KEY (for VPS cloud-init)

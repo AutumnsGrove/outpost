@@ -3,3 +3,21 @@ secrets.json
 __pycache__/
 .DS_Store
 .claude/
+
+# Node
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.svelte-kit/
+.wrangler/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/

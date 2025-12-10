@@ -1,0 +1,5 @@
+# Business logic services will go here
+# - hetzner.ts (VPS provisioning)
+# - dns.ts (Cloudflare DNS updates)
+# - r2.ts (World backup/restore)
+# - state.ts (D1 state management)

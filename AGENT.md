@@ -5,17 +5,23 @@
 ---
 
 ## Project Purpose
-[Fill in: What this project does - 1-2 sentences]
+On-demand Minecraft 1.20.1 (Fabric) server with hourly billing, automated lifecycle management, and integration with the grove.place Cloudflare stack. Friends-only whitelist with cost-optimized EU/US region selection.
 
 ## Tech Stack
-[Fill in: Technologies, frameworks, and languages used]
-- Language:
-- Framework:
-- Key Libraries:
-- Package Manager:
+- **Language**: TypeScript
+- **Frontend**: SvelteKit (Cloudflare Pages) for mc.grove.place status page
+- **Backend**: Cloudflare Worker (mc-control) for server orchestration
+- **Storage**: Cloudflare R2 (assets, world backups), D1 (state/stats)
+- **VPS**: Hetzner Cloud (CX33 EU / CPX31 US)
+- **Package Manager**: pnpm
 
 ## Architecture Notes
-[Fill in: Key architectural decisions, patterns, or structure]
+- **Distributed architecture**: Pages (status) + Worker (API/control) + Hetzner VPS (Minecraft)
+- **State machine lifecycle**: OFFLINE → PROVISIONING → RUNNING → IDLE → SUSPENDED → TERMINATING
+- **Cost optimization**: Region toggle (EU ~$0.0085/hr vs US ~$0.028/hr)
+- **Auto-shutdown**: 15min idle → SUSPENDED, 45min suspended → TERMINATED
+- **World persistence**: R2-backed world storage with automatic backups
+- **See full spec**: `grove-minecraft-spec.md`
 
 ---
 
@@ -173,5 +179,5 @@ For all detailed guides, workflows, and examples, see:
 
 ---
 
-*Last updated: 2025-11-28*
-*Model: Claude Sonnet 4.5*
+*Last updated: 2025-12-10*
+*Model: Claude Opus 4.5*

@@ -1,0 +1,20 @@
+{
+  "name": "mc-control",
+  "version": "0.1.0",
+  "description": "GroveMC server control Worker",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": ["cloudflare", "worker", "minecraft"],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "wrangler": "^3",
+    "typescript": "^5",
+    "@cloudflare/workers-types": "^4"
+  },
+  "packageManager": "pnpm@10.24.0"
+}
