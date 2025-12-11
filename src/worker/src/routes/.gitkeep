@@ -1,9 +1,0 @@
-# API route handlers will go here
-# - start.ts
-# - stop.ts
-# - status.ts
-# - whitelist.ts
-# - command.ts
-# - sync.ts
-# - history.ts
-# - webhooks.ts
