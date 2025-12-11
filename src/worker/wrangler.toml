@@ -15,7 +15,7 @@ bucket_name = "mc-worlds"
 [[d1_databases]]
 binding = "DB"
 database_name = "mc-state"
-database_id = "" # Fill after creating: wrangler d1 create mc-state
+database_id = "969fbe3d-2c67-4c2e-baa2-a92b8f24d4e2"
 
 # Environment variables (non-secret)
 [vars]
