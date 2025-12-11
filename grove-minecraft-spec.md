@@ -569,7 +569,7 @@ Public endpoint for mc.grove.place (no auth required, limited data):
 │  │  Uptime: 2h 15m     │  │  • Autumn           │  │  Auto-shutdown  │  │
 │  │  Version: 1.20.1    │  │  • Friend1          │  │  disabled while │  │
 │  │  Connect:           │  │  • Friend2          │  │  players online │  │
-│  │  grove.place        │  │                     │  │                 │  │
+│  │  md.grove.place     │  │                     │  │                 │  │
 │  └─────────────────────┘  └─────────────────────┘  └─────────────────┘  │
 │                                                                         │
 │  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────┐  │
