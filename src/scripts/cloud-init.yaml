@@ -70,13 +70,33 @@ runcmd:
   - rclone sync r2:mc-assets/config/ /opt/minecraft/config/
   - rclone sync r2:mc-assets/scripts/ /opt/minecraft/
 
-  # Download world from R2
-  - rclone copy r2:mc-worlds/current/world.tar.gz /tmp/
+  # Download world from R2 (handles both chunked and single-file formats)
   - |
-    if [ -f /tmp/world.tar.gz ]; then
-      tar -xzf /tmp/world.tar.gz -C /opt/minecraft/
-      rm /tmp/world.tar.gz
+    mkdir -p /tmp/world-download
+    cd /tmp/world-download
+
+    # Download all world files from R2
+    rclone copy r2:mc-worlds/current/ /tmp/world-download/
+
+    # Check if we have chunked files (from initial large upload via wrangler)
+    if ls world.tar.gz.part_* 1>/dev/null 2>&1; then
+      echo "Found chunked world files, reassembling..."
+      cat world.tar.gz.part_* > world.tar.gz
+      rm world.tar.gz.part_*
     fi
+
+    # Extract world if tarball exists
+    if [ -f world.tar.gz ]; then
+      echo "Extracting world..."
+      tar -xzf world.tar.gz -C /opt/minecraft/
+      echo "World extracted successfully"
+    else
+      echo "No world backup found, server will generate new world"
+    fi
+
+    # Cleanup
+    cd /
+    rm -rf /tmp/world-download
 
   # Set permissions
   - chown -R minecraft:minecraft /opt/minecraft
