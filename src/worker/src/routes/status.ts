@@ -85,6 +85,17 @@ export async function handleStatus(
     const lastBackup = await getLastBackup(env.DB);
     const monthSummary = await getMonthlySummary(env.DB, getCurrentMonth());
 
+    // Get world size from R2
+    let worldSizeBytes = 0;
+    try {
+      const worldObjects = await env.MC_WORLDS.list({ prefix: 'current/' });
+      for (const obj of worldObjects.objects) {
+        worldSizeBytes += obj.size;
+      }
+    } catch (e) {
+      console.error('Error getting world size:', e);
+    }
+
     // Calculate uptime and costs
     let uptime: number | null = null;
     let currentSessionCost = 0;
@@ -117,7 +128,7 @@ export async function handleStatus(
       ttl = Math.max(0, 45 * 60 - suspendedTime); // 45 min suspend timeout
     }
 
-    const response: StatusResponse = {
+    const response = {
       state: state.state,
       region: state.region,
       serverType: state.server_type,
@@ -132,6 +143,7 @@ export async function handleStatus(
       idleTime,
       ttl,
       lastWorldSync: lastBackup?.timestamp || null,
+      worldSizeBytes,
       costs: {
         currentSession: currentSessionCost,
         hourlyRate,

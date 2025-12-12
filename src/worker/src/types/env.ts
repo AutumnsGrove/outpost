@@ -45,17 +45,18 @@ export type Region = 'eu' | 'us';
 
 /**
  * Hetzner server types by region
+ * Note: cx-series (shared vCPU) is most affordable and widely available
  */
 export const HETZNER_CONFIG = {
   eu: {
-    location: 'fsn1', // Falkenstein, Germany
-    serverType: 'cx33', // 4 vCPU, 8GB, 80GB
-    hourlyRate: 0.0085,
+    location: 'nbg1', // Nuremberg, Germany (reliable availability)
+    serverType: 'cx32', // 4 vCPU, 8GB RAM - shared CPU
+    hourlyRate: 0.0119,
   },
   us: {
     location: 'ash', // Ashburn, Virginia
-    serverType: 'cpx31', // 4 vCPU, 8GB, 160GB
-    hourlyRate: 0.028,
+    serverType: 'cx32', // 4 vCPU, 8GB RAM - shared CPU
+    hourlyRate: 0.0119,
   },
 } as const;
 

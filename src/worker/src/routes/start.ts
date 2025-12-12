@@ -80,7 +80,7 @@ export async function handleStart(
     });
 
     // Generate cloud-init with secrets
-    const webhookUrl = 'https://admin.grove.place/api/mc/webhook';
+    const webhookUrl = 'https://mc-control.grove.place/api/mc/webhook';
     const cloudInit = generateCloudInit(env, {
       region: region as Region,
       webhookUrl,

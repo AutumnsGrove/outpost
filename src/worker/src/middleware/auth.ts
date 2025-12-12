@@ -57,17 +57,22 @@ export async function verifyAdminAuth(
 
   // Option 2: Verify via GroveAuth /verify endpoint
   try {
-    const verifyResponse = await fetch('https://auth.grove.place/verify', {
+    console.log('[auth] Verifying token via GroveAuth...');
+    const verifyResponse = await fetch('https://auth-api.grove.place/verify', {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
       },
     });
 
+    console.log(`[auth] GroveAuth response status: ${verifyResponse.status}`);
+
     if (!verifyResponse.ok) {
+      const errorText = await verifyResponse.text();
+      console.log(`[auth] GroveAuth error response: ${errorText.substring(0, 200)}`);
       return {
         authenticated: false,
-        error: 'Invalid or expired token',
+        error: `Invalid or expired token (${verifyResponse.status})`,
       };
     }
 
@@ -79,13 +84,18 @@ export async function verifyAdminAuth(
 
     // Check if user is admin
     const email = userData.email;
+    console.log(`[auth] User email: ${email}, is_admin: ${userData.is_admin}`);
+    console.log(`[auth] ADMIN_EMAILS: ${ADMIN_EMAILS.join(', ')}`);
+
     if (!email || !ADMIN_EMAILS.includes(email)) {
+      console.log(`[auth] User ${email} not in admin list`);
       return {
         authenticated: false,
         error: 'User is not authorized as admin',
       };
     }
 
+    console.log(`[auth] User ${email} authenticated successfully`);
     return {
       authenticated: true,
       userId: userData.sub,
@@ -93,9 +103,11 @@ export async function verifyAdminAuth(
     };
   } catch (error) {
     // GroveAuth might not be reachable, fall through to error
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`[auth] Auth verification failed: ${errorMsg}`);
     return {
       authenticated: false,
-      error: `Auth verification failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      error: `Auth verification failed: ${errorMsg}`,
     };
   }
 }

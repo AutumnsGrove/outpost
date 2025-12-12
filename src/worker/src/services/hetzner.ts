@@ -8,16 +8,19 @@ import type { Env, Region } from '../types/env.js';
 const HETZNER_API_BASE = 'https://api.hetzner.cloud/v1';
 
 // Server configurations by region
+// Note: cx-series (shared vCPU) is most affordable
+// Available EU locations: fsn1 (Falkenstein), nbg1 (Nuremberg), hel1 (Helsinki)
+// Available US locations: ash (Ashburn), hil (Hillsboro)
 export const HETZNER_CONFIG = {
   eu: {
-    location: 'fsn1',      // Falkenstein, Germany
-    serverType: 'cx33',    // 4 vCPU, 8GB RAM, 80GB NVMe
-    hourlyRate: 0.0085,
+    location: 'nbg1',      // Nuremberg, Germany (most reliable availability)
+    serverType: 'cx32',    // 4 vCPU, 8GB RAM - shared CPU
+    hourlyRate: 0.0119,
   },
   us: {
     location: 'ash',       // Ashburn, Virginia
-    serverType: 'cpx31',   // 4 vCPU, 8GB RAM, 160GB NVMe
-    hourlyRate: 0.028,
+    serverType: 'cx32',    // 4 vCPU, 8GB RAM - shared CPU (same spec, better compatibility)
+    hourlyRate: 0.0119,
   },
 } as const;
 
