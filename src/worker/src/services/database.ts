@@ -356,9 +356,10 @@ export function calculateSessionCost(
   durationSeconds: number,
   region: Region
 ): number {
+  // Hetzner cx32 rates (must match HETZNER_CONFIG in hetzner.ts)
   const hourlyRates = {
-    eu: 0.0085,
-    us: 0.028,
+    eu: 0.0119,  // EUR 0.0119/hr for cx32 in EU
+    us: 0.0119,  // USD 0.0119/hr for cx32 in US
   };
 
   const hours = durationSeconds / 3600;

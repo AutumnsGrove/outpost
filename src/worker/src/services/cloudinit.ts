@@ -126,11 +126,11 @@ runcmd:
   - cp /root/.config/rclone/rclone.conf /home/minecraft/.config/rclone/
   - chown -R minecraft:minecraft /home/minecraft/.config
 
-  # Download server files from R2
-  - sudo -u minecraft rclone sync r2:mc-assets/server/ /opt/minecraft/ --exclude "world/**"
-  - sudo -u minecraft rclone sync r2:mc-assets/mods/ /opt/minecraft/mods/
-  - sudo -u minecraft rclone sync r2:mc-assets/config/ /opt/minecraft/config/
-  - sudo -u minecraft rclone sync r2:mc-assets/scripts/ /opt/minecraft/
+  # Download server files from R2 (use copy, not sync, to avoid deleting other files)
+  - sudo -u minecraft rclone copy r2:mc-assets/server/ /opt/minecraft/ --exclude "world/**"
+  - sudo -u minecraft rclone copy r2:mc-assets/mods/ /opt/minecraft/mods/
+  - sudo -u minecraft rclone copy r2:mc-assets/config/ /opt/minecraft/config/
+  - sudo -u minecraft rclone copy r2:mc-assets/scripts/ /opt/minecraft/
 
   # Download world from R2 (if exists)
   - |

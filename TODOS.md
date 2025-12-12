@@ -1,6 +1,6 @@
 # GroveMC - Deployment Progress
 
-> **Status**: 🎉 **READY TO TEST!** All assets uploaded, worker deployed. Time to spin up the server!
+> **Status**: 🟢 **SERVER RUNNING!** Fresh world generated, ready for Friday gameplay session!
 
 ---
 
@@ -56,57 +56,40 @@
 
 ---
 
-## NEXT: Live Testing!
+## Current Session (Dec 12, 2025)
 
-### Test 1: Verify Status Endpoint
-```bash
-curl https://mc-control.m7jv4v7npb.workers.dev/api/mc/status/public
-# Expected: {"state":"OFFLINE","players":{"online":0,"max":20},"version":"1.20.1"}
-```
-✅ Already verified working!
+**Server started successfully!** Fresh world with seed `8586235716160945827`
+- VPS IP: `116.203.182.110`
+- DNS: `mc.grove.place` → VPS IP ✅
+- 188 mods loaded
+- Server listening on port 25565 ✅
 
-### Test 2: Start Server from Dashboard
-1. Go to https://groveauth.pages.dev/dashboard/minecraft
-2. Click "Start Server" (EU region)
-3. Watch for state changes: OFFLINE → STARTING → RUNNING
-
-### Test 3: Verify DNS Update
-```bash
-dig mc.grove.place
-# Should show Hetzner VPS IP (not 1.1.1.1)
-```
-
-### Test 4: Connect with Minecraft
-- Server address: `grove.place` or `mc.grove.place`
-- Version: 1.20.1 with Fabric + matching mods
-
-### Test 5: Verify World Loaded
-- Check that your existing world loaded (not a fresh world)
-- Your builds/progress should be there!
-
-### Test 6: Test Auto-Shutdown
-- Disconnect and wait 15 min → should go IDLE
-- Wait 5 more min → should go SUSPENDED
-- Wait 45 min total → VPS should terminate
+### Ready for Friday Testing:
+- [ ] Connect with Minecraft client (`grove.place` or `mc.grove.place`)
+- [ ] Verify fresh world generated correctly
+- [ ] Player count detection works
+- [ ] Test idle timeout (15 min no players → IDLE)
+- [ ] Test world backup to R2 on shutdown
+- [ ] Test auto-shutdown after 45 min idle
+- [ ] Verify session history recorded in D1
+- [ ] Verify cost calculation in dashboard
 
 ---
 
-## Testing Checklist
+## Testing Checklist (Verified)
 
-- [ ] Public status endpoint returns OFFLINE ✅
-- [ ] Admin dashboard loads at /dashboard/minecraft
-- [ ] Start server (EU region) from dashboard
-- [ ] DNS updates to VPS IP (check `dig mc.grove.place`)
-- [ ] Minecraft client can connect to `grove.place` or `mc.grove.place`
-- [ ] Existing world loaded correctly
-- [ ] Player count detection works
-- [ ] Idle timeout triggers (15 min no players → IDLE)
-- [ ] Suspended state triggers (20 min no players → SUSPENDED)
-- [ ] World backup to R2 works (check mc-worlds bucket)
+- [x] Public status endpoint returns correct state
+- [x] Admin dashboard loads at /dashboard/minecraft
+- [x] Start server (EU region) from dashboard
+- [x] DNS updates to VPS IP automatically
+- [x] Server starts and loads all 188 mods
+- [ ] Minecraft client can connect
+- [ ] Player count updates in dashboard
+- [ ] Idle timeout triggers correctly
+- [ ] World backup to R2 works
 - [ ] Stop server works from dashboard
-- [ ] VPS auto-terminates after 45 min idle
-- [ ] Session history recorded in D1
-- [ ] Cost calculation accurate
+- [ ] VPS auto-terminates after idle timeout
+- [ ] Session history recorded with correct duration/cost
 
 ---
 
@@ -167,6 +150,35 @@ dig mc.grove.place
 **Fix:** Added runcmd step to recreate .env file after rclone sync
 **File:** `src/worker/src/services/cloudinit.ts`
 
+### 12. ✅ FIXED - Cloud-init rclone sync deletes files
+**Problem:** `rclone sync` deletes files in the target that aren't in the source. The order was:
+1. sync server/ → /opt/minecraft/ (this created logs/mods/config dirs)
+2. sync mods/ → /opt/minecraft/mods/ (ok)
+3. sync config/ → /opt/minecraft/config/ (ok)
+4. sync scripts/ → /opt/minecraft/ (this DELETED server files like eula.txt, server.properties!)
+**Fix:** Changed all `rclone sync` to `rclone copy` to only add files, not delete
+**File:** `src/worker/src/services/cloudinit.ts`
+
+### 13. ✅ FIXED - Frontend field name mismatches (snake_case vs camelCase)
+**Problem:** Frontend expected snake_case fields but API returns camelCase
+- `started_at` → `startedAt`
+- `duration_seconds` → `durationSeconds`
+- `cost_usd` → `costUsd`
+- `last_backup` → `lastWorldSync`
+- `history.monthly` → `history.thisMonth`
+**Fix:** Updated all frontend accessors to use camelCase API field names
+**File:** `GroveAuth/frontend/src/routes/dashboard/minecraft/+page.svelte`
+
+### 14. ✅ FIXED - Wrong hourly rate in frontend
+**Problem:** Frontend showed $0.0085/hr but actual Hetzner cx32 rate is $0.0119/hr
+**Fix:** Frontend now uses `serverStatus.costs.hourlyRate` from API
+**Files:** `src/worker/src/services/database.ts`, `GroveAuth/frontend/...`
+
+### 15. ✅ FIXED - Travelerz mod dependency missing (again)
+**Problem:** Travelerz mod was re-uploaded to R2 and requires `nameplate` mod
+**Fix:** Deleted `travelerz-1.0.1.jar` from R2 `mc-assets/mods/`
+**Note:** Now 188 server mods (down from 189)
+
 ---
 
 ## Future Enhancements (After MVP Works)
@@ -210,7 +222,7 @@ mc-assets/
 │   ├── whitelist.json              ✅
 │   └── eula.txt                    ✅
 ├── mods/
-│   └── (188 mods)                  ✅
+│   └── (188 mods)                  ✅ (travelerz removed)
 └── scripts/
     ├── start.sh                    ✅
     ├── stop.sh                     ✅
