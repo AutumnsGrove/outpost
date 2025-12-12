@@ -1,6 +1,6 @@
 # GroveMC - Deployment Progress
 
-> **Status**: Almost ready! Fabric JAR uploaded, world uploading (chunked), UUID fixed. Just need to re-upload configs and deploy worker.
+> **Status**: 🎉 **READY TO TEST!** All assets uploaded, worker deployed. Time to spin up the server!
 
 ---
 
@@ -36,58 +36,75 @@
   - [x] `scripts/stop.sh`
   - [x] `scripts/watchdog.sh`
   - [x] `scripts/sync-to-r2.sh`
+  - [x] `scripts/cloud-init.yaml` (updated with chunk reassembly)
   - [x] `server/server.properties`
-  - [x] `server/ops.json` (needs UUID fix)
-  - [x] `server/whitelist.json` (needs UUID fix)
+  - [x] `server/ops.json` ✅ Real UUID
+  - [x] `server/whitelist.json` ✅ Real UUID
   - [x] `server/eula.txt`
+  - [x] `server/fabric-server-launch.jar`
 - [x] Bulk mod upload script created (`upload-mods.sh`)
 - [x] Client-only mod skip list created (`client-only-mods.txt` - 84 mods)
 - [x] **189 server mods uploaded to R2** (`mc-assets/mods/`)
-- [x] Fabric server JAR uploaded to R2 (`server/fabric-server-launch.jar`)
-- [x] World tarball created and uploading in chunks (2.9GB → 12 x 250MB parts)
+- [x] Fabric server JAR uploaded to R2
+- [x] World tarball uploaded (2.9GB in 12 chunks)
 - [x] ops.json updated with real UUID (`4d9b897a-6b40-4a30-8e83-eccb33333817`)
 - [x] whitelist.json updated with real UUID and username (`AutumnsAdventure`)
+- [x] cloud-init.yaml updated to handle chunked world downloads
+- [x] GroveMC Worker deployed → `https://mc-control.m7jv4v7npb.workers.dev`
+- [x] GroveAuth frontend deployed → `https://groveauth.pages.dev`
+- [x] GroveAuth GitHub Actions auto-deploy configured
 
 ---
 
-## NEXT STEPS (In Order)
+## NEXT: Live Testing!
 
-### Step 1: Re-upload ops.json and whitelist.json to R2
-The local files are updated with real UUIDs - now upload them:
+### Test 1: Verify Status Endpoint
 ```bash
-wrangler r2 object put mc-assets/server/ops.json --file=src/assets/ops.json --remote
-wrangler r2 object put mc-assets/server/whitelist.json --file=src/assets/whitelist.json --remote
+curl https://mc-control.m7jv4v7npb.workers.dev/api/mc/status/public
+# Expected: {"state":"OFFLINE","players":{"online":0,"max":20},"version":"1.20.1"}
+```
+✅ Already verified working!
+
+### Test 2: Start Server from Dashboard
+1. Go to https://groveauth.pages.dev/dashboard/minecraft
+2. Click "Start Server" (EU region)
+3. Watch for state changes: OFFLINE → STARTING → RUNNING
+
+### Test 3: Verify DNS Update
+```bash
+dig mc.grove.place
+# Should show Hetzner VPS IP (not 1.1.1.1)
 ```
 
-### Step 2: Deploy Worker
-```bash
-cd /Users/mini/Documents/Projects/GroveMC/src/worker
-pnpm install
-pnpm run deploy
-```
+### Test 4: Connect with Minecraft
+- Server address: `grove.place` or `mc.grove.place`
+- Version: 1.20.1 with Fabric + matching mods
 
-### Step 3: Test
-```bash
-# Check status endpoint (should return OFFLINE state)
-curl https://mc-control.grove.workers.dev/api/mc/status/public
+### Test 5: Verify World Loaded
+- Check that your existing world loaded (not a fresh world)
+- Your builds/progress should be there!
 
-# Expected response:
-# {"state":"OFFLINE","players":{"online":0,"max":20},"version":"1.20.1"}
-```
+### Test 6: Test Auto-Shutdown
+- Disconnect and wait 15 min → should go IDLE
+- Wait 5 more min → should go SUSPENDED
+- Wait 45 min total → VPS should terminate
 
 ---
 
-## Testing Checklist (After Everything is Deployed)
+## Testing Checklist
 
-- [ ] Public status endpoint returns OFFLINE
+- [ ] Public status endpoint returns OFFLINE ✅
 - [ ] Admin dashboard loads at /dashboard/minecraft
 - [ ] Start server (EU region) from dashboard
 - [ ] DNS updates to VPS IP (check `dig mc.grove.place`)
 - [ ] Minecraft client can connect to `grove.place` or `mc.grove.place`
+- [ ] Existing world loaded correctly
 - [ ] Player count detection works
-- [ ] Idle timeout triggers (15 min no players → SUSPENDED)
-- [ ] World backup to R2 works
-- [ ] Stop server works
+- [ ] Idle timeout triggers (15 min no players → IDLE)
+- [ ] Suspended state triggers (20 min no players → SUSPENDED)
+- [ ] World backup to R2 works (check mc-worlds bucket)
+- [ ] Stop server works from dashboard
+- [ ] VPS auto-terminates after 45 min idle
 - [ ] Session history recorded in D1
 - [ ] Cost calculation accurate
 
@@ -108,42 +125,43 @@ curl https://mc-control.grove.workers.dev/api/mc/status/public
 
 | Resource | Location |
 |----------|----------|
+| Worker API | `https://mc-control.m7jv4v7npb.workers.dev` |
+| Admin Dashboard | `https://groveauth.pages.dev/dashboard/minecraft` |
 | Worker code | `GroveMC/src/worker/` |
 | VPS scripts | `GroveMC/src/scripts/` |
 | MC configs | `GroveMC/src/assets/` |
-| Admin dashboard | `GroveAuth/frontend/src/routes/dashboard/minecraft/` |
-| Backend routes | `GroveAuth/src/routes/minecraft.ts` |
 | Full spec | `GroveMC/grove-minecraft-spec.md` |
-| SSH key | `~/.ssh/grovemc` (private) / `~/.ssh/grovemc.pub` (public) |
+| SSH key | `~/.ssh/grovemc` |
 | Mods folder | `/Volumes/External/Prism/Instances/Becoming Autumn/minecraft/mods` |
 
 ---
 
 ## R2 Bucket Structure (Current State)
 
-### `mc-assets` (static files)
+### `mc-assets` (static files) ✅ Complete
 ```
 mc-assets/
 ├── server/
-│   ├── fabric-server-launch.jar    ✅ Uploaded
-│   ├── server.properties           ✅ Uploaded
-│   ├── ops.json                    ⚠️ Need to re-upload (UUID fixed locally)
-│   ├── whitelist.json              ⚠️ Need to re-upload (UUID fixed locally)
-│   └── eula.txt                    ✅ Uploaded
+│   ├── fabric-server-launch.jar    ✅
+│   ├── server.properties           ✅
+│   ├── ops.json                    ✅
+│   ├── whitelist.json              ✅
+│   └── eula.txt                    ✅
 ├── mods/
-│   └── (189 mods uploaded!)        ✅ Complete
+│   └── (189 mods)                  ✅
 └── scripts/
-    ├── start.sh                    ✅ Uploaded
-    ├── stop.sh                     ✅ Uploaded
-    ├── watchdog.sh                 ✅ Uploaded
-    └── sync-to-r2.sh               ✅ Uploaded
+    ├── start.sh                    ✅
+    ├── stop.sh                     ✅
+    ├── watchdog.sh                 ✅
+    ├── sync-to-r2.sh               ✅
+    └── cloud-init.yaml             ✅
 ```
 
-### `mc-worlds` (dynamic - created at runtime)
+### `mc-worlds` (world data) ✅ Uploaded
 ```
 mc-worlds/
 ├── current/
-│   └── world.tar.gz.part_*         🔄 Uploading (12 chunks, 250MB each)
+│   └── world.tar.gz.part_*         ✅ (12 chunks, will become single file after first backup)
 └── backups/
     └── (auto-created by watchdog)
 ```
