@@ -4,6 +4,16 @@
 
 ---
 
+## Naming
+
+- **Public name:** Outpost
+- **Internal codename:** GroveMC
+- **Domain:** mc.grove.place
+
+Use "Outpost" for user-facing text (UI, docs, marketing). Use "GroveMC" for internal code, database names, worker names, and deployment configs.
+
+---
+
 ## Project Purpose
 On-demand Minecraft 1.20.1 (Fabric) server with hourly billing, automated lifecycle management, and integration with the grove.place Cloudflare stack. Friends-only whitelist with cost-optimized EU/US region selection.
 
