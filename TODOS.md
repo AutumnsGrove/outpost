@@ -1,6 +1,6 @@
 # GroveMC - Deployment Progress
 
-> **Status**: Infrastructure setup in progress. Secrets configured, R2 upload next.
+> **Status**: Almost ready! Fabric JAR uploaded, world uploading (chunked), UUID fixed. Just need to re-upload configs and deploy worker.
 
 ---
 
@@ -41,85 +41,32 @@
   - [x] `server/whitelist.json` (needs UUID fix)
   - [x] `server/eula.txt`
 - [x] Bulk mod upload script created (`upload-mods.sh`)
+- [x] Client-only mod skip list created (`client-only-mods.txt` - 84 mods)
+- [x] **189 server mods uploaded to R2** (`mc-assets/mods/`)
+- [x] Fabric server JAR uploaded to R2 (`server/fabric-server-launch.jar`)
+- [x] World tarball created and uploading in chunks (2.9GB → 12 x 250MB parts)
+- [x] ops.json updated with real UUID (`4d9b897a-6b40-4a30-8e83-eccb33333817`)
+- [x] whitelist.json updated with real UUID and username (`AutumnsAdventure`)
 
 ---
 
-## NEXT: Upload Remaining Assets
+## NEXT STEPS (In Order)
 
-### Step 1: Download and Upload Fabric Server JAR
-**REQUIRED**: The actual Minecraft server executable. Must be Fabric for 1.20.1.
-
-1. Download Fabric Server from: https://fabricmc.net/use/server/
-   - Minecraft Version: **1.20.1**
-   - Loader Version: Latest stable
-   - Installer Version: Latest
-   - Download the "Server" JAR
-
-2. Upload to R2:
+### Step 1: Re-upload ops.json and whitelist.json to R2
+The local files are updated with real UUIDs - now upload them:
 ```bash
-wrangler r2 object put mc-assets/server/fabric-server-launch.jar --file=/path/to/downloaded/fabric-server-mc.1.20.1-loader.X.XX.X-launcher.X.X.X.jar
+wrangler r2 object put mc-assets/server/ops.json --file=src/assets/ops.json --remote
+wrangler r2 object put mc-assets/server/whitelist.json --file=src/assets/whitelist.json --remote
 ```
 
-### Step 4: Download and Upload Mods
-**REQUIRED**: Performance mods for a smooth server experience.
-
-**Essential mods for Fabric 1.20.1:**
-| Mod | Purpose | Download |
-|-----|---------|----------|
-| Fabric API | Required for all Fabric mods | https://modrinth.com/mod/fabric-api/versions?g=1.20.1 |
-| Lithium | Server-side performance | https://modrinth.com/mod/lithium/versions?g=1.20.1 |
-| FerriteCore | Memory optimization | https://modrinth.com/mod/ferrite-core/versions?g=1.20.1 |
-
-**Optional but recommended:**
-| Mod | Purpose | Download |
-|-----|---------|----------|
-| Chunky | Pre-generate chunks | https://modrinth.com/mod/chunky/versions?g=1.20.1 |
-| Spark | Performance profiler | https://modrinth.com/mod/spark/versions?g=1.20.1 |
-
-**Bulk upload using the helper script:**
+### Step 2: Deploy Worker
 ```bash
-cd /Users/autumn/Documents/Projects/GroveMC
-./upload-mods.sh /path/to/your/mods/folder
-```
-
-This script will find all `.jar` files in the folder and upload them to `mc-assets/mods/`.
-
-### Step 5: Upload World Backup (if you have one)
-**OPTIONAL**: If you have an existing world to restore.
-
-```bash
-# First, create a tarball of your world folder
-cd /path/to/your/minecraft/server
-tar -czf world.tar.gz world/
-
-# Upload to R2
-wrangler r2 object put mc-worlds/current/world.tar.gz --file=world.tar.gz
-```
-
-If starting fresh, skip this step - a new world will be generated on first boot.
-
-### Step 6: Fix ops.json and whitelist.json UUIDs
-**IMPORTANT**: The placeholder UUIDs need to be replaced with real ones.
-
-1. Look up your Minecraft UUID: https://mcuuid.net/?q=YourMinecraftUsername
-2. Update `src/assets/ops.json` with real UUID
-3. Update `src/assets/whitelist.json` with real UUID
-4. Re-upload both files to R2
-
----
-
-## After R2 Upload: Deploy Worker
-
-```bash
-cd /Users/autumn/Documents/Projects/GroveMC/src/worker
+cd /Users/mini/Documents/Projects/GroveMC/src/worker
 pnpm install
 pnpm run deploy
 ```
 
----
-
-## After Worker Deploy: Test
-
+### Step 3: Test
 ```bash
 # Check status endpoint (should return OFFLINE state)
 curl https://mc-control.grove.workers.dev/api/mc/status/public
@@ -152,6 +99,7 @@ curl https://mc-control.grove.workers.dev/api/mc/status/public
 - [ ] Discord webhook notifications
 - [ ] WebSocket console for live logs
 - [ ] US region testing
+- [ ] Resource pack server distribution
 - [ ] Additional mods (if desired)
 
 ---
@@ -167,36 +115,35 @@ curl https://mc-control.grove.workers.dev/api/mc/status/public
 | Backend routes | `GroveAuth/src/routes/minecraft.ts` |
 | Full spec | `GroveMC/grove-minecraft-spec.md` |
 | SSH key | `~/.ssh/grovemc` (private) / `~/.ssh/grovemc.pub` (public) |
+| Mods folder | `/Volumes/External/Prism/Instances/Becoming Autumn/minecraft/mods` |
 
 ---
 
-## R2 Bucket Structure (Target State)
+## R2 Bucket Structure (Current State)
 
 ### `mc-assets` (static files)
 ```
 mc-assets/
 ├── server/
-│   ├── fabric-server-launch.jar    ← NEED TO DOWNLOAD
-│   ├── server.properties           ← Ready to upload
-│   ├── ops.json                    ← Need real UUID
-│   ├── whitelist.json              ← Need real UUID
-│   └── eula.txt                    ← Ready to upload
+│   ├── fabric-server-launch.jar    ✅ Uploaded
+│   ├── server.properties           ✅ Uploaded
+│   ├── ops.json                    ⚠️ Need to re-upload (UUID fixed locally)
+│   ├── whitelist.json              ⚠️ Need to re-upload (UUID fixed locally)
+│   └── eula.txt                    ✅ Uploaded
 ├── mods/
-│   ├── fabric-api-X.X.X.jar        ← NEED TO DOWNLOAD
-│   ├── lithium-X.X.X.jar           ← NEED TO DOWNLOAD
-│   └── ferritecore-X.X.X.jar       ← NEED TO DOWNLOAD
+│   └── (189 mods uploaded!)        ✅ Complete
 └── scripts/
-    ├── start.sh                    ← Ready to upload
-    ├── stop.sh                     ← Ready to upload
-    ├── watchdog.sh                 ← Ready to upload
-    └── sync-to-r2.sh               ← Ready to upload
+    ├── start.sh                    ✅ Uploaded
+    ├── stop.sh                     ✅ Uploaded
+    ├── watchdog.sh                 ✅ Uploaded
+    └── sync-to-r2.sh               ✅ Uploaded
 ```
 
 ### `mc-worlds` (dynamic - created at runtime)
 ```
 mc-worlds/
 ├── current/
-│   └── world.tar.gz                ← Optional: existing world backup
+│   └── world.tar.gz.part_*         🔄 Uploading (12 chunks, 250MB each)
 └── backups/
     └── (auto-created by watchdog)
 ```
