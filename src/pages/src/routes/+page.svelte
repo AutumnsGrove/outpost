@@ -56,13 +56,13 @@
 </script>
 
 <svelte:head>
-	<title>Grove Minecraft Server</title>
-	<meta name="description" content="Status page for the Grove Minecraft server" />
+	<title>Outpost - Minecraft Server</title>
+	<meta name="description" content="Status page for Outpost, the on-demand Minecraft server at grove.place" />
 </svelte:head>
 
 <main>
 	<div class="container">
-		<h1>Grove Minecraft Server</h1>
+		<h1>Outpost</h1>
 
 		{#if loading}
 			<div class="status-box loading">

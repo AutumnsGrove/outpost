@@ -1,10 +1,12 @@
-# GroveMC - On-Demand Minecraft Server
+# Outpost - On-Demand Minecraft Server
 
-On-demand Minecraft 1.20.1 (Fabric) server with hourly billing, automated lifecycle management, and Cloudflare integration.
+> **Internal codename:** GroveMC
+
+On-demand Minecraft 1.20.1 (Fabric) server with hourly billing, automated lifecycle management, and Cloudflare integration. An outpost is where you gather at the edge of wilderness.
 
 ## Overview
 
-GroveMC provides a cost-effective way to run a Minecraft server for friends. Instead of paying for 24/7 hosting, the server spins up on-demand and automatically shuts down when idle.
+Outpost provides a cost-effective way to run a Minecraft server for friends. Instead of paying for 24/7 hosting, the server spins up on-demand and automatically shuts down when idle.
 
 **Key Features:**
 - Region toggle (EU vs US) for cost/latency tradeoffs
