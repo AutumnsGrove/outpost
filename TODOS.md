@@ -44,7 +44,7 @@
   - [x] `server/fabric-server-launch.jar`
 - [x] Bulk mod upload script created (`upload-mods.sh`)
 - [x] Client-only mod skip list created (`client-only-mods.txt` - 84 mods)
-- [x] **189 server mods uploaded to R2** (`mc-assets/mods/`)
+- [x] **188 server mods uploaded to R2** (`mc-assets/mods/`) *(travelerz removed)*
 - [x] Fabric server JAR uploaded to R2
 - [x] World tarball uploaded (2.9GB in 12 chunks)
 - [x] ops.json updated with real UUID (`4d9b897a-6b40-4a30-8e83-eccb33333817`)
@@ -110,6 +110,65 @@ dig mc.grove.place
 
 ---
 
+## Bugs Found During First Deploy 🐛
+
+### 1. ✅ FIXED - Cloudflare Bot Protection Blocks Webhooks
+**Problem:** Webhook URL `https://mc-control.grove.place/api/mc/webhook` gets Cloudflare challenge page
+**Fix:** Use `https://mc-control.m7jv4v7npb.workers.dev/api/mc/webhook` (workers.dev bypasses bot protection)
+**File:** `src/worker/src/routes/start.ts` line 84
+
+### 2. ✅ FIXED - Cloudflare Error 1042 - Worker-to-Worker Fetch
+**Problem:** GroveAuth calling mc-control via workers.dev URL fails with error 1042
+**Fix:** Use custom domain `mc-control.grove.place` for worker-to-worker calls (via grove-router proxy)
+**File:** `GroveAuth/src/routes/minecraft.ts` - `MC_CONTROL_URL`
+
+### 3. ✅ FIXED - Cloud-Init World Download - Chunked Files Not Handled
+**Problem:** Cloud-init checks for `world.tar.gz` but we uploaded 12 chunks (`world.tar.gz.part_*`)
+**Fix:** Updated cloud-init to detect and reassemble chunks before extraction
+**File:** `src/worker/src/services/cloudinit.ts` - world download section
+
+### 4. ⚠️ MANUAL - Hetzner SSH Key ID Not Updated
+**Problem:** Worker had old SSH key ID, new machines couldn't be accessed
+**Fix:** Update `HETZNER_SSH_KEY_ID` secret when SSH keys change
+**Command:** `wrangler secret put HETZNER_SSH_KEY_ID`
+
+### 5. ✅ FIXED - Hetzner Location/Server Type Unavailable (Error 412)
+**Problem:** `fsn1` location or `cx33` server type not available
+**Fix:** Changed to `nbg1` (Nuremberg) and `cx32` (widely available)
+**Files:** `src/worker/src/services/hetzner.ts`
+
+### 6. ✅ FIXED - Frontend [object Object] Bug
+**Problem:** Dashboard showed `[object Object]` for Players Online
+**Fix:** API returns `{ players: { online: N, max: M } }` - fixed accessor to `players?.online`
+**File:** `GroveAuth/frontend/src/routes/dashboard/minecraft/+page.svelte`
+
+### 7. ✅ FIXED - Frontend Whitelist Field Name Mismatch
+**Problem:** Whitelist entries showing `...` instead of usernames
+**Fix:** API returns `name` - fixed accessor to `player.name`
+**File:** `GroveAuth/frontend/src/routes/dashboard/minecraft/+page.svelte`
+
+### 8. ✅ FIXED - Missing Mod Dependency
+**Problem:** `travelerz` mod requires `nameplate` mod which wasn't included
+**Fix:** Removed `travelerz` from R2 (`mc-assets/mods/`)
+**Note:** Now 188 server mods
+
+### 9. ✅ FIXED - Systemd Service Uses Screen (Exits Immediately)
+**Problem:** `start.sh` uses `screen -dm` which exits, systemd thinks service stopped
+**Fix:** Changed start.sh to run Java directly with `exec` (foreground mode for systemd)
+**Files:** `src/scripts/start.sh`, updated watchdog.sh to not rely on screen
+
+### 10. ✅ FIXED - External VPS Deletion Leaves Worker State Stale
+**Problem:** Deleting VPS from Hetzner console doesn't update worker state
+**Fix:** Added cron-based health check (every 5 minutes) that detects orphaned VPS and resets state
+**Files:** `src/worker/src/services/healthcheck.ts`, `src/worker/wrangler.toml` (cron trigger)
+
+### 11. ✅ FIXED - Cloud-init .env file not created
+**Problem:** .env file was in write_files but got overwritten by rclone sync
+**Fix:** Added runcmd step to recreate .env file after rclone sync
+**File:** `src/worker/src/services/cloudinit.ts`
+
+---
+
 ## Future Enhancements (After MVP Works)
 
 - [ ] Dynmap integration (map.grove.place via Cloudflare Tunnel)
@@ -118,6 +177,9 @@ dig mc.grove.place
 - [ ] US region testing
 - [ ] Resource pack server distribution
 - [ ] Additional mods (if desired)
+- [x] Health check cron to detect orphaned VPS/state mismatch ✅ Implemented
+- [ ] Better mod dependency validation before upload
+- [ ] RCON support for sending commands to running server
 
 ---
 
@@ -148,7 +210,7 @@ mc-assets/
 │   ├── whitelist.json              ✅
 │   └── eula.txt                    ✅
 ├── mods/
-│   └── (189 mods)                  ✅
+│   └── (188 mods)                  ✅
 └── scripts/
     ├── start.sh                    ✅
     ├── stop.sh                     ✅

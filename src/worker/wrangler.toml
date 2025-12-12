@@ -21,6 +21,10 @@ database_id = "969fbe3d-2c67-4c2e-baa2-a92b8f24d4e2"
 [vars]
 ENVIRONMENT = "development"
 
+# Cron trigger for health check (every 5 minutes)
+[triggers]
+crons = ["*/5 * * * *"]
+
 # Secrets (set via wrangler secret put):
 # - CF_ACCOUNT_ID
 # - CF_API_TOKEN

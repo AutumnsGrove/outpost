@@ -23,57 +23,62 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_FILE"
 }
 
-# More robust player count detection
+# Player count detection by parsing log file for join/leave events
+# This is more reliable than using screen commands
 get_player_count() {
     local count=0
-    local retry=0
 
-    while [ $retry -lt $max_retry ]; do
-        # Send list command to Minecraft console
-        screen -S minecraft -p 0 -X stuff "list\n" 2>/dev/null || true
-        sleep 1
+    if [ -f "$MC_LOG" ]; then
+        # Count connected players by tracking join/leave messages
+        # Pattern: "[Server thread/INFO]: PlayerName joined the game"
+        # Pattern: "[Server thread/INFO]: PlayerName left the game"
+        # Look at last 500 lines to catch recent activity
+        local joins=$(tail -500 "$MC_LOG" | grep -c "joined the game" 2>/dev/null || echo "0")
+        local leaves=$(tail -500 "$MC_LOG" | grep -c "left the game" 2>/dev/null || echo "0")
 
-        # Try multiple patterns for player count
-        # Pattern 1: "There are X of a max of Y players online"
-        # Pattern 2: "There are X/Y players online"
-        if [ -f "$MC_LOG" ]; then
-            # Get last occurrence of player count
-            count=$(tail -50 "$MC_LOG" | grep -oE 'There are [0-9]+' | tail -1 | grep -oE '[0-9]+' || echo "0")
+        # Also check for the "There are X" pattern from /list command
+        local list_count=$(tail -50 "$MC_LOG" | grep -oE 'There are [0-9]+' | tail -1 | grep -oE '[0-9]+' 2>/dev/null || echo "")
 
-            if [ -n "$count" ] && [ "$count" -ge 0 ] 2>/dev/null; then
-                echo "$count"
-                return 0
+        if [ -n "$list_count" ]; then
+            # If we have a recent /list result, use that
+            count=$list_count
+        else
+            # Otherwise estimate from join/leave
+            count=$((joins - leaves))
+            if [ "$count" -lt 0 ]; then
+                count=0
             fi
         fi
 
-        retry=$((retry + 1))
-        sleep 1
-    done
+        # Sanity check - if server just started, use 0
+        local server_start=$(tail -500 "$MC_LOG" | grep -c "Done (" 2>/dev/null || echo "0")
+        if [ "$server_start" -gt 0 ] && [ "$joins" -eq 0 ]; then
+            count=0
+        fi
+    fi
 
-    # Default to 0 if we can't determine
-    echo "0"
+    echo "$count"
 }
 
 sync_world_to_r2() {
     log "Syncing world to R2..."
 
-    # Disable autosave
-    screen -S minecraft -p 0 -X stuff "save-off\n" 2>/dev/null || true
-    sleep 2
-
-    # Force save
-    screen -S minecraft -p 0 -X stuff "save-all\n" 2>/dev/null || true
-    sleep 5
+    # Note: Without RCON, we can't send save-all/save-off commands
+    # The world is auto-saved periodically by Minecraft, so this should be safe
+    # For a clean backup, this is typically called when MC is stopped or idle
 
     # Create tarball
     if [ -d /opt/minecraft/world ]; then
-        tar -czf /tmp/world.tar.gz -C /opt/minecraft world
+        tar -czf /tmp/world.tar.gz -C /opt/minecraft world 2>/dev/null
 
-        # Get size for reporting
-        local size_bytes=$(stat -f%z /tmp/world.tar.gz 2>/dev/null || stat --printf="%s" /tmp/world.tar.gz 2>/dev/null || echo "0")
+        # Get size for reporting (Linux stat syntax)
+        local size_bytes=$(stat -c%s /tmp/world.tar.gz 2>/dev/null || stat -f%z /tmp/world.tar.gz 2>/dev/null || echo "0")
 
-        # Upload to R2
+        # Upload to R2 (replaces any chunked files with single file)
         rclone copy /tmp/world.tar.gz r2:mc-worlds/current/ --retries 3
+
+        # Remove old chunk files if they exist
+        rclone delete r2:mc-worlds/current/ --include "world.tar.gz.part_*" 2>/dev/null || true
 
         # Create timestamped backup
         local timestamp=$(date +%Y-%m-%d-%H%M)
@@ -95,9 +100,6 @@ sync_world_to_r2() {
     else
         log "Warning: World directory not found"
     fi
-
-    # Re-enable autosave
-    screen -S minecraft -p 0 -X stuff "save-on\n" 2>/dev/null || true
 
     last_backup_time=$(date +%s)
 }

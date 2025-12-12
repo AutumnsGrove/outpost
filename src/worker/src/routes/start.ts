@@ -80,7 +80,8 @@ export async function handleStart(
     });
 
     // Generate cloud-init with secrets
-    const webhookUrl = 'https://mc-control.grove.place/api/mc/webhook';
+    // Use workers.dev URL to bypass Cloudflare bot protection on custom domain
+    const webhookUrl = 'https://mc-control.m7jv4v7npb.workers.dev/api/mc/webhook';
     const cloudInit = generateCloudInit(env, {
       region: region as Region,
       webhookUrl,

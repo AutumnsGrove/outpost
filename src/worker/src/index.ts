@@ -12,6 +12,7 @@ import { handleCommand } from './routes/command.js';
 import { handleSync } from './routes/sync.js';
 import { handleHistory } from './routes/history.js';
 import { handleWebhook } from './routes/webhooks.js';
+import { runHealthCheck } from './services/healthcheck.js';
 
 // CORS headers for cross-origin requests
 const corsHeaders = {
@@ -139,5 +140,21 @@ export default {
 
     // Not an API route
     return notFound();
+  },
+
+  /**
+   * Scheduled handler for health checks
+   * Runs every 5 minutes to detect orphaned VPS/state mismatches
+   */
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log(`Health check triggered at ${new Date(event.scheduledTime).toISOString()}`);
+
+    const result = await runHealthCheck(env);
+
+    console.log(`Health check result: ${result.status} - ${result.message}`);
+
+    if (result.details) {
+      console.log('Health check details:', JSON.stringify(result.details));
+    }
   },
 } satisfies ExportedHandler<Env>;
