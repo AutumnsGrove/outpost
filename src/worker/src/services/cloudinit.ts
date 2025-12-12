@@ -132,28 +132,23 @@ runcmd:
   - sudo -u minecraft rclone sync r2:mc-assets/config/ /opt/minecraft/config/
   - sudo -u minecraft rclone sync r2:mc-assets/scripts/ /opt/minecraft/
 
-  # Download world from R2 (if exists) - handles both single file and chunked uploads
+  # Download world from R2 (if exists)
   - |
     cd /tmp
-    if rclone ls r2:mc-worlds/current/world.tar.gz 2>/dev/null; then
-      # Single file world backup
-      echo "Downloading world.tar.gz..."
+    # Check if world.tar.gz exists and has content
+    WORLD_SIZE=$(rclone size r2:mc-worlds/current/world.tar.gz 2>/dev/null | grep "Total size:" | awk '{print $3}' || echo "0")
+    if [ "$WORLD_SIZE" != "0" ] && [ -n "$WORLD_SIZE" ]; then
+      echo "Downloading world.tar.gz ($WORLD_SIZE bytes)..."
       sudo -u minecraft rclone copy r2:mc-worlds/current/world.tar.gz /tmp/
-      sudo -u minecraft tar -xzf /tmp/world.tar.gz -C /opt/minecraft/
-      rm /tmp/world.tar.gz
-      echo "World restored from R2 (single file)"
-    elif rclone ls r2:mc-worlds/current/ 2>/dev/null | grep -q 'world.tar.gz.part_'; then
-      # Chunked world backup - download all parts and reassemble
-      echo "Downloading chunked world backup..."
-      sudo -u minecraft rclone copy r2:mc-worlds/current/ /tmp/world_chunks/ --include "world.tar.gz.part_*"
-      cd /tmp/world_chunks
-      # Reassemble chunks in order
-      cat $(ls world.tar.gz.part_* | sort) > /tmp/world.tar.gz
-      sudo -u minecraft tar -xzf /tmp/world.tar.gz -C /opt/minecraft/
-      rm -rf /tmp/world_chunks /tmp/world.tar.gz
-      echo "World restored from R2 (chunked)"
+      if [ -f /tmp/world.tar.gz ]; then
+        sudo -u minecraft tar -xzf /tmp/world.tar.gz -C /opt/minecraft/
+        rm /tmp/world.tar.gz
+        echo "World restored from R2"
+      else
+        echo "Download failed, starting fresh"
+      fi
     else
-      echo "No existing world found, starting fresh"
+      echo "No existing world found in R2, Minecraft will generate a new world"
     fi
 
   # Recreate .env file (may have been overwritten by rclone sync)
