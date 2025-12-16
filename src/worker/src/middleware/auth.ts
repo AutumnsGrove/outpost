@@ -1,6 +1,6 @@
 /**
  * Authentication Middleware
- * Verifies admin access using GroveAuth JWT or simple Bearer token
+ * Verifies admin access using Heartwood OAuth (via auth-api.grove.place) or simple Bearer token
  */
 
 import type { Env } from '../types/env.js';
@@ -28,7 +28,7 @@ export function verifyWebhookAuth(request: Request, env: Env): boolean {
 
 /**
  * Verify admin access using either:
- * 1. GroveAuth JWT token (calls /verify endpoint)
+ * 1. Heartwood OAuth JWT token (calls /verify endpoint)
  * 2. Simple ADMIN_AUTH_SECRET Bearer token (fallback)
  */
 export async function verifyAdminAuth(
@@ -55,9 +55,9 @@ export async function verifyAdminAuth(
     };
   }
 
-  // Option 2: Verify via GroveAuth /verify endpoint
+  // Option 2: Verify via Heartwood OAuth /verify endpoint
   try {
-    console.log('[auth] Verifying token via GroveAuth...');
+    console.log('[auth] Verifying token via Heartwood OAuth...');
     const verifyResponse = await fetch('https://auth-api.grove.place/verify', {
       method: 'GET',
       headers: {
@@ -65,11 +65,11 @@ export async function verifyAdminAuth(
       },
     });
 
-    console.log(`[auth] GroveAuth response status: ${verifyResponse.status}`);
+    console.log(`[auth] Heartwood response status: ${verifyResponse.status}`);
 
     if (!verifyResponse.ok) {
       const errorText = await verifyResponse.text();
-      console.log(`[auth] GroveAuth error response: ${errorText.substring(0, 200)}`);
+      console.log(`[auth] Heartwood error response: ${errorText.substring(0, 200)}`);
       return {
         authenticated: false,
         error: `Invalid or expired token (${verifyResponse.status})`,
@@ -102,7 +102,7 @@ export async function verifyAdminAuth(
       email: email,
     };
   } catch (error) {
-    // GroveAuth might not be reachable, fall through to error
+    // Heartwood OAuth might not be reachable, fall through to error
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error(`[auth] Auth verification failed: ${errorMsg}`);
     return {
