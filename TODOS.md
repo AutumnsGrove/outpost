@@ -193,6 +193,28 @@
 - [ ] Better mod dependency validation before upload
 - [ ] RCON support for sending commands to running server
 
+### Panel Features - Modpack & World Management
+> See `docs/panel-features-plan.md` for full spec
+
+**Backend API (mc-control):**
+- [ ] `GET /api/mc/mods` - List all mods
+- [ ] `DELETE /api/mc/mods` - Delete all mods
+- [ ] `DELETE /api/mc/mods/:filename` - Delete single mod
+- [ ] `GET /api/mc/world` - World info
+- [ ] `DELETE /api/mc/world` - Reset world
+- [ ] `GET /api/mc/backups` - List backups
+- [ ] `POST /api/mc/backups/:id/restore` - Restore backup
+
+**GroveAuth Proxy:**
+- [ ] Add proxy routes for all new mc-control endpoints
+- [ ] Handle multipart upload for mod files
+
+**Frontend (Dashboard):**
+- [ ] ModpackManager component (list, upload, delete mods)
+- [ ] WorldManager component (reset, backups)
+- [ ] Drag-and-drop file upload
+- [ ] Confirmation dialogs for destructive operations
+
 ---
 
 ## Quick Reference

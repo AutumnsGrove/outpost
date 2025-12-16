@@ -12,6 +12,8 @@ import { handleCommand } from './routes/command.js';
 import { handleSync } from './routes/sync.js';
 import { handleHistory } from './routes/history.js';
 import { handleWebhook } from './routes/webhooks.js';
+import { handleListMods, handleDeleteAllMods, handleDeleteMod, handleUploadMod } from './routes/mods.js';
+import { handleGetWorld, handleDeleteWorld, handleListBackups, handleRestoreBackup, handleDownloadBackup } from './routes/world.js';
 import { runHealthCheck } from './services/healthcheck.js';
 
 // CORS headers for cross-origin requests
@@ -122,6 +124,61 @@ export default {
           if (method !== 'POST') return methodNotAllowed();
           const webhookType = path.replace('/api/mc/webhook/', '');
           return handleWebhook(request, env, webhookType);
+        }
+
+        // =====================================================================
+        // Mod Management Routes
+        // =====================================================================
+
+        // Upload mod (must be before generic /api/mc/mods check)
+        if (path === '/api/mc/mods/upload') {
+          if (method !== 'POST') return methodNotAllowed();
+          return handleUploadMod(request, env);
+        }
+
+        // List or delete all mods
+        if (path === '/api/mc/mods') {
+          if (method === 'GET') return handleListMods(request, env);
+          if (method === 'DELETE') return handleDeleteAllMods(request, env);
+          return methodNotAllowed();
+        }
+
+        // Delete specific mod
+        if (path.startsWith('/api/mc/mods/')) {
+          const filename = path.replace('/api/mc/mods/', '');
+          if (method !== 'DELETE') return methodNotAllowed();
+          return handleDeleteMod(request, env, filename);
+        }
+
+        // =====================================================================
+        // World Management Routes
+        // =====================================================================
+
+        // World info or reset
+        if (path === '/api/mc/world') {
+          if (method === 'GET') return handleGetWorld(request, env);
+          if (method === 'DELETE') return handleDeleteWorld(request, env);
+          return methodNotAllowed();
+        }
+
+        // Backup restore (must be before generic /api/mc/backups check)
+        const restoreMatch = path.match(/^\/api\/mc\/backups\/(.+)\/restore$/);
+        if (restoreMatch) {
+          if (method !== 'POST') return methodNotAllowed();
+          return handleRestoreBackup(request, env, restoreMatch[1]);
+        }
+
+        // Backup download
+        const downloadMatch = path.match(/^\/api\/mc\/backups\/(.+)\/download$/);
+        if (downloadMatch) {
+          if (method !== 'GET') return methodNotAllowed();
+          return handleDownloadBackup(request, env, downloadMatch[1]);
+        }
+
+        // List backups
+        if (path === '/api/mc/backups') {
+          if (method !== 'GET') return methodNotAllowed();
+          return handleListBackups(request, env);
         }
 
         // Unknown API route
