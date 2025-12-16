@@ -9,13 +9,14 @@ export interface CloudInitConfig {
   region: Region;
   webhookUrl: string;
   tunnelToken?: string;  // Cloudflare Tunnel token for Dynmap
+  rconPassword: string;  // RCON password for remote commands
 }
 
 /**
  * Generate cloud-init YAML with secrets injected
  */
 export function generateCloudInit(env: Env, config: CloudInitConfig): string {
-  const { region, webhookUrl, tunnelToken } = config;
+  const { region, webhookUrl, tunnelToken, rconPassword } = config;
 
   // Escape any special characters in secrets for YAML
   const escapeYaml = (str: string) => str.replace(/'/g, "''");
@@ -55,6 +56,7 @@ write_files:
       WEBHOOK_URL=${escapeYaml(webhookUrl)}
       WEBHOOK_SECRET=${escapeYaml(env.WEBHOOK_SECRET)}
       REGION=${region}
+      RCON_PASSWORD=${escapeYaml(rconPassword)}
 
   # Systemd service for Minecraft
   - path: /etc/systemd/system/minecraft.service
@@ -156,8 +158,21 @@ runcmd:
     echo "WEBHOOK_URL=${escapeYaml(webhookUrl)}" > /opt/minecraft/.env
     echo "WEBHOOK_SECRET=${escapeYaml(env.WEBHOOK_SECRET)}" >> /opt/minecraft/.env
     echo "REGION=${region}" >> /opt/minecraft/.env
+    echo "RCON_PASSWORD=${escapeYaml(rconPassword)}" >> /opt/minecraft/.env
     chown minecraft:minecraft /opt/minecraft/.env
     chmod 600 /opt/minecraft/.env
+
+  # Enable RCON in server.properties
+  - |
+    if [ -f /opt/minecraft/server.properties ]; then
+      sed -i 's/enable-rcon=false/enable-rcon=true/' /opt/minecraft/server.properties
+      sed -i 's/rcon.password=.*/rcon.password=${escapeYaml(rconPassword)}/' /opt/minecraft/server.properties
+      # If rcon.password line doesn't exist, add it
+      grep -q "rcon.password=" /opt/minecraft/server.properties || echo "rcon.password=${escapeYaml(rconPassword)}" >> /opt/minecraft/server.properties
+      grep -q "enable-rcon=" /opt/minecraft/server.properties || echo "enable-rcon=true" >> /opt/minecraft/server.properties
+      chown minecraft:minecraft /opt/minecraft/server.properties
+      echo "RCON enabled with password"
+    fi
 
   # Set permissions
   - chown -R minecraft:minecraft /opt/minecraft

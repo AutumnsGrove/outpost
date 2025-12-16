@@ -21,6 +21,7 @@ export interface ServerStateRow {
   dns_updated_at: string | null;
   player_count: number;
   idle_since: string | null;
+  rcon_password: string | null;
 }
 
 export async function getServerState(db: D1Database): Promise<ServerStateRow> {

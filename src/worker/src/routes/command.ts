@@ -1,11 +1,14 @@
 /**
  * Command Route
- * POST /api/mc/command - Send console command to server
+ * POST /api/mc/command - Send console command to server via RCON
  */
 
 import type { Env } from '../types/env.js';
 import { verifyAdminAuth, authErrorResponse } from '../middleware/auth.js';
 import { getServerState } from '../services/database.js';
+import { sendRconCommand } from '../services/rcon.js';
+
+const RCON_PORT = 25575;
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -18,17 +21,11 @@ interface CommandRequest {
   command: string;
 }
 
-// Commands that are blocked for safety
+// Commands that are blocked for safety (server control should use API)
 const BLOCKED_COMMANDS = [
   'stop',
   'restart',
   'shutdown',
-  'op',
-  'deop',
-  'ban',
-  'ban-ip',
-  'pardon',
-  'pardon-ip',
 ];
 
 // Commands that require special handling
@@ -113,6 +110,7 @@ export async function handleCommand(
     }
 
     const vpsIp = serverState.vps_ip;
+    const rconPassword = serverState.rcon_password;
 
     if (!vpsIp) {
       return jsonResponse(
@@ -124,22 +122,38 @@ export async function handleCommand(
       );
     }
 
-    // TODO: Send command via RCON or SSH
-    // For a full implementation, we would:
-    // 1. Connect to RCON on port 25575
-    // 2. Send the command
-    // 3. Return the response
+    if (!rconPassword) {
+      return jsonResponse(
+        {
+          error: 'rcon_not_configured',
+          error_description: 'RCON password not available. Server may need to be restarted.',
+        },
+        500
+      );
+    }
 
-    console.log(`Command requested: '${command}' for server at ${vpsIp}`);
+    console.log(`Sending command via RCON: '${command}' to ${vpsIp}`);
 
-    // For now, return a pending status
-    // The real implementation would use RCON or screen/tmux commands
+    // Send command via RCON
+    const result = await sendRconCommand(vpsIp, RCON_PORT, rconPassword, command.trim());
+
+    if (!result.success) {
+      console.error(`RCON command failed: ${result.error}`);
+      return jsonResponse(
+        {
+          error: 'rcon_error',
+          error_description: result.error || 'Failed to send command',
+        },
+        500
+      );
+    }
+
+    console.log(`RCON command success, response: ${result.response}`);
+
     return jsonResponse({
-      status: 'pending',
-      message: 'Command execution not yet implemented. Would send to server.',
+      success: true,
       command: command.trim(),
-      serverIp: vpsIp,
-      note: 'RCON or SSH command execution to be implemented',
+      response: result.response || '',
     });
   } catch (error) {
     console.error('Command error:', error);

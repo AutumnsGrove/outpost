@@ -22,6 +22,15 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 /**
+ * Generate a secure random RCON password
+ */
+function generateRconPassword(): string {
+  const array = new Uint8Array(24);
+  crypto.getRandomValues(array);
+  return Array.from(array, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * POST /api/mc/start
  * Provision a new Hetzner VPS for Minecraft
  */
@@ -68,6 +77,9 @@ export async function handleStart(
       );
     }
 
+    // Generate RCON password for this session
+    const rconPassword = generateRconPassword();
+
     // Set state to PROVISIONING
     await setServerState(env.DB, 'PROVISIONING', {
       region: region as Region,
@@ -77,6 +89,7 @@ export async function handleStart(
       vps_ip: null,
       player_count: 0,
       idle_since: null,
+      rcon_password: rconPassword,
     });
 
     // Generate cloud-init with secrets
@@ -86,6 +99,7 @@ export async function handleStart(
       region: region as Region,
       webhookUrl,
       tunnelToken: env.CF_TUNNEL_TOKEN,
+      rconPassword,
     });
 
     // Create Hetzner server
