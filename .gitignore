@@ -4,6 +4,7 @@ r2-credentials.json
 __pycache__/
 .DS_Store
 .claude/
+!.claude/skills/
 
 # Node
 node_modules/
