@@ -51,10 +51,6 @@ git reset HEAD~1                # Undo last commit (keep changes)
 <type>: <brief description>
 
 <optional body with details>
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 ### Common Commit Types
@@ -154,11 +150,7 @@ git add .
 git commit -m "chore: initialize repository
 
 - Add initial project structure
-- Configure .gitignore for common patterns
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>"
+- Configure .gitignore for common patterns"
 ```
 
 #### Step 3: Clean Up Backup
@@ -190,11 +182,7 @@ git add .
 git commit -m "feat: add new feature
 
 - Specific implementation detail 1
-- Specific implementation detail 2
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>"
+- Specific implementation detail 2"
 
 # Verify
 git status
@@ -219,10 +207,6 @@ documentation projects.
 - Uses file modification timestamps for change detection
 - Implements content hash verification
 - Adds cache invalidation on manual refresh
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **Triggers**: Minor version bump (1.0.0 → 1.1.0)
@@ -242,10 +226,6 @@ in error messages when processing multi-line code blocks.
 - Update error message formatting
 
 Closes #123
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **Triggers**: Patch version bump (1.0.0 → 1.0.1)
@@ -260,10 +240,6 @@ docs: Add API documentation for file_handler module
 - Add docstrings for all public functions
 - Include usage examples
 - Update README with new module information
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **No version bump**
@@ -281,10 +257,6 @@ makes the validator reusable across modules.
 - Create validate_input() function
 - Update all callers to use new function
 - Add type hints for better IDE support
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **No version bump**
@@ -302,10 +274,6 @@ traversal on large projects.
 Benchmarks:
 - Before: 2.3s for 1000 files
 - After: 0.7s for 1000 files
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **Triggers**: Patch version bump (1.0.0 → 1.0.1)
@@ -324,10 +292,6 @@ Covers:
 - Invalid credentials handling
 
 Test coverage increased from 67% to 94%
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **No version bump**
@@ -342,10 +306,6 @@ chore: Update Python dependencies
 - Upgrade pytest to 8.0.0
 - Update black to 24.1.0
 - Pin anthropic SDK to 0.8.0
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **No version bump**
@@ -367,10 +327,6 @@ instead of a filename pattern. Update your scripts accordingly.
 Migration:
   Old: --output "diagrams/*.png"
   New: --output "diagrams" --format png
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 ### Method 2: Exclamation Mark
@@ -382,10 +338,6 @@ Completely removes XML configuration support. All configuration
 files must be migrated to YAML format.
 
 See migration guide in docs/migration/xml-to-yaml.md
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 **Triggers**: Major version bump (1.0.0 → 2.0.0)
@@ -749,10 +701,6 @@ Add configurable rate limiting to prevent API abuse:
 - Returns 429 status when exceeded
 
 Resolves #456
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 ### Footer (Optional)
@@ -840,10 +788,6 @@ refactor(db): Update connection pooling configuration
 - Increase max connections from 10 to 50
 - Add connection timeout of 30 seconds
 - Enable connection recycling to prevent leaks
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: [Model Name] <agent@localhost>
 ```
 
 ---
@@ -925,7 +869,7 @@ Enforce conventional commits:
 
 ```bash
 # Install
-npm install --save-dev @commitlint/cli @commitlint/config-conventional
+pnpm add -D @commitlint/cli @commitlint/config-conventional
 
 # Configure (.commitlintrc.json)
 {
@@ -948,10 +892,10 @@ Automated changelog and versioning:
 
 ```bash
 # Install
-npm install --save-dev standard-version
+pnpm add -D standard-version
 
 # Use
-npm run release
+pnpm release
 
 # Generates:
 # - Updates version in package.json
@@ -992,9 +936,8 @@ git push --tags
 5. ✅ **Don't end subject with period**
 6. ✅ **Add body for complex changes**
 7. ✅ **Be specific, not vague**
-8. ✅ **Include Claude Code attribution**
-9. ✅ **Mark breaking changes explicitly**
-10. ✅ **Reference issues in footer**
+8. ✅ **Mark breaking changes explicitly**
+9. ✅ **Reference issues in footer**
 
 **Following these guidelines creates a clean, professional git history that enables automated tooling, clear communication, and effective collaboration.**
 
