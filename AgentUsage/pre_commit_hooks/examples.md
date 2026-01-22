@@ -177,8 +177,8 @@ Automatically updates dependencies when switching branches.
   ✓ Python dependencies updated (uv)
 
 📦 Node dependencies changed
-  Running 'npm install'...
-  ✓ Node dependencies updated (npm)
+  Running 'pnpm install'...
+  ✓ Node dependencies updated (pnpm)
 
 ✅ Dependency updates complete
 ```
@@ -193,12 +193,6 @@ git commit -m "add JWT authentication"
 
 # Hook automatically prepends ticket number:
 # [ABC-123] add JWT authentication
-#
-# 🤖 Generated with Claude Code
-# via Happy
-#
-# Co-Authored-By: [Model Name] <agent@localhost>
-# Co-Authored-By: Happy <yesreply@happy.engineering>
 ```
 
 #### post-commit
