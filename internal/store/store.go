@@ -167,11 +167,11 @@ func (s *Store) Reset() error {
 }
 
 // StartSession opens a session ledger row and returns its id.
-func (s *Store) StartSession(region, serverType, vpsID string) (int64, error) {
+func (s *Store) StartSession(startedAt time.Time, region, serverType, vpsID string) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO sessions (started_at, region, server_type, vps_id)
 		VALUES (?, ?, ?, ?)`,
-		stamp(time.Now().UTC()), region, serverType, vpsID)
+		stamp(startedAt), region, serverType, vpsID)
 	if err != nil {
 		return 0, fmt.Errorf("start session: %w", err)
 	}
@@ -215,6 +215,36 @@ func (s *Store) CurrentSession() (*Session, error) {
 		return nil, err
 	}
 	return &sess, nil
+}
+
+// RecentSessions returns the newest n sessions, newest first.
+func (s *Store) RecentSessions(n int) ([]Session, error) {
+	rows, err := s.db.Query(`
+		SELECT id, started_at, ended_at, duration_seconds, cost_usd, max_players,
+		       region, server_type, vps_id
+		  FROM sessions ORDER BY id DESC LIMIT ?`, n)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Session
+	for rows.Next() {
+		var sess Session
+		var started, ended string
+		if err := rows.Scan(&sess.ID, &started, &ended, &sess.DurationSeconds, &sess.CostUSD,
+			&sess.MaxPlayers, &sess.Region, &sess.ServerType, &sess.VPSID); err != nil {
+			return nil, err
+		}
+		if sess.StartedAt, err = parseStamp(started); err != nil {
+			return nil, err
+		}
+		if sess.EndedAt, err = parseStamp(ended); err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
 }
 
 // UpdateSessionPlayers raises the session's peak player count if n is higher.
