@@ -7,3 +7,4 @@ outpost.db-wal
 outpost
 outpost-arm64
 node_modules/
+.wrangler/
