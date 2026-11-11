@@ -11,7 +11,10 @@ inside the Hetzner VPS.
 
 It worked, and there are receipts: **12 sessions, 4.62 hours, $0.0565 total.**
 Last session ended 2025-12-17. All of it is still deployed and intact — worker,
-D1, both R2 buckets, and your world tarball.
+D1, both R2 buckets, and the world tarball.
+
+None of that data is being carried forward. v2 is a fresh server on a fresh world;
+the v1 buckets are history.
 
 It stopped for two reasons, neither of which was "we decided to stop":
 
@@ -87,13 +90,32 @@ you play in two-hour bursts, that is half an hour of server nobody is using.
 30 minutes total is still generous enough to cover "someone dropped to check
 Discord". Both are config values.
 
-### 6. Keep R2 exactly where it is
+### 6. Keep R2's key layout, throw away its contents
 
-`mc-assets` (190 objects, 298 MB: 188 mods, the Fabric launcher, `server.properties`,
-`start.sh`) and `mc-worlds` (`current/world.tar.gz`, 38.8 MB) are reused **with
-v1's exact key layout**, so the existing world and modpack load with no migration
-and no re-upload. R2 stays as a dumb blob shelf: no D1, no Worker, ~1.1 GB on the
-10 GB free tier.
+R2 stays as a dumb blob shelf: no D1, no Worker, two buckets.
+
+The **key layout** is load-bearing and stays exactly as v1 had it, because the
+cloud-init template in `internal/cloudinit/` reads it:
+
+```
+mc-assets/server/{fabric-server-launch.jar,server.properties,ops.json,whitelist.json,eula.txt}
+mc-assets/mods/*.jar
+mc-assets/config/
+mc-assets/scripts/{start.sh,stop.sh}
+mc-worlds/current/world.tar.gz        (optional — absent means generate a new one)
+```
+
+The **contents** do not survive. Autumn decided on 2026-11-11 that the next server
+is a fresh start: new modpack, new world, nothing carried over from December 2025.
+That deletes a whole category of work — no data migration, no compatibility
+testing, no "does the old world still load" — and it means the 298 MB of v1 mods
+and the 38.8 MB world in R2 are disposable.
+
+Missing assets are a first-class state, not an error: the template already handles
+an absent world ("Minecraft will generate one") and an empty `mods/` prefix.
+
+**Consequence:** there is no way to *populate* R2 from this repo yet. See the
+first item under "Open" in `HANDOFF.md`.
 
 ### 7. The DNS record is an A record, updated on start
 

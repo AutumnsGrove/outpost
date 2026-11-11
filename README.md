@@ -52,17 +52,18 @@ One-time, none of it in this repo:
    The record is created on first start.
 3. **Tailscale** — an auth key for a tagged device (`tag:outpost`). Revoke it if it
    ever leaks; nothing else uses it.
-4. **R2** — a bucket pair with the v1 layout, already populated:
+4. **R2** — two buckets. Empty is fine: no world means Minecraft generates one,
+   no mods means vanilla. The keys the cloud-init template expects are:
 
    ```
    mc-assets/server/{fabric-server-launch.jar,server.properties,ops.json,whitelist.json,eula.txt}
    mc-assets/mods/*.jar
    mc-assets/config/
    mc-assets/scripts/{start.sh,stop.sh}
-   mc-worlds/current/world.tar.gz
+   mc-worlds/current/world.tar.gz        optional
    ```
 
-   Keys were read-only in v1's world; Outpost only writes `mc-worlds`.
+   Publishing assets into R2 is not built yet — see `HANDOFF.md`.
 
 Secrets are environment variables, never the config file:
 
@@ -131,6 +132,7 @@ internal/hetzner/     Hetzner Cloud API
 internal/dns/         Cloudflare A record
 internal/store/       SQLite: state, sessions, backups, events
 legacy/v1/            the 2025 Worker + watchdog build, kept for reference
+HANDOFF.md            where this stands and what is left
 PLAN.md               why it looks like this
 ```
 
