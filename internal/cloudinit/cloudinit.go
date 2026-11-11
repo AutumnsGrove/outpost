@@ -17,16 +17,16 @@ var parsed = template.Must(template.New("cloud-init").Parse(tmpl))
 // Data is everything the template needs. Secrets arrive here already read from
 // the orchestrator's environment and are never written to disk anywhere else.
 type Data struct {
-	Hostname       string
-	MCPort         int
-	RCONPassword   string
+	Hostname         string
+	MCPort           int
+	RCONPassword     string
 	TailscaleAuthKey string
-	TailscaleTags  []string
-	R2AccountID    string
-	R2AccessKey    string
-	R2SecretKey    string
-	AssetBucket    string
-	WorldBucket    string
+	TailscaleTags    []string
+	R2AccountID      string
+	R2AccessKey      string
+	R2SecretKey      string
+	AssetBucket      string
+	WorldBucket      string
 }
 
 // Validate catches the mistakes that would otherwise show up as a half-built
