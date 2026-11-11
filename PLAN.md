@@ -142,7 +142,7 @@ Le Potato (~/outpost, Go binary, SQLite, tailscale serve :8896)
   ├── SSH over tailnet   rclone the world up
   └── JSON API + tile in Meridian
         │
-        ├──► Hetzner cx32 in nbg1  ─ ephemeral, deleted on idle
+        ├──► Hetzner CX22 in nbg1  ─ ephemeral, deleted on idle
         │      cloud-init: tailscale, java 17, rclone pull from R2,
         │      restore world, start MC, RCON on
         └──► R2  mc-assets/ + mc-worlds/   (unchanged from v1)

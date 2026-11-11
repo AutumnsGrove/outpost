@@ -183,9 +183,13 @@ func (c *Config) applyDefaults() {
 		c.Cloudflare.RecordName = "mc.example.com"
 	}
 	if len(c.Regions) == 0 {
+		// Estimates only, and Hetzner reprices: the 2026 hikes moved these more
+		// than once. `hourly_rate` feeds the cost readout in `outpost status`,
+		// never the actual bill. Check the console for the real rate and for
+		// stock before trusting the defaults.
 		c.Regions = map[string]Region{
-			"eu": {Location: "nbg1", ServerType: "cx32", HourlyRate: 0.0119},
-			"us": {Location: "ash", ServerType: "cx32", HourlyRate: 0.0119},
+			"eu": {Location: "nbg1", ServerType: "cx22", HourlyRate: 0.0063},
+			"us": {Location: "ash", ServerType: "cx22", HourlyRate: 0.0063},
 		}
 	}
 	if len(c.Tailscale.Tags) == 0 {
