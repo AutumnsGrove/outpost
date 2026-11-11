@@ -253,8 +253,8 @@ Then restore the real timings (10m / 20m).
     `docs/patterns/firefly-pattern.md` and
     `docs/philosophy/naming-research/outpost-grove-journey.md`
 - **Optional:** a Meridian-side start/stop button, once the API token is in place.
-- **Naming:** the local clone is still `~/Projects/GroveMC`; `mv` it to `outpost`
-  when convenient. Nothing in the repo depends on the path.
+- **Naming:** done. The GitHub repo is `AutumnsGrove/outpost` and the local clone
+  is `~/Documents/Projects/outpost`. Nothing in the repo depends on the path.
 
 ---
 
