@@ -141,7 +141,9 @@ Player path: `mc.<domain>` → A record → `:25565` on the ephemeral VPS.
 
 These touch things outside the repo and need Autumn's go-ahead:
 
-1. Rename `AutumnsGrove/GroveMC` → `AutumnsGrove/outpost` on GitHub.
+1. ~~Rename `AutumnsGrove/GroveMC` → `AutumnsGrove/outpost` on GitHub.~~ Done
+   2026-11-11 (`gh repo rename`), with a fresh description. GitHub redirects the
+   old URLs, but the old remote and any bookmarks now resolve to `outpost`.
 2. Create a tagged, pre-authorised Tailscale auth key for `tag:outpost`.
 3. `wrangler delete` the `mc-control` worker; remove the `mc-control` and `mc`
    entries from `grove-router`; drop the `Outpost` glossary term from
