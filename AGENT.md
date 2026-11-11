@@ -6,32 +6,43 @@
 
 ## Naming
 
-- **Public name:** Outpost
-- **Internal codename:** GroveMC
-- **Domain:** mc.grove.place
+- **Name:** Outpost
+- **Repo:** `AutumnsGrove/outpost`
 
-Use "Outpost" for user-facing text (UI, docs, marketing). Use "GroveMC" for internal code, database names, worker names, and deployment configs.
+Outpost is not a grove service any more. It has no `grove.place` subdomain, no
+Heartwood auth, and no Cloudflare Worker. If you find yourself adding any of
+those, stop and read `PLAN.md`.
 
 ---
 
 ## Project Purpose
-On-demand Minecraft 1.20.1 (Fabric) server with hourly billing, automated lifecycle management, and integration with the grove.place Cloudflare stack. Friends-only whitelist with cost-optimized EU/US region selection.
+
+An on-demand Minecraft 1.20.1 (Fabric) server that costs money only while someone
+is playing on it. The orchestrator rents a Hetzner VPS on demand, restores the
+world from R2, watches the player count over RCON, then saves the world and
+deletes the server once everybody has logged off.
 
 ## Tech Stack
-- **Language**: TypeScript
-- **Frontend**: SvelteKit (Cloudflare Pages) for mc.grove.place status page
-- **Backend**: Cloudflare Worker (mc-control) for server orchestration
-- **Storage**: Cloudflare R2 (assets, world backups), D1 (state/stats)
-- **VPS**: Hetzner Cloud (CX33 EU / CPX31 US)
-- **Package Manager**: pnpm
+
+- **Language**: Go (1.27)
+- **Runs on**: the Le Potato homelab box — it orchestrates, it does not run
+  Minecraft
+- **State**: SQLite (`modernc.org/sqlite`, pure Go, no cgo)
+- **Storage**: Cloudflare R2 (`mc-assets`, `mc-worlds`) as a dumb blob shelf
+- **VPS**: Hetzner Cloud, ephemeral, deleted after every session
+- **Network**: the VPS joins the tailnet; only port 25565 is public
 
 ## Architecture Notes
-- **Distributed architecture**: Pages (status) + Worker (API/control) + Hetzner VPS (Minecraft)
-- **State machine lifecycle**: OFFLINE → PROVISIONING → RUNNING → IDLE → SUSPENDED → TERMINATING
-- **Cost optimization**: Region toggle (EU ~$0.0085/hr vs US ~$0.028/hr)
-- **Auto-shutdown**: 15min idle → SUSPENDED, 45min suspended → TERMINATED
-- **World persistence**: R2-backed world storage with automatic backups
-- **See full spec**: `grove-minecraft-spec.md`
+
+- **One state machine, one process**: `OFFLINE → PROVISIONING → RUNNING ⇄ IDLE →
+  TERMINATING → OFFLINE`. Every transition happens inside `Tick`.
+- **No webhooks, no in-VPS watchdog**: RCON over the tailnet answers both "is it
+  up" and "who is playing". v1 split ownership across a Worker and a bash script
+  and the seam is what broke it.
+- **Never delete a world you could not back up**: a failed save leaves the VPS
+  running and the state in `ERROR`.
+- **See `PLAN.md`** for the decisions and their reasons, and `legacy/v1/` for the
+  2025 build this replaces.
 
 ---
 
@@ -48,12 +59,11 @@ On-demand Minecraft 1.20.1 (Fabric) server with hourly billing, automated lifecy
 - **Date-based paths**: Use skewer-case with YYYY-MM-DD (e.g., `logs-2025-01-15`, `backup-2025-12-31`)
 - **No spaces or underscores** in directory names (except date-based paths)
 
-### TODO Management
-- **Always check `TODOS.md` first** when starting a task or session
-- **Check `COMPLETED.md`** for context on past decisions and implementation details
-- **Update immediately** when tasks are completed, added, or changed
-- **Move completed tasks** from `TODOS.md` to `COMPLETED.md` to keep the TODO list focused
-- Keep both lists current and accurate
+### Planning
+The lifecycle design lives in `PLAN.md`, which records what was chosen and why.
+When a judge call changes the shape of the system, add it there in the same
+commit. `TODOS.md` and `COMPLETED.md` are v1 artefacts and live in `legacy/v1/`;
+do not reintroduce them.
 
 ### Git Workflow Essentials
 

@@ -1,0 +1,53 @@
+# Outpost configuration.
+#
+# Secrets are NOT here. They come from the environment:
+#   HETZNER_TOKEN, CF_TOKEN, TS_AUTHKEY, R2_ACCESS_KEY, R2_SECRET_KEY,
+#   OUTPOST_TOKEN (optional, bearer token for the HTTP API)
+#
+# Copy to config.yaml and edit.
+
+listen: "127.0.0.1:8896"   # bound to loopback; publish with `tailscale serve`
+database: "outpost.db"
+
+server:
+  asset_bucket: "mc-assets"   # mods, fabric jar, server.properties, scripts
+  world_bucket: "mc-worlds"   # current/world.tar.gz + timestamped backups
+  mc_port: 25565
+
+  # Total time billed after the last player logs off is idle_grace + idle_timeout.
+  idle_grace: "10m"           # empty -> IDLE
+  idle_timeout: "20m"         # IDLE -> TERMINATING
+  provision_timeout: "15m"    # give up on a VPS that never answers RCON
+  tick_interval: "20s"
+
+# Every key here is a valid `outpost start <region>` argument.
+# hourly_rate is only used for the cost estimate; it does not affect billing.
+regions:
+  eu:
+    location: nbg1            # Nuremberg
+    server_type: cx32         # 4 vCPU, 8 GB
+    hourly_rate: 0.0119
+  us:
+    location: ash             # Ashburn
+    server_type: cx32
+    hourly_rate: 0.0119
+
+cloudflare:
+  zone_id: "your-zone-id"
+  record_name: "mc.example.com"   # DNS-only A record, updated on start
+
+hetzner:
+  image: "ubuntu-24.04"
+  ssh_key_id: 12345               # from the Hetzner console
+  ssh_private_key: "~/.ssh/outpost"
+  ssh_user: "root"
+  server_name_base: "outpost"     # also the tailnet hostname prefix
+  # snapshot_id: 67890            # optional: restore from a prepped snapshot
+                                  # instead of building from R2 every time
+
+tailscale:
+  tags:
+    - "tag:outpost"               # must match the auth key's tag
+
+r2:
+  account_id: "your-account-id"

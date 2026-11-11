@@ -1,0 +1,107 @@
+#cloud-config
+# Outpost ephemeral Minecraft server.
+#
+# Everything that decides *when* this machine dies lives on the orchestrator, not
+# here. This file only builds the server, joins it to the tailnet, and starts it.
+# If you find yourself adding a loop or a timer to this template, put it in
+# internal/orchestrator instead.
+
+hostname: {{ .Hostname }}
+manage_etc_hosts: true
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - openjdk-17-jdk-headless
+  - rclone
+  - curl
+  - tar
+  - ufw
+
+write_files:
+  - path: /root/.config/rclone/rclone.conf
+    permissions: '0600'
+    content: |
+      [r2]
+      type = s3
+      provider = Cloudflare
+      access_key_id = {{ .R2AccessKey }}
+      secret_access_key = {{ .R2SecretKey }}
+      endpoint = https://{{ .R2AccountID }}.r2.cloudflarestorage.com
+      acl = private
+
+  - path: /etc/systemd/system/minecraft.service
+    content: |
+      [Unit]
+      Description=Minecraft Server
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=minecraft
+      WorkingDirectory=/opt/minecraft
+      ExecStart=/opt/minecraft/start.sh
+      Restart=on-failure
+      RestartSec=10
+      StandardOutput=append:/opt/minecraft/logs/service.log
+      StandardError=append:/opt/minecraft/logs/service.log
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # --- tailnet first, so the orchestrator can reach this box as soon as it is up
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - tailscale up --authkey={{ .TailscaleAuthKey }} --hostname={{ .Hostname }} {{ range .TailscaleTags }}--advertise-tags={{ . }} {{ end }}--accept-dns=false
+
+  # --- firewall: Minecraft from anywhere, everything else only over the tailnet
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 25565/tcp comment 'minecraft'
+  - ufw allow in on tailscale0
+  - ufw allow OpenSSH
+  - ufw --force enable
+
+  # --- minecraft user and layout
+  - useradd -m -s /bin/bash minecraft
+  - mkdir -p /opt/minecraft/logs /opt/minecraft/mods /opt/minecraft/config
+  - mkdir -p /home/minecraft/.config/rclone
+  - cp /root/.config/rclone/rclone.conf /home/minecraft/.config/rclone/rclone.conf
+  - chown -R minecraft:minecraft /home/minecraft/.config
+
+  # --- pull the prebuilt server, modpack and scripts from R2
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/server/ /opt/minecraft/ --exclude "world/**"
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/mods/ /opt/minecraft/mods/
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/config/ /opt/minecraft/config/
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/scripts/ /opt/minecraft/
+
+  # --- restore the world (v1 laid this out as a single tarball)
+  - |
+    mkdir -p /tmp/world
+    if sudo -u minecraft rclone copy r2:{{ .WorldBucket }}/current/world.tar.gz /tmp/world/ 2>/dev/null && [ -f /tmp/world/world.tar.gz ]; then
+      tar -xzf /tmp/world/world.tar.gz -C /opt/minecraft/
+      echo "world restored"
+    else
+      echo "no world in R2, Minecraft will generate one"
+    fi
+    rm -rf /tmp/world
+
+  # --- RCON on, on this session's password
+  - |
+    SP=/opt/minecraft/server.properties
+    sed -i 's/^enable-rcon=.*/enable-rcon=true/' "$SP"
+    sed -i 's/^rcon.port=.*/rcon.port=25575/' "$SP"
+    sed -i "s/^rcon.password=.*/rcon.password={{ .RCONPassword }}/" "$SP"
+    grep -q '^enable-rcon=' "$SP" || echo 'enable-rcon=true' >> "$SP"
+    grep -q '^rcon.password=' "$SP" || echo 'rcon.password={{ .RCONPassword }}' >> "$SP"
+    sed -i 's/^server-port=.*/server-port={{ .MCPort }}/' "$SP"
+
+  - chown -R minecraft:minecraft /opt/minecraft
+  - chmod +x /opt/minecraft/*.sh
+  - systemctl daemon-reload
+  - systemctl enable minecraft
+  - systemctl start minecraft
+
+final_message: "outpost {{ .Hostname }} up after $UPTIME seconds"
