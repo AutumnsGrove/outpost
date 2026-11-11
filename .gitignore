@@ -1,6 +1,9 @@
 .env
 secrets.env
+config.yaml
 outpost.db
 outpost.db-shm
 outpost.db-wal
+outpost
+outpost-arm64
 node_modules/
