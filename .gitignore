@@ -1,25 +1,9 @@
-secrets.json
-r2-credentials.json
-*.log
-__pycache__/
-.DS_Store
-.claude/
-!.claude/skills/
-
-# Node
-node_modules/
-.pnpm-store/
-
-# Build outputs
-dist/
-.svelte-kit/
-.wrangler/
-
-# Environment
 .env
-.env.local
-.env.*.local
-
-# IDE
-.vscode/
-.idea/
+secrets.env
+config.yaml
+outpost.db
+outpost.db-shm
+outpost.db-wal
+outpost
+outpost-arm64
+node_modules/

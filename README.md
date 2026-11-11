@@ -1,110 +1,138 @@
-# Outpost - On-Demand Minecraft Server
+# Outpost — on-demand Minecraft servers
 
-> **Internal codename:** GroveMC
+A Minecraft server that exists only while you are playing on it.
 
-On-demand Minecraft 1.20.1 (Fabric) server with hourly billing, automated lifecycle management, and Cloudflare integration. An outpost is where you gather at the edge of wilderness.
+`outpost start` rents a Hetzner VPS, restores the world from R2, and points DNS at
+it. When everyone has logged off and stayed off, the orchestrator saves the world,
+ships it back to R2, and deletes the server. You pay for the hours you played.
 
-## Overview
-
-Outpost provides a cost-effective way to run a Minecraft server for friends. Instead of paying for 24/7 hosting, the server spins up on-demand and automatically shuts down when idle.
-
-**Key Features:**
-- Region toggle (EU vs US) for cost/latency tradeoffs
-- Automatic shutdown after 15min idle + 45min suspended
-- World backups to Cloudflare R2
-- Cost tracking per session and region
-- Whitelist management via admin panel
-
-## Architecture
+A two-hour session costs about **two cents**.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         CLOUDFLARE                              │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐           │
-│  │ R2: mc-assets│  │ R2: mc-worlds│  │ D1: mc-state │           │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘           │
-│         └─────────────────┼─────────────────┘                   │
-│                           │                                     │
-│              ┌────────────▼────────────┐                        │
-│              │   Worker: mc-control    │                        │
-│              │  - Start/stop server    │                        │
-│              │  - Hetzner API calls    │                        │
-│              │  - DNS updates          │                        │
-│              └────────────┬────────────┘                        │
-│                           │                                     │
-│    ┌──────────────────────┼──────────────────────┐              │
-│    │                      │                      │              │
-│    ▼                      ▼                      ▼              │
-│ admin.grove.place    mc.grove.place      map.grove.place        │
-│ (Minecraft tab)      (Status page)       (Dynmap)               │
-└───────────────────────────┼─────────────────────────────────────┘
-                            │
-                            ▼
-               ┌─────────────────────────┐
-               │    Hetzner Cloud VPS    │
-               │  - Minecraft Server     │
-               │  - Watchdog Process     │
-               │  - Dynmap               │
-               └─────────────────────────┘
+   you ──► outpost start                 outpost serve (the loop)
+              │                                │
+              ▼                                ▼
+        Hetzner Cloud  ◄──── create / poll / delete
+              │
+              ▼
+   ephemeral VPS ── tailnet ──► RCON: "who is online?"
+        │                              │
+        └── world ──► R2 ◄─────────────┘
 ```
 
-## Cost Estimates
+## How it works
 
-| Usage | EU (CX33) | US (CPX31) |
-|-------|-----------|------------|
-| 25 hrs/mo | ~$0.24 | ~$0.73 |
-| 50 hrs/mo | ~$0.46 | ~$1.43 |
-| 100 hrs/mo | ~$0.88 | ~$2.83 |
-
-## Tech Stack
-
-- **Frontend**: SvelteKit on Cloudflare Pages
-- **Backend**: Cloudflare Worker (TypeScript)
-- **Storage**: R2 (world backups), D1 (state)
-- **VPS**: Hetzner Cloud (ephemeral)
-- **Package Manager**: pnpm
-
-## Project Structure
+The orchestrator is a single Go binary that lives on the homelab box. It holds one
+state machine and one clock:
 
 ```
-src/
-├── worker/     # mc-control Cloudflare Worker
-├── pages/      # mc.grove.place SvelteKit site
-├── scripts/    # VPS cloud-init and shell scripts
-└── sql/        # D1 database schema
+OFFLINE ──► PROVISIONING ──► RUNNING ⇄ IDLE ──► TERMINATING ──► OFFLINE
 ```
 
-## Development
+- **PROVISIONING** — the VPS is being built by cloud-init. It joins the tailnet so
+  the orchestrator can reach it without opening anything but port 25565.
+- **RUNNING ⇄ IDLE** — one RCON `list` call, every 20 seconds, answers *is it up*
+  and *who is playing*. Nobody on for `idle_grace` → `IDLE`. Nobody on for
+  `idle_grace + idle_timeout` → shutdown.
+- **TERMINATING** — `save-all`, `stop`, wait for the JVM to exit, tar the world,
+  `rclone` it to R2, then `DELETE` the server. The delete is confirmed before the
+  state goes back to `OFFLINE`.
+
+Every transition is idempotent. Killing the process mid-shutdown does not lose
+anything: the next tick picks up where the last one stopped, and the world is only
+considered saved once R2 has it.
+
+## Setup
+
+One-time, none of it in this repo:
+
+1. **Hetzner Cloud** — an API token, and an SSH key uploaded to the project. Note
+   the key id.
+2. **Cloudflare** — an API token with `Zone:DNS:Edit` for the zone, and the zone id.
+   The record is created on first start.
+3. **Tailscale** — an auth key for a tagged device (`tag:outpost`). Revoke it if it
+   ever leaks; nothing else uses it.
+4. **R2** — a bucket pair with the v1 layout, already populated:
+
+   ```
+   mc-assets/server/{fabric-server-launch.jar,server.properties,ops.json,whitelist.json,eula.txt}
+   mc-assets/mods/*.jar
+   mc-assets/config/
+   mc-assets/scripts/{start.sh,stop.sh}
+   mc-worlds/current/world.tar.gz
+   ```
+
+   Keys were read-only in v1's world; Outpost only writes `mc-worlds`.
+
+Secrets are environment variables, never the config file:
 
 ```bash
-# Install dependencies
-pnpm install
-
-# Worker development
-cd src/worker
-pnpm dev
-
-# Pages development
-cd src/pages
-pnpm dev
+export HETZNER_TOKEN=...
+export CF_TOKEN=...
+export TS_AUTHKEY=tskey-auth-...
+export R2_ACCESS_KEY=...
+export R2_SECRET_KEY=...
+export OUTPOST_TOKEN=...          # optional bearer token for the HTTP API
 ```
 
-## Deployment
+## Configuration
 
-Worker secrets are set via `wrangler secret put`:
-- `CF_ACCOUNT_ID`, `CF_API_TOKEN`, `CF_ZONE_ID`, `CF_MC_RECORD_ID`
-- `HETZNER_API_TOKEN`, `HETZNER_SSH_KEY_ID`
-- `WEBHOOK_SECRET`, `ADMIN_AUTH_SECRET`
+Copy `config.example.yaml` to `config.yaml`. Everything except the secrets above
+goes there. The two timings worth knowing:
 
-## Full Specification
+| Setting | Default | Meaning |
+|---|---|---|
+| `server.idle_grace` | `10m` | empty before the state flips to `IDLE` |
+| `server.idle_timeout` | `20m` | extra empty time before the server dies |
 
-See [grove-minecraft-spec.md](grove-minecraft-spec.md) for the complete technical specification including:
-- Server lifecycle state machine
-- API endpoints
-- D1 schema
-- VPS setup scripts
-- Admin dashboard layouts
+Thirty minutes total after the last logout, so a quick AFK drop does not cost you a
+three-minute rebuild.
 
----
+## Commands
 
-*Part of the grove.place infrastructure*
+```bash
+outpost serve            # the reconcile loop + JSON API (this is the daemon)
+outpost start [region]   # rent a server (default region: eu)
+outpost stop             # save the world, delete the server
+outpost status           # what it is doing, and what it has cost
+outpost tick             # one reconcile pass, for cron
+outpost reset            # delete every outpost server, back to OFFLINE
+```
+
+`outpost serve` is the only long-running piece:
+`tailscale serve --bg 8896` in front of it gives you
+`https://<host>.ts.net:8896/api/status`.
+
+## Building
+
+```bash
+make build      # local
+make potato     # linux/arm64, the binary that goes to the Le Potato
+make test
+```
+
+Pure Go SQLite, no cgo, so the cross-compile works from the Mac with no toolchain
+gymnastics.
+
+## Costs
+
+The only thing that bills is a running VPS. At Hetzner's `cx32` rate (~$0.012/hr)
+that is roughly a cent per hour of play; a two-hour session is about two cents and
+a month of heavy use is under a dollar. R2 storage is ~1.1 GB, inside the free tier.
+
+## Layout
+
+```
+cmd/outpost/          CLI
+internal/orchestrator/ state machine (the interesting part)
+internal/cloudinit/   the user-data template that builds the VPS
+internal/rcon/        Minecraft RCON client
+internal/hetzner/     Hetzner Cloud API
+internal/dns/         Cloudflare A record
+internal/store/       SQLite: state, sessions, backups, events
+legacy/v1/            the 2025 Worker + watchdog build, kept for reference
+PLAN.md               why it looks like this
+```
+
+`legacy/v1/` is not built or deployed. It earned its keep — 12 sessions, 4.6 hours,
+$0.057 — and then explained, in `TODOS.md`, exactly which bugs to not repeat.
