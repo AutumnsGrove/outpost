@@ -81,12 +81,12 @@ func TestRenderTurnsRCONOn(t *testing.T) {
 
 func TestValidateRejectsMissingData(t *testing.T) {
 	cases := map[string]func(*Data){
-		"hostname":         func(d *Data) { d.Hostname = "" },
-		"rcon":             func(d *Data) { d.RCONPassword = "" },
-		"tailscale":        func(d *Data) { d.TailscaleAuthKey = "" },
-		"r2":               func(d *Data) { d.R2SecretKey = "" },
-		"port":             func(d *Data) { d.MCPort = 0 },
-		"bucket":           func(d *Data) { d.WorldBucket = "" },
+		"hostname":          func(d *Data) { d.Hostname = "" },
+		"rcon":              func(d *Data) { d.RCONPassword = "" },
+		"tailscale":         func(d *Data) { d.TailscaleAuthKey = "" },
+		"r2":                func(d *Data) { d.R2SecretKey = "" },
+		"port":              func(d *Data) { d.MCPort = 0 },
+		"bucket":            func(d *Data) { d.WorldBucket = "" },
 		"secret whitespace": func(d *Data) { d.RCONPassword = "has space" },
 	}
 

@@ -92,24 +92,24 @@ type Tailscale struct {
 
 // Secrets are read from the environment and never from the file.
 type Secrets struct {
-	HetznerToken  string
-	CloudflareToken string
+	HetznerToken     string
+	CloudflareToken  string
 	TailscaleAuthKey string
-	R2AccessKey   string
-	R2SecretKey   string
-	APIToken      string
+	R2AccessKey      string
+	R2SecretKey      string
+	APIToken         string
 }
 
 // Config is the whole thing.
 type Config struct {
-	Listen   string            `yaml:"listen"`
-	Database string            `yaml:"database"`
-	Server   Server            `yaml:"server"`
-	Regions  map[string]Region `yaml:"regions"`
-	Cloudflare Cloudflare      `yaml:"cloudflare"`
-	Hetzner  Hetzner           `yaml:"hetzner"`
-	R2       R2                `yaml:"r2"`
-	Tailscale Tailscale        `yaml:"tailscale"`
+	Listen     string            `yaml:"listen"`
+	Database   string            `yaml:"database"`
+	Server     Server            `yaml:"server"`
+	Regions    map[string]Region `yaml:"regions"`
+	Cloudflare Cloudflare        `yaml:"cloudflare"`
+	Hetzner    Hetzner           `yaml:"hetzner"`
+	R2         R2                `yaml:"r2"`
+	Tailscale  Tailscale         `yaml:"tailscale"`
 
 	Secrets Secrets `yaml:"-"`
 }

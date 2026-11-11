@@ -133,7 +133,7 @@ func testConfig() *config.Config {
 			SSHPrivateKey:  "/dev/null",
 			ServerNameBase: "outpost",
 		},
-		R2: config.R2{AccountID: "account"},
+		R2:        config.R2{AccountID: "account"},
 		Tailscale: config.Tailscale{Tags: []string{"tag:outpost"}},
 		Secrets: config.Secrets{
 			HetznerToken:     "hetzner",
@@ -156,7 +156,7 @@ type harness struct {
 	clock time.Time
 
 	// probe answers the RCON question. Tests set it per scenario.
-	players int
+	players  int
 	probeErr error
 }
 
