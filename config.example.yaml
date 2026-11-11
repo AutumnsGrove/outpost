@@ -21,16 +21,23 @@ server:
   tick_interval: "20s"
 
 # Every key here is a valid `outpost start <region>` argument.
-# hourly_rate is only used for the cost estimate; it does not affect billing.
+#
+# `server_type` decides the price far more than the provider does: a 4 GB plan is
+# roughly a third of the cost of an 8 GB one per session. Hetzner renamed and
+# repriced its plans in June 2026 (CX22 is the current 4 GB), and stock has been
+# thin since — check the console for what is actually orderable.
+#
+# `hourly_rate` is a display estimate for `outpost status`. It is never used to
+# bill anything. Correct it from an invoice, not from a blog post.
 regions:
   eu:
     location: nbg1            # Nuremberg
-    server_type: cx32         # 4 vCPU, 8 GB
-    hourly_rate: 0.0119
+    server_type: cx22         # 2 vCPU, 4 GB — step to cax21 (ARM, 8 GB) if the
+    hourly_rate: 0.0063       #   modpack needs the headroom; ~half price
   us:
     location: ash             # Ashburn
-    server_type: cx32
-    hourly_rate: 0.0119
+    server_type: cx22
+    hourly_rate: 0.0063
 
 cloudflare:
   zone_id: "your-zone-id"

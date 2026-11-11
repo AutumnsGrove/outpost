@@ -104,7 +104,79 @@ UUIDs/names. Mojang's `api.mojang.com/users/profiles/minecraft/<name>` returns t
 v1 only ever had one entry, `AutumnsAdventure` — the point of this project is
 playing with someone else, so the whitelist needs both people this time.
 
-### 2. Secrets
+### 2. Server pricing needs a second look
+
+Hetzner raised prices on 15 June 2026 for new orders and rescales — some plans
+more than doubled — so the `hourly_rate` values in `config.yaml` are stale and the
+"~$0.012/hr" in the README is no longer right. It only feeds the cost display in
+`outpost status`, never the bill, but it should be corrected from an invoice before
+the first real run.
+
+More importantly: **Hetzner has shown "Limited availability of cloud instances"
+on its status page since 26 June 2026**, and on 4 November 2026 every CX and CAX
+plan was marked unavailable on the website. That is a bigger risk to this design
+than the price is — `outpost start` is a request to rent one specific server type
+in one specific location, and a sold-out plan turns into a failed start.
+
+#### Rough per-session cost, 8 GB class
+
+Third-party aggregator figures, checked November 2026, USD/month excluding VAT.
+**Verify on the provider's own page before relying on any of it.**
+
+| Plan | vCPU / RAM | $/month | ≈ $/hr | 2 h session |
+|---|---|---|---|---|
+| Hetzner CAX21 (arm64) | 4 / 8 | 7.59 | 0.0104 | **$0.021** |
+| Hetzner CPX31× | 4 / 8 | 15.59 | 0.0214 | $0.043 |
+| Vultr Regular | 4 / 8 | 40 | 0.0548 | $0.11 |
+| DigitalOcean Premium | 2 / 8 | 42 | 0.0575 | $0.12 |
+| Hetzner CCX13 (dedicated) | 2 / 8 | ~41 | 0.0700 | $0.16 |
+
+× the plan this project originally shipped with in 2025. Note it is the *most
+expensive* shared option in the table — it was repriced. `config.example.yaml`
+now defaults to the 4 GB CX22 instead.
+
+#### What that means
+
+- **Provider choice is not the big lever. Instance size is.** Dropping from an
+  8 GB to a 4 GB plan (CX22 at ~$0.0063/hr, $0.013 per session) halves to thirds
+  the cost, and it is the same lever no matter who hosts it. That is really a
+  question about the modpack: v1 used `-Xms4G -Xmx6G` because 188 mods needed it.
+  A deliberately lean modpack might fit 4 GB, which is worth measuring before
+  hunting for a cheaper host.
+- **ARM is roughly half price** (CAX21 vs CPX21 at the same spec). Fabric and
+  Minecraft run on arm64, but any mod shipping native libraries needs an arm64
+  build. Worth testing with the actual modpack, not worth assuming.
+- **Hetzner still wins on price by 3-6× at this size**, and per-hour billing with
+  a monthly cap is exactly the right shape: for two-hour bursts you never come
+  near the cap. The reason to look elsewhere is stock, not money.
+- **DigitalOcean moved to per-second billing in January 2026** and Scaleway bills
+  per second, which shaves the provisioning minutes off the bill. At these amounts
+  that is fractions of a cent — irrelevant to the decision.
+- **The usual "cheap VPS" names don't work for this.** Contabo and OVHcloud's VPS
+  line are monthly or 12-24 month contracts, which is the opposite of the point.
+  Anchors like Hetzner's €4/month 4 GB plan look unbeatable on a monthly basis and
+  are the wrong unit entirely.
+- **IPv4 is billed separately and is charged whether or not the server runs.** On
+  Hetzner that is ~€0.50/month, billed hourly. Since the record outlives each
+  session, this is a small standing cost to include in the ledger.
+
+#### Recommended shape
+
+Keep Hetzner as the primary and make the orchestrator tolerate its absence rather
+than migrating away:
+
+- try each configured region (and server type) in turn before failing — the config
+  already supports multiple regions, and `Start` currently takes exactly one
+- prefer the smallest instance the chosen modpack actually runs on
+- keep `regions:` in `config.yaml` as the only place a provider is named, so a
+  second provider is a new implementation of the `Servers` interface and nothing
+  else. The interface in `internal/orchestrator` was written with that in mind.
+
+Cross-check candidates, in the order worth the effort: **Hetzner CAX** (ARM, price),
+**Scaleway** (per-second, EU), **DigitalOcean** (per-second, reliable stock),
+**Vultr** (many regions). Ignore anything without an API and hourly deletion.
+
+### 3. Secrets
 
 Nothing is stored in the repo. Export these before `outpost serve`:
 
@@ -127,7 +199,7 @@ at `116.203.50.47`, which reverse-resolves to a Hetzner IP with port 80 open. Po
 not been confirmed and it has had eleven months to bill. `outpost reset` deletes
 every server labelled `project=outpost`; anything else you delete by hand.
 
-### 3. Deploy to the Le Potato
+### 4. Deploy to the Le Potato
 
 That is the `homelab` repo, and it has a documented shape:
 
@@ -142,7 +214,7 @@ That is the `homelab` repo, and it has a documented shape:
 Backups: `outpost.db` is the only state. Daily `sqlite3 .backup` alongside the
 other services is enough.
 
-### 4. First real run
+### 5. First real run
 
 Use a throwaway config with `idle_grace: "1m"` and `idle_timeout: "2m"` so the
 whole session — provision, play, idle, save, delete — fits in one sitting instead
@@ -159,7 +231,7 @@ of an hour.
 
 Then restore the real timings (10m / 20m).
 
-### 5. Afterwards
+### 6. Afterwards
 
 - **Snapshot the prepped VPS.** `hetzner.snapshot_id` is wired through
   `createServer` and unused. Once one clean run has produced a working

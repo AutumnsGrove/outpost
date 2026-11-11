@@ -117,9 +117,17 @@ gymnastics.
 
 ## Costs
 
-The only thing that bills is a running VPS. At Hetzner's `cx32` rate (~$0.012/hr)
-that is roughly a cent per hour of play; a two-hour session is about two cents and
-a month of heavy use is under a dollar. R2 storage is ~1.1 GB, inside the free tier.
+The only thing that bills is a running VPS: roughly a cent an hour, so a two-hour
+session is about two cents and a heavy month is under a dollar. R2 holds the
+modpack and a world, well inside the free tier.
+
+Two caveats worth knowing before trusting any number here:
+
+- **Hetzner repriced its cloud plans in June 2026**, and the `hourly_rate` values
+  in `config.yaml` are estimates that only feed the status readout — never a bill.
+- **Instance size is the dominant lever, not the provider.** Dropping from 8 GB to
+  4 GB is roughly a threefold saving; switching providers at the same size is
+  worth pennies. `HANDOFF.md` has the comparison and the availability caveat.
 
 ## Layout
 
