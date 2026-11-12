@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -75,6 +76,9 @@ func (a *app) publishCmd() *cobra.Command {
 			}
 			fmt.Printf("%s %d file(s), %s\n", verb, len(res.Uploaded), humanSize(res.TotalSize))
 			fmt.Printf("unchanged %d file(s) in %s\n", len(res.Unchanged), a.cfg.Server.AssetBucket)
+			if len(res.Players) > 0 {
+				fmt.Printf("whitelist %d player(s): %s\n", len(res.Players), strings.Join(res.Players, ", "))
+			}
 
 			if dryRun {
 				fmt.Println("dry run: nothing written")

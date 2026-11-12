@@ -17,6 +17,7 @@ package publish
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -94,6 +95,10 @@ type Result struct {
 	Warnings  []string
 	Launcher  string
 	TotalSize int64
+
+	// Players is who the uploaded whitelist.json allows. It is the answer to the
+	// only question that matters when nobody can join.
+	Players []string
 }
 
 // Run uploads the pack, verifies it, and prunes what the pack no longer has.
@@ -110,6 +115,7 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 
 	var res Result
 	res.Warnings = append(res.Warnings, warnings...)
+	res.Players = whitelistNames(objects)
 
 	// Verify every key exists at the expected size once it is up. A modpack that
 	// uploads 187 of 188 jars is a server that fails to boot in a way nobody can
@@ -172,17 +178,13 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 		return nil, nil, fmt.Errorf("%s is not a directory", opts.Dir)
 	}
 
-	serverDir := filepath.Join(opts.Dir, "server")
-	if _, err := os.Stat(serverDir); err != nil {
-		return nil, nil, fmt.Errorf("%s has no server/ directory; expected server/, mods/, config/, scripts/", opts.Dir)
-	}
-
 	var objects []Object
 
 	add := func(key string, o Object) { objects = append(objects, o) }
 
-	// server/ and config/ and scripts/ are copied as-is. world/ is excluded:
-	// the world comes from the mc-worlds bucket, never from the asset pack.
+	// server/, config/ and scripts/ are copied as-is; any of them may be absent,
+	// because the defaults below can fill a bare pack. world/ is excluded: the
+	// world comes from the mc-worlds bucket, never from the asset pack.
 	dirs := map[string]string{
 		"server":  "server/",
 		"config":  "config/",
@@ -333,6 +335,34 @@ func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]str
 	}
 	sort.Strings(removed)
 	return removed, nil
+}
+
+// whitelistNames reads the names out of the whitelist we are about to upload,
+// whether it came from the pack or was generated from --whitelist.
+func whitelistNames(objects []Object) []string {
+	for _, obj := range objects {
+		if obj.Key != "server/whitelist.json" {
+			continue
+		}
+		raw := obj.Content
+		if raw == nil && obj.Path != "" {
+			b, err := os.ReadFile(obj.Path)
+			if err != nil {
+				return nil
+			}
+			raw = b
+		}
+		var players []Player
+		if err := json.Unmarshal(raw, &players); err != nil {
+			return nil
+		}
+		names := make([]string, 0, len(players))
+		for _, p := range players {
+			names = append(names, p.Name)
+		}
+		return names
+	}
+	return nil
 }
 
 func put(ctx context.Context, st Store, bucket string, obj Object) error {

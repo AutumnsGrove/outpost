@@ -147,9 +147,9 @@ type Status struct {
 	TTLSec       int64   `json:"ttlSeconds"`
 	StartedAt    string  `json:"startedAt"`
 	HourlyRate   float64 `json:"hourlyRate"`
-	SessionCost  float64 `json:"sessionCostUsd"`
+	SessionCost  float64 `json:"sessionCost"`
 	TotalHours   float64 `json:"totalHours"`
-	TotalCost    float64 `json:"totalCostUsd"`
+	TotalCost    float64 `json:"totalCost"`
 	LastError    string  `json:"lastError"`
 	DNSName      string  `json:"dnsName"`
 	IdleGraceSec int64   `json:"idleGraceSeconds"`
@@ -157,6 +157,10 @@ type Status struct {
 }
 
 // Status reads the current state and decorates it with costs and timers.
+//
+// Money is euros, because that is the only currency Hetzner bills in. The
+// numbers come from config's hourly_rate, so they are an estimate for the
+// readout and never the bill.
 func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 	st, err := o.store.GetState()
 	if err != nil {

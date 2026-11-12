@@ -25,22 +25,26 @@ server:
 
 # Every key here is a valid `outpost start <region>` argument.
 #
-# `server_type` decides the price far more than the provider does: a 4 GB plan is
-# roughly a third of the cost of an 8 GB one per session. Hetzner renamed and
-# repriced its plans in June 2026 (CX22 is the current 4 GB), and stock has been
-# thin since — check the console for what is actually orderable.
+# `server_type` decides the price far more than the provider does. Hetzner
+# renamed and repriced its plans in June 2026: CX22 is gone, and these are the
+# current numbers from the API (net, EUR, Nuremberg, 2026-11-12):
 #
-# `hourly_rate` is a display estimate for `outpost status`. It is never used to
-# bill anything. Correct it from an invoice, not from a blog post.
+#   cx23   2c / 4 GB   €0.0104/h   ~€0.021 per 2 h session   ← default
+#   cx33   4c / 8 GB   €0.0160/h   ~€0.032 per session, room for a modpack
+#   cax11  2c / 4 GB   €0.0112/h   ARM
+#   cax21  4c / 8 GB   €0.0200/h   ARM
+#
+# Ashburn is no longer worth listing: its cheapest 4-8 GB plan is cpx21 at
+# €0.0601/h, six times Nuremberg. Swapping size is a one-line edit here; the
+# region key is just the argument to `outpost start <key>`.
+#
+# `hourly_rate` is a display estimate for `outpost status`, in EUR because that
+# is what Hetzner bills. It is never used to bill anything.
 regions:
   eu:
     location: nbg1            # Nuremberg
-    server_type: cx22         # 2 vCPU, 4 GB — step to cax21 (ARM, 8 GB) if the
-    hourly_rate: 0.0063       #   modpack needs the headroom; ~half price
-  us:
-    location: ash             # Ashburn
-    server_type: cx22
-    hourly_rate: 0.0063
+    server_type: cx23         # 2 vCPU, 4 GB
+    hourly_rate: 0.0104
 
 cloudflare:
   zone_id: "your-zone-id"
