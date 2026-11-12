@@ -154,3 +154,35 @@ func TestEvents(t *testing.T) {
 		t.Fatalf("message = %q", events[0].Message)
 	}
 }
+
+func TestLockStartExcludesASecondProcess(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Open(filepath.Join(dir, "outpost.db"))
+	if err != nil {
+		t.Fatalf("open first: %v", err)
+	}
+	defer first.Close()
+
+	// A second handle on the same file is the same shape as `outpost serve` and
+	// an `outpost start` shell racing each other.
+	second, err := Open(filepath.Join(dir, "outpost.db"))
+	if err != nil {
+		t.Fatalf("open second: %v", err)
+	}
+	defer second.Close()
+
+	release, err := first.LockStart()
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	if _, err := second.LockStart(); err == nil {
+		t.Fatal("second lock should have been refused while the first is held")
+	}
+
+	release()
+	releaseAgain, err := second.LockStart()
+	if err != nil {
+		t.Fatalf("lock should be free after release: %v", err)
+	}
+	releaseAgain()
+}

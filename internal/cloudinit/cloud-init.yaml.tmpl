@@ -53,15 +53,20 @@ write_files:
 
 runcmd:
   # --- tailnet first, so the orchestrator can reach this box as soon as it is up
+  # --ephemeral: this machine is deleted within hours of being created, and an
+  # ephemeral node removes itself from the tailnet when it goes. Without it every
+  # session leaves a dead device behind and the auth key's blast radius only grows.
   - curl -fsSL https://tailscale.com/install.sh | sh
-  - tailscale up --authkey={{ .TailscaleAuthKey }} --hostname={{ .Hostname }} {{ range .TailscaleTags }}--advertise-tags={{ . }} {{ end }}--accept-dns=false
+  - tailscale up --authkey={{ .TailscaleAuthKey }} --hostname={{ .Hostname }} {{ range .TailscaleTags }}--advertise-tags={{ . }} {{ end }}--accept-dns=false --ephemeral
 
-  # --- firewall: Minecraft from anywhere, everything else only over the tailnet
+  # --- firewall: Minecraft from anywhere, everything else only over the tailnet.
+  # Note what is NOT here: there is no rule opening port 22. SSH and RCON are
+  # reached over tailscale0, which the next rule already permits. Leaving 22
+  # open to the internet would make "only 25565 is public" untrue.
   - ufw default deny incoming
   - ufw default allow outgoing
   - ufw allow 25565/tcp comment 'minecraft'
   - ufw allow in on tailscale0
-  - ufw allow OpenSSH
   - ufw --force enable
 
   # --- minecraft user and layout

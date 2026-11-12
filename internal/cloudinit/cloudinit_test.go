@@ -52,8 +52,8 @@ func TestRenderKeepsV1BucketLayout(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 
-	// The 188 mods and the existing world live at these exact keys. Changing
-	// them silently breaks a working world, so pin them.
+	// These keys are read by the orchestrator and by a friend's Minecraft client.
+	// They are a fresh start (PLAN.md decision 6), but the layout is load-bearing.
 	for _, want := range []string{
 		"r2:mc-assets/server/",
 		"r2:mc-assets/mods/",
@@ -63,6 +63,32 @@ func TestRenderKeepsV1BucketLayout(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("cloud-init no longer references %s", want)
 		}
+	}
+}
+
+func TestRenderKeepsThePublicPortSurfaceSmall(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	// Only Minecraft faces the internet. SSH and RCON are tailnet-only, so a
+	// rule opening 22 is a bug even though it looks harmless.
+	if strings.Contains(out, "ufw allow OpenSSH") || strings.Contains(out, "allow 22") {
+		t.Fatal("cloud-init opens SSH to the internet; reach it over the tailnet")
+	}
+	if !strings.Contains(out, "ufw allow 25565/tcp") {
+		t.Fatal("Minecraft's port is not opened")
+	}
+}
+
+func TestRenderJoinsTheTailnetEphemerally(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "--ephemeral") {
+		t.Fatal("the tailnet join is not ephemeral: every session would leave a dead device")
 	}
 }
 

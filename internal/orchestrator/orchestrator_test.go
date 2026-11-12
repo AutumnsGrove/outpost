@@ -447,3 +447,116 @@ func TestTickIsIdempotentWhenOffline(t *testing.T) {
 		t.Fatal("ticking offline should not create anything")
 	}
 }
+
+func TestStartRefusesWhenTheVPSNeverCameUpHardlyMatters(t *testing.T) {
+	// The provisioning timeout must not try to archive a world that was never
+	// generated: v1's failure mode was backing up on every death, this is the
+	// mirror of it.
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	h.probeErr = errors.New("never comes up")
+	h.clock = h.clock.Add(16 * time.Minute)
+	h.tick(t) // -> TERMINATING
+	h.tick(t) // -> OFFLINE
+
+	if h.remote.savedWorld() {
+		t.Fatal("a server that never ran should not attempt a world save")
+	}
+	if got := h.mustState(t); got != store.Offline {
+		t.Fatalf("state = %s, want OFFLINE", got)
+	}
+	if h.servers.count() != 0 {
+		t.Fatal("timed-out server was not deleted")
+	}
+}
+
+func TestStartRefusesFromErrorWithALiveVPS(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, err := h.o.Start(ctx, "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t) // RUNNING
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// The world never uploads, so the machine lands in ERROR with the VPS alive.
+	h.remote.err = errors.New("rclone: 403")
+	for i := 0; i < maxWorldSaveAttempts; i++ {
+		h.tick(t)
+	}
+	if got := h.mustState(t); got != store.Error {
+		t.Fatalf("state = %s, want ERROR", got)
+	}
+
+	if _, err := h.o.Start(ctx, "eu"); err == nil {
+		t.Fatal("starting from ERROR with a live server should be refused")
+	} else if !strings.Contains(err.Error(), "reset") {
+		t.Fatalf("error should say what to do: %v", err)
+	}
+	if h.servers.count() != 1 {
+		t.Fatalf("a second server was rented; %d exist", h.servers.count())
+	}
+}
+
+func TestStartRefusesWhenHetznerHasAStrayServer(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// SQLite says OFFLINE, Hetzner says otherwise: a lost or restored outpost.db.
+	if _, err := h.servers.Create(ctx, hetzner.CreateRequest{Name: "outpost-eu-old"}); err != nil {
+		t.Fatalf("seed stray: %v", err)
+	}
+
+	if _, err := h.o.Start(ctx, "eu"); err == nil {
+		t.Fatal("start should be refused while a labelled server exists")
+	} else if !strings.Contains(err.Error(), "already exist") {
+		t.Fatalf("error should name the problem: %v", err)
+	}
+	if h.servers.count() != 1 {
+		t.Fatalf("a second server was rented; %d exist", h.servers.count())
+	}
+}
+
+func TestStartIsRefusedWhileAnotherProcessHoldsTheLock(t *testing.T) {
+	h := newHarness(t)
+
+	release, err := h.store.LockStart()
+	if err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	defer release()
+
+	if _, err := h.o.Start(context.Background(), "eu"); err == nil {
+		t.Fatal("start should be refused while another process is renting")
+	}
+	if h.servers.count() != 0 {
+		t.Fatal("a server was rented despite the lock")
+	}
+}
+
+func TestRCONFailureLimitIsConfigurable(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.o.cfg.Server.RCONFailureLimit = 2
+	if _, err := h.o.Start(ctx, "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t) // RUNNING
+
+	h.probeErr = errors.New("timed out")
+	h.tick(t)
+	if got := h.mustState(t); got != store.Running {
+		t.Fatalf("one failed probe should not end the session, state = %s", got)
+	}
+	h.tick(t)
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state at the limit = %s, want TERMINATING", got)
+	}
+}

@@ -19,6 +19,9 @@ server:
   idle_timeout: "20m"         # IDLE -> TERMINATING
   provision_timeout: "15m"    # give up on a VPS that never answers RCON
   tick_interval: "20s"
+  rcon_failure_limit: 15      # consecutive failed probes before a live server
+                              #   is assumed wedged and taken down. 15 x 20s = 5
+                              #   minutes: enough for a tailnet reconnect.
 
 # Every key here is a valid `outpost start <region>` argument.
 #
@@ -49,6 +52,9 @@ hetzner:
   ssh_private_key: "~/.ssh/outpost"
   ssh_user: "root"
   server_name_base: "outpost"     # also the tailnet hostname prefix
+  # firewall_id: 67890            # optional: an existing Hetzner Cloud Firewall,
+                                  #   applied at create time. ufw in cloud-init
+                                  #   is the floor; this is the belt.
   # snapshot_id: 67890            # optional: restore from a prepped snapshot
                                   # instead of building from R2 every time
 

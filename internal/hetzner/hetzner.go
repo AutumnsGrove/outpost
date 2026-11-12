@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-const apiBase = "https://api.hetzner.cloud/v1"
+// apiBase is a variable so tests can point the client at an httptest server.
+var apiBase = "https://api.hetzner.cloud/v1"
 
 // ErrNotFound is returned when the server no longer exists. It is a normal
 // condition: Outpost deletes servers and then asks about them again.
@@ -42,6 +43,7 @@ type CreateRequest struct {
 	Image      string
 	SSHKeyID   int
 	SnapshotID int // when set, Image is ignored and the snapshot is restored
+	FirewallID int // when set, the existing Hetzner firewall is applied at create
 	UserData   string
 }
 
@@ -119,6 +121,9 @@ func (c *Client) Create(ctx context.Context, spec CreateRequest) (*Server, error
 	}
 	if spec.SSHKeyID > 0 {
 		body["ssh_keys"] = []string{fmt.Sprint(spec.SSHKeyID)}
+	}
+	if spec.FirewallID > 0 {
+		body["firewalls"] = []map[string]int{{"firewall": spec.FirewallID}}
 	}
 	if spec.UserData != "" {
 		body["user_data"] = spec.UserData

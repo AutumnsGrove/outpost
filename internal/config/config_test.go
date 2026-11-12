@@ -71,6 +71,9 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	if cfg.Server.ProvisionTimeout.Std() != 15*time.Minute {
 		t.Errorf("provision timeout = %s", cfg.Server.ProvisionTimeout.Std())
 	}
+	if cfg.Server.RCONFailureLimit != 15 {
+		t.Errorf("rcon failure limit = %d, want 15", cfg.Server.RCONFailureLimit)
+	}
 	if cfg.Hetzner.Image != "ubuntu-24.04" {
 		t.Errorf("image = %q", cfg.Hetzner.Image)
 	}
@@ -82,13 +85,29 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsMissingSecrets(t *testing.T) {
-	// No env at all.
+func TestLoadDoesNotRequireSecrets(t *testing.T) {
+	// `outpost status` is the reason: it must work on a box where the cloud
+	// credentials are not exported. Load parses, Validate is the separate gate.
 	for _, key := range []string{"HETZNER_TOKEN", "CF_TOKEN", "TS_AUTHKEY", "R2_ACCESS_KEY", "R2_SECRET_KEY"} {
 		t.Setenv(key, "")
 	}
-	if _, err := Load(write(t, minimal)); err == nil {
-		t.Fatal("expected an error when secrets are missing")
+	cfg, err := Load(write(t, minimal))
+	if err != nil {
+		t.Fatalf("load should not validate secrets: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected Validate to reject missing secrets")
+	}
+}
+
+func TestValidateAcceptsCompleteConfig(t *testing.T) {
+	withSecrets(t)
+	cfg, err := Load(write(t, minimal))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
 	}
 }
 
