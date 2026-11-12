@@ -227,12 +227,7 @@ func (c *Config) Validate() error {
 	if c.Secrets.TailscaleAuthKey == "" {
 		missing = append(missing, "TS_AUTHKEY")
 	}
-	if c.Secrets.R2AccessKey == "" {
-		missing = append(missing, "R2_ACCESS_KEY")
-	}
-	if c.Secrets.R2SecretKey == "" {
-		missing = append(missing, "R2_SECRET_KEY")
-	}
+	missing = append(missing, c.missingR2()...)
 	if c.R2.AccountID == "" {
 		return fmt.Errorf("r2.account_id is required")
 	}
@@ -249,6 +244,32 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("at least one region is required")
 	}
 	return nil
+}
+
+// ValidateR2 is the half of Validate that publishing needs: it writes to R2 and
+// does not rent anything, so it has no use for a Hetzner or Tailscale token.
+func (c *Config) ValidateR2() error {
+	if c.R2.AccountID == "" {
+		return fmt.Errorf("r2.account_id is required")
+	}
+	if missing := c.missingR2(); len(missing) > 0 {
+		return fmt.Errorf("missing required environment variables: %v", missing)
+	}
+	if c.Server.AssetBucket == "" {
+		return fmt.Errorf("server.asset_bucket is required")
+	}
+	return nil
+}
+
+func (c *Config) missingR2() []string {
+	var missing []string
+	if c.Secrets.R2AccessKey == "" {
+		missing = append(missing, "R2_ACCESS_KEY")
+	}
+	if c.Secrets.R2SecretKey == "" {
+		missing = append(missing, "R2_SECRET_KEY")
+	}
+	return missing
 }
 
 // Region returns the named region, or an error naming the ones that exist.

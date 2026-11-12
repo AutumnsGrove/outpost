@@ -63,7 +63,7 @@ One-time, none of it in this repo:
    mc-worlds/current/world.tar.gz        optional
    ```
 
-   Publishing assets into R2 is not built yet — see `HANDOFF.md`.
+   Fill those keys with `outpost publish` (below) — nothing else writes to R2.
 
 Secrets are environment variables, never the config file:
 
@@ -93,12 +93,42 @@ three-minute rebuild.
 
 ```bash
 outpost serve            # the reconcile loop + JSON API (this is the daemon)
+outpost publish [dir]    # upload a server pack to R2
 outpost start [region]   # rent a server (default region: eu)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
 outpost tick             # one reconcile pass, for cron
 outpost reset            # delete every outpost server, back to OFFLINE
 ```
+
+## Publishing a server
+
+`outpost publish` is what puts the server files in R2. A pack directory looks
+like this, and everything except `mods/` is optional:
+
+```
+pack/
+  server/       server.properties, eula.txt, ops.json, whitelist.json, the launcher jar
+  mods/*.jar    with client-only-mods.txt listing what the server must not load
+  config/       mod config
+  scripts/      start.sh, stop.sh
+```
+
+The shortest useful first publish generates the rest:
+
+```bash
+outpost publish ./pack --fabric 1.20.1 \
+  --whitelist AutumnsAdventure,OtherPlayer --op AutumnsAdventure
+```
+
+That fetches the Fabric launcher for 1.20.1, resolves both names to UUIDs through
+Mojang, writes `eula.txt`, a default `server.properties` and a `start.sh`, uploads
+everything, and verifies each key's size in R2 before claiming success. Add
+`--prune` to delete mods and config files the pack no longer has, and `--dry-run`
+to see the plan without writing anything.
+
+Vanilla is `--fabric 1.20.1` with an empty `mods/`. A modpack is the same command
+with jars in `mods/` and a `start.sh` sized for the instance you rent.
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --bg 8896` in front of it gives you

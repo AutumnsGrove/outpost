@@ -31,10 +31,10 @@ func main() {
 	}
 }
 
-// requiresCloud marks a command that talks to Hetzner, Cloudflare or R2, and
-// therefore needs every secret to be present. `outpost status` is deliberately
-// not one of them: reading the database should work on a box where nothing has
-// been exported yet.
+// requiresCloud marks what a command needs before it can run: "all" for the
+// Hetzner, Cloudflare, Tailscale and R2 credentials, "r2" for publishing only.
+// `outpost status` carries neither, because reading the database should work on
+// a box where nothing has been exported yet.
 const requiresCloud = "outpost/requires-cloud"
 
 type app struct {
@@ -71,6 +71,7 @@ func rootCmd() *cobra.Command {
 		a.statusCmd(),
 		a.tickCmd(),
 		a.resetCmd(),
+		a.publishCmd(),
 	)
 	return root
 }
@@ -86,8 +87,13 @@ func (a *app) setup(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	if cmd.Annotations[requiresCloud] == "true" {
+	switch cmd.Annotations[requiresCloud] {
+	case "all":
 		if err := cfg.Validate(); err != nil {
+			return err
+		}
+	case "r2":
+		if err := cfg.ValidateR2(); err != nil {
 			return err
 		}
 	}

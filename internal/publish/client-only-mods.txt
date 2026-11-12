@@ -1,0 +1,118 @@
+# Client-Only Mods - DO NOT upload to server
+# These mods are rendering, UI, input, or client-side optimization only
+# Generated for GroveMC modpack upload
+
+# === INPUT & PLATFORM FIXES ===
+macos-input-fixes-1.10.jar
+shift-scroll-fix-1.0.1.jar
+borderless-mining-1.1.8+1.20.1.jar
+
+# === RENDERING & SHADERS ===
+iris-1.7.6+mc1.20.1.jar
+sodium-fabric-0.5.13+mc1.20.1.jar
+sodium-extra-0.5.9+mc1.20.1.jar
+sodium-shadowy-path-blocks-3.4.2.jar
+indium-1.0.36+mc1.20.1.jar
+ImmediatelyFast-Fabric-1.5.3+1.20.4.jar
+entityculling-fabric-1.9.4-mc1.20.1.jar
+enhancedblockentities-0.9+1.20.jar
+modelfix-1.15-fabric.jar
+fastpaintings-1.20-1.2.7-fabric.jar
+
+# === CLIENT-SIDE PERFORMANCE ===
+BadOptimizations-2.4.0-1.20.1.jar
+memoryleakfix-fabric-1.17+-1.1.5.jar
+lazydfu-0.1.3.jar
+fasterrandom-5.1.0.jar
+
+# === VISUAL EFFECTS (CLIENT-ONLY) ===
+fallingleaves-1.15.6+1.20.1.jar
+particlerain-4.0.0-beta.3+1.20.1-fabric.jar
+particular-1.1.1.jar
+make_bubbles_pop-0.3.0-fabric-mc1.19.4-1.21.jar
+explosive-enhancement-1.3.2-1.20-1.20.4.jar
+wakes-0.4.0+1.20.1.jar
+cloud-layers-1.1+1.20.1.jar
+Fog-fabric-1.5.3-1.20.1.jar
+spawnanimations-v1.11.3-mc1.17-1.21.11-mod.jar
+
+# === SOUND (CLIENT-ONLY) ===
+AmbientSounds_FABRIC_v6.3.1_mc1.20.1.jar
+sound-physics-remastered-fabric-1.20.1-1.5.1.jar
+Drip Sounds-0.5.2+1.20.4-Fabric.jar
+PresenceFootsteps-1.10.1+1.20.1.jar
+ImmersiveThunder-1.20.1+1.2.2.jar
+ExtremeSoundMuffler-3.49.1-fabric-1.20.1.jar
+Ding-1.20.1-Fabric-1.5.0.jar
+Sounds-2.2.1+1.20.1+fabric.jar
+
+# === UI / HUD MODS ===
+modmenu-7.2.2.jar
+BetterF3-7.0.2-Fabric-1.20.1.jar
+bettermounthud-1.2.2.jar
+betterstats-3.12.6+fabric-1.20.1.jar
+chat_heads-0.14.2-fabric-1.20.jar
+Controlling-fabric-1.20.1-12.0.2.jar
+dark-loading-screen-1.6.14.jar
+durabilitytooltip-1.1.6-fabric-mc1.20.4.jar
+dynamiccrosshair-9.10+1.20.1-fabric.jar
+enhanced_attack_indicator-1.0.4+1.20.jar
+held-item-info-1.5.0.jar
+Highlighter-1.20.1-fabric-1.1.9.jar
+LegendaryTooltips-1.20.1-fabric-1.4.5.jar
+nameplate-1.1.4.jar
+PickUpNotifier-v8.0.0-1.20.1-Fabric.jar
+seamless-loading-screen-2.0.3+1.20.1-fabric.jar
+shulkerboxtooltip-fabric-4.0.4+1.20.1.jar
+smoothscroll-2.2.3.1+1.20.1.jar
+status-effect-bars-1.0.3.jar
+Tips-Fabric-1.20.1-12.1.8.jar
+better-trim-tooltips-1.0.1.jar
+
+# === CAMERA & VIEW ===
+BetterThirdPerson-Fabric-1.20-1.9.0.jar
+camerautils-fabric-1.20.1-1.0.14.jar
+do_a_barrel_roll-fabric-3.6.1+1.20.1.jar
+freecam-fabric-1.2.1+1.20.jar
+
+# === MAPS & ATLAS (client rendering) ===
+Xaeros_Minimap_25.2.10_Fabric_1.20.jar
+XaerosWorldMap_1.39.12_Fabric_1.20.jar
+antique-atlas-2.12.0+1.20.jar
+
+# === RECIPE VIEWERS (client-only UI) ===
+emi-1.1.22+1.20.1+fabric.jar
+emi_loot-0.7.8+1.20.1+fabric.jar
+emi_ores-1.2+1.20.1+fabric.jar
+emi-letsdo-compat-1.8.1.jar
+emitrades-fabric-1.2.1+mc1.20.1.jar
+
+# === INVENTORY MANAGEMENT (client-side) ===
+InventoryProfilesNext-fabric-1.20-1.10.19.jar
+MouseTweaks-fabric-mc1.20-2.26.jar
+clickthrough-plus-fabric-3.5.0+1.20.1.jar
+
+# === ANIMATIONS (client-side visual) ===
+notenoughanimations-fabric-1.11.0-mc1.20.1.jar
+eating-animation-1.20+1.9.61.jar
+skinlayers3d-fabric-1.10.1-mc1.20.1.jar
+
+# === ENTITY RENDERING ===
+entity_model_features_1.20.1-fabric-3.0.7.jar
+entity_texture_features_1.20.1-fabric-7.0.6.jar
+
+# === TOOLTIPS & INFO ===
+Jade-1.20-Fabric-11.13.1.jar
+appleskin-fabric-mc1.20.1-2.5.1.jar
+EnchantmentDescriptions-Fabric-1.20.1-17.1.19.jar
+
+# === DEBUG & PROFILING (optional on server, not needed) ===
+# spark-1.10.53-fabric.jar  # Actually useful on server too, keeping it
+
+# === MISC CLIENT-ONLY ===
+bobby-5.0.1.jar
+cherishedworlds-fabric-6.1.7+1.20.1.jar
+fast-ip-ping-v1.0.8-mc1.20.4-fabric.jar
+lambdynamiclights-4.4.0+1.20.1.jar
+CosmeticArmor-1.20-1.6.0.jar
+Debugify-1.20.1+2.0.jar
