@@ -221,7 +221,17 @@ command declares whether it needs them (`requiresCloud`): `serve`, `start`, `sto
 and `reset` do, `status` does not. That is what makes `outpost status` usable on a box where
 nothing has been exported yet.
 
-### 14. Publishing assets is a Go command, not a bash script
+### 14. A sold-out plan falls back to another size, not to a failed start
+
+Hetzner's stock has been thin since 2026 and answers a plan it cannot place with
+`412 resource_unavailable` rather than queueing. On the first real run that meant
+`cx23` and `cx33` were both unavailable in `nbg1` and the session simply could not
+start, even though `cax11` was sitting there. `regions.*.fallback_types` is now a
+list tried in order; a real error (bad token, bad image) still aborts immediately
+instead of walking the list. Only `resource_unavailable` triggers a fallback,
+because only that one means "try another shape".
+
+### 15. Publishing assets is a Go command, not a bash script
 
 Rejected: reviving `legacy/v1/r2-manage.sh`. It would have been the third language in a
 Go project, and the one piece of the system that decides what a server boots from. `outpost
