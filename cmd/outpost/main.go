@@ -219,7 +219,7 @@ func (a *app) statusCmd() *cobra.Command {
 
 			fmt.Printf("state       %s\n", st.State)
 			if st.Region != "" {
-				fmt.Printf("region      %s (%s, $%.4f/hr)\n", st.Region, st.ServerType, st.HourlyRate)
+				fmt.Printf("region      %s (%s, €%.4f/hr)\n", st.Region, st.ServerType, st.HourlyRate)
 			}
 			if st.Hostname != "" {
 				fmt.Printf("host        %s\n", st.Hostname)
@@ -230,7 +230,7 @@ func (a *app) statusCmd() *cobra.Command {
 			fmt.Printf("players     %d\n", st.Players)
 			if st.UptimeSec > 0 {
 				fmt.Printf("uptime      %s\n", (time.Duration(st.UptimeSec) * time.Second).Round(time.Second))
-				fmt.Printf("session     $%.4f\n", st.SessionCost)
+				fmt.Printf("session     €%.4f\n", st.SessionCost)
 			}
 			if st.TTLSec > 0 {
 				fmt.Printf("shuts down  in %s\n", (time.Duration(st.TTLSec) * time.Second).Round(time.Second))
@@ -238,7 +238,7 @@ func (a *app) statusCmd() *cobra.Command {
 			if st.LastError != "" {
 				fmt.Printf("last error  %s\n", st.LastError)
 			}
-			fmt.Printf("lifetime    %.2f h, $%.4f\n", st.TotalHours, st.TotalCost)
+			fmt.Printf("lifetime    %.2f h, €%.4f\n", st.TotalHours, st.TotalCost)
 			return nil
 		},
 	}

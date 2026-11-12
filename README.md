@@ -147,17 +147,20 @@ gymnastics.
 
 ## Costs
 
-The only thing that bills is a running VPS: roughly a cent an hour, so a two-hour
-session is about two cents and a heavy month is under a dollar. R2 holds the
-modpack and a world, well inside the free tier.
+The only thing that bills is a running VPS, and Hetzner bills in euros:
+`cx23` (2 vCPU / 4 GB) is €0.0104/hr, so a two-hour session is **€0.021** and a
+heavy month is under a euro. `cx33` (4 vCPU / 8 GB) doubles the RAM for €0.016/hr
+— €0.032 a session — which is the one to switch to if the modpack needs it. R2
+holds the modpack and a world, well inside the free tier.
 
 Two caveats worth knowing before trusting any number here:
 
 - **Hetzner repriced its cloud plans in June 2026**, and the `hourly_rate` values
   in `config.yaml` are estimates that only feed the status readout — never a bill.
-- **Instance size is the dominant lever, not the provider.** Dropping from 8 GB to
-  4 GB is roughly a threefold saving; switching providers at the same size is
-  worth pennies. `HANDOFF.md` has the comparison and the availability caveat.
+- **Instance size is the lever, not the provider.** Halving the RAM now saves
+  35%, not the threefold it saved in 2025 — Hetzner repriced the 8 GB tier
+  downwards. `config.example.yaml` lists the four plans worth knowing, and `ash`
+  is no longer one of them at six times the price.
 
 ## Layout
 

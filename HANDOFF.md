@@ -110,7 +110,17 @@ The whitelist is generated from names at publish time, so v1's single-entry
 `AutumnsAdventure` file cannot come back by accident: `--whitelist` takes both
 people and Mojang supplies the UUIDs.
 
-### 2. Server pricing needs a second look
+### 2. Server pricing ~~needs a second look~~ — checked 2026-11-12
+
+Read off the Hetzner API with a real token, so this replaces the estimates below:
+**CX22 no longer exists.** The 4 GB plan is `cx23` at €0.0104/hr and the 8 GB one
+is `cx33` at €0.0160/hr — 54% more, not double. `cax11` (2c/4 GB ARM) is
+€0.0112/hr and `cax21` (4c/8 GB ARM) €0.0200/hr, so ARM stopped being the cheap
+option. Ashburn's cheapest 4–8 GB plan is `cpx21` at €0.0601/hr, six times
+Nuremberg, so `us` is out of the config. Stock is still unverified: the API lists
+`cx23` but only a create call can prove it is orderable.
+
+The table below is kept as the record of what was estimated in November 2026.
 
 Hetzner raised prices on 15 June 2026 for new orders and rescales — some plans
 more than doubled — so the `hourly_rate` values in `config.yaml` are stale and the
