@@ -31,6 +31,12 @@ func main() {
 	}
 }
 
+// requiresCloud marks a command that talks to Hetzner, Cloudflare or R2, and
+// therefore needs every secret to be present. `outpost status` is deliberately
+// not one of them: reading the database should work on a box where nothing has
+// been exported yet.
+const requiresCloud = "outpost/requires-cloud"
+
 type app struct {
 	cfgPath string
 	verbose bool
@@ -52,7 +58,7 @@ func rootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return a.setup()
+			return a.setup(cmd)
 		},
 	}
 	root.PersistentFlags().StringVarP(&a.cfgPath, "config", "c", "config.yaml", "path to config.yaml")
@@ -69,7 +75,7 @@ func rootCmd() *cobra.Command {
 	return root
 }
 
-func (a *app) setup() error {
+func (a *app) setup(cmd *cobra.Command) error {
 	level := slog.LevelInfo
 	if a.verbose {
 		level = slog.LevelDebug
@@ -79,6 +85,11 @@ func (a *app) setup() error {
 	cfg, err := config.Load(a.cfgPath)
 	if err != nil {
 		return err
+	}
+	if cmd.Annotations[requiresCloud] == "true" {
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
 	}
 	a.cfg = cfg
 
@@ -93,8 +104,9 @@ func (a *app) setup() error {
 
 func (a *app) serveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "serve",
-		Short: "Run the reconcile loop and the HTTP API",
+		Use:         "serve",
+		Short:       "Run the reconcile loop and the HTTP API",
+		Annotations: map[string]string{requiresCloud: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 
@@ -133,9 +145,10 @@ func (a *app) serveCmd() *cobra.Command {
 
 func (a *app) startCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "start [region]",
-		Short: "Rent a server and start provisioning it",
-		Args:  cobra.MaximumNArgs(1),
+		Use:         "start [region]",
+		Short:       "Rent a server and start provisioning it",
+		Args:        cobra.MaximumNArgs(1),
+		Annotations: map[string]string{requiresCloud: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 
@@ -157,8 +170,9 @@ func (a *app) startCmd() *cobra.Command {
 
 func (a *app) stopCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop",
-		Short: "Save the world, then delete the server",
+		Use:         "stop",
+		Short:       "Save the world, then delete the server",
+		Annotations: map[string]string{requiresCloud: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 
@@ -226,8 +240,9 @@ func (a *app) statusCmd() *cobra.Command {
 
 func (a *app) tickCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "tick",
-		Short: "Run one reconcile pass (for cron)",
+		Use:         "tick",
+		Short:       "Run one reconcile pass (for cron)",
+		Annotations: map[string]string{requiresCloud: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 			return a.orch.Tick(cmd.Context())
@@ -237,8 +252,9 @@ func (a *app) tickCmd() *cobra.Command {
 
 func (a *app) resetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "reset",
-		Short: "Delete every Outpost server and go back to OFFLINE",
+		Use:         "reset",
+		Short:       "Delete every Outpost server and go back to OFFLINE",
+		Annotations: map[string]string{requiresCloud: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 

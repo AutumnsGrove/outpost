@@ -41,8 +41,9 @@ type Region struct {
 
 // Server holds the lifecycle knobs.
 type Server struct {
-	// AssetBucket and WorldBucket are the R2 buckets . They keep v1's key
-	// layout on purpose: the 188 mods and the existing world load unchanged.
+	// AssetBucket and WorldBucket are the R2 buckets. They keep v1's key layout
+	// on purpose, because internal/cloudinit reads exactly those keys; the
+	// contents are a fresh start (see PLAN.md, decision 6).
 	AssetBucket string `yaml:"asset_bucket"`
 	WorldBucket string `yaml:"world_bucket"`
 
@@ -61,6 +62,13 @@ type Server struct {
 
 	// TickInterval is the reconcile period.
 	TickInterval Duration `yaml:"tick_interval"`
+
+	// RCONFailureLimit is how many consecutive failed probes a live server is
+	// allowed before it is assumed wedged and taken down. At the default tick
+	// interval each failure is one tick, so 15 is five minutes: long enough to
+	// ride out a tailnet reconnect or a laggy save, short enough that a dead
+	// server does not bill for an hour.
+	RCONFailureLimit int `yaml:"rcon_failure_limit"`
 }
 
 // Cloudflare identifies the DNS record to keep pointed at the current VPS.
@@ -77,6 +85,10 @@ type Hetzner struct {
 	SSHUser        string `yaml:"ssh_user"`
 	SnapshotID     int    `yaml:"snapshot_id"`
 	ServerNameBase string `yaml:"server_name_base"`
+
+	// FirewallID is an existing Hetzner Cloud Firewall applied at create time.
+	// Optional: ufw in the cloud-init template is the floor, this is the belt.
+	FirewallID int `yaml:"firewall_id"`
 }
 
 // R2 is used by the VPS (via rclone) and by the orchestrator (to size backups).
@@ -115,6 +127,10 @@ type Config struct {
 }
 
 // Load reads path, applies defaults, then pulls secrets from the environment.
+//
+// It deliberately does not validate. Reading the state of things — `outpost
+// status` — should work on a box where the cloud credentials are not exported,
+// and every command that does need them calls Validate itself.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -136,9 +152,6 @@ func Load(path string) (*Config, error) {
 		APIToken:         os.Getenv("OUTPOST_TOKEN"),
 	}
 
-	if err := c.validate(); err != nil {
-		return nil, err
-	}
 	return &c, nil
 }
 
@@ -170,6 +183,9 @@ func (c *Config) applyDefaults() {
 	if c.Server.TickInterval == 0 {
 		c.Server.TickInterval = Duration(20 * time.Second)
 	}
+	if c.Server.RCONFailureLimit == 0 {
+		c.Server.RCONFailureLimit = 15
+	}
 	if c.Hetzner.Image == "" {
 		c.Hetzner.Image = "ubuntu-24.04"
 	}
@@ -197,7 +213,10 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-func (c *Config) validate() error {
+// Validate checks that the config and the environment together are enough to
+// touch cloud infrastructure. Commands that only read the database do not call
+// it, so `outpost status` keeps working with no credentials exported.
+func (c *Config) Validate() error {
 	missing := []string{}
 	if c.Secrets.HetznerToken == "" {
 		missing = append(missing, "HETZNER_TOKEN")
