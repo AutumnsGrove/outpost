@@ -37,6 +37,12 @@ type Region struct {
 	Location   string  `yaml:"location"`
 	ServerType string  `yaml:"server_type"`
 	HourlyRate float64 `yaml:"hourly_rate"`
+
+	// FallbackTypes are tried in order when the preferred ServerType has no
+	// capacity in Location. Hetzner's stock has been thin since 2026, and a
+	// sold-out plan answers 412 resource_unavailable rather than queueing, so
+	// without this a single missing size means no session at all.
+	FallbackTypes []string `yaml:"fallback_types"`
 }
 
 // Server holds the lifecycle knobs.
@@ -208,9 +214,11 @@ func (c *Config) applyDefaults() {
 			"us": {Location: "ash", ServerType: "cx22", HourlyRate: 0.0063},
 		}
 	}
-	if len(c.Tailscale.Tags) == 0 {
-		c.Tailscale.Tags = []string{"tag:outpost"}
-	}
+	// No default tags on purpose. `tailscale up --advertise-tags=tag:outpost`
+	// without a tag that exists in the tailnet's ACLs with an owner fails with
+	// "requested tags are invalid or not permitted" and the node never joins,
+	// which strands the VPS with every port closed. Tagging is opt-in: set
+	// tailscale.tags once the tag is defined in the admin console.
 }
 
 // Validate checks that the config and the environment together are enough to

@@ -23,6 +23,14 @@ type fakeServers struct {
 	mu      sync.Mutex
 	nextID  int64
 	servers map[string]*hetzner.Server
+
+	// unavailable counts how many create attempts of a type should fail with
+	// ErrUnavailable, the way a sold-out plan answers.
+	unavailable map[string]int
+	// createErr fails Create outright, for errors that must not be retried.
+	createErr error
+	// created records every server type asked for, in order.
+	created []string
 }
 
 func newFakeServers() *fakeServers {
@@ -32,6 +40,16 @@ func newFakeServers() *fakeServers {
 func (f *fakeServers) Create(_ context.Context, spec hetzner.CreateRequest) (*hetzner.Server, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	f.created = append(f.created, spec.ServerType)
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	if f.unavailable[spec.ServerType] > 0 {
+		f.unavailable[spec.ServerType]--
+		return nil, hetzner.ErrUnavailable
+	}
+
 	f.nextID++
 	s := &hetzner.Server{ID: f.nextID, Name: spec.Name, Status: "running"}
 	s.PublicNet.IPv4.IP = "203.0.113.10"
@@ -558,5 +576,72 @@ func TestRCONFailureLimitIsConfigurable(t *testing.T) {
 	h.tick(t)
 	if got := h.mustState(t); got != store.Terminating {
 		t.Fatalf("state at the limit = %s, want TERMINATING", got)
+	}
+}
+
+func TestStartFallsBackWhenThePreferredSizeIsSoldOut(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.servers.unavailable = map[string]int{"cx32": 1}
+	h.o.cfg.Regions["eu"] = config.Region{
+		Location:      "nbg1",
+		ServerType:    "cx32",
+		HourlyRate:    10,
+		FallbackTypes: []string{"cx31"},
+	}
+
+	st, err := h.o.Start(ctx, "eu")
+	if err != nil {
+		t.Fatalf("start should fall back, got %v", err)
+	}
+	if st.ServerType != "cx31" {
+		t.Fatalf("server type = %q, want the fallback", st.ServerType)
+	}
+	if len(h.servers.created) != 2 || h.servers.created[0] != "cx32" || h.servers.created[1] != "cx31" {
+		t.Fatalf("create order = %v", h.servers.created)
+	}
+	if got := h.mustState(t); got != store.Provisioning {
+		t.Fatalf("state = %s", got)
+	}
+}
+
+func TestStartDoesNotFallBackOnRealErrors(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.servers.createErr = errors.New("invalid token")
+	h.o.cfg.Regions["eu"] = config.Region{
+		Location: "nbg1", ServerType: "cx32", HourlyRate: 10,
+		FallbackTypes: []string{"cx31", "cx21"},
+	}
+
+	if _, err := h.o.Start(ctx, "eu"); err == nil {
+		t.Fatal("expected the error")
+	}
+	if len(h.servers.created) != 1 {
+		t.Fatalf("kept trying after a real error: %v", h.servers.created)
+	}
+}
+
+func TestStartReportsEverySizeItTried(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.servers.unavailable = map[string]int{"cx32": 1, "cx31": 1}
+	h.o.cfg.Regions["eu"] = config.Region{
+		Location: "nbg1", ServerType: "cx32", HourlyRate: 10,
+		FallbackTypes: []string{"cx31", "cx21"},
+	}
+
+	st, err := h.o.Start(ctx, "eu")
+	if err != nil {
+		t.Fatalf("third size should succeed: %v", err)
+	}
+	if st.ServerType != "cx21" {
+		t.Fatalf("type = %q", st.ServerType)
+	}
+	if len(h.servers.created) != 3 {
+		t.Fatalf("tried %v", h.servers.created)
 	}
 }

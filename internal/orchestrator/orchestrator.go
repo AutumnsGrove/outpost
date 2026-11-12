@@ -273,16 +273,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 
 	o.log.Info("renting server", "region", region, "type", reg.ServerType, "hostname", hostname)
 
-	srv, err := o.deps.Servers.Create(ctx, hetzner.CreateRequest{
-		Name:       hostname,
-		ServerType: reg.ServerType,
-		Location:   reg.Location,
-		Image:      o.cfg.Hetzner.Image,
-		SSHKeyID:   o.cfg.Hetzner.SSHKeyID,
-		SnapshotID: o.cfg.Hetzner.SnapshotID,
-		FirewallID: o.cfg.Hetzner.FirewallID,
-		UserData:   userData,
-	})
+	srv, serverType, err := o.rent(ctx, hostname, reg, userData)
 	if err != nil {
 		return st, err
 	}
@@ -293,7 +284,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		VPSIP:        srv.PublicNet.IPv4.IP,
 		TailnetHost:  hostname,
 		Region:       region,
-		ServerType:   reg.ServerType,
+		ServerType:   serverType,
 		RCONPassword: password,
 		StartedAt:    o.now(),
 	}
@@ -307,12 +298,52 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	_ = o.store.MetaSet("rcon_failures", "0")
 	_ = o.store.MetaSet("ever_running", "")
 
-	if _, err := o.store.StartSession(st.StartedAt, region, reg.ServerType, fmt.Sprint(srv.ID)); err != nil {
+	if _, err := o.store.StartSession(st.StartedAt, region, serverType, fmt.Sprint(srv.ID)); err != nil {
 		return st, err
 	}
-	_ = o.store.Log("start", "rented %s in %s (%s)", hostname, reg.Location, reg.ServerType)
+	_ = o.store.Log("start", "rented %s in %s (%s)", hostname, reg.Location, serverType)
 
 	return st, nil
+}
+
+// rent creates the server, walking through the configured fallback sizes when
+// Hetzner has no capacity for the preferred one. Thin stock is the normal state
+// of the world Outpost lives in, not an exceptional condition.
+func (o *Orchestrator) rent(ctx context.Context, hostname string, reg config.Region, userData string) (*hetzner.Server, string, error) {
+	types := append([]string{reg.ServerType}, reg.FallbackTypes...)
+
+	var lastErr error
+	for _, serverType := range types {
+		if serverType == "" {
+			continue
+		}
+		srv, err := o.deps.Servers.Create(ctx, hetzner.CreateRequest{
+			Name:       hostname,
+			ServerType: serverType,
+			Location:   reg.Location,
+			Image:      o.cfg.Hetzner.Image,
+			SSHKeyID:   o.cfg.Hetzner.SSHKeyID,
+			SnapshotID: o.cfg.Hetzner.SnapshotID,
+			FirewallID: o.cfg.Hetzner.FirewallID,
+			UserData:   userData,
+		})
+		if err == nil {
+			if serverType != reg.ServerType {
+				o.log.Info("fell back to another size", "type", serverType, "wanted", reg.ServerType)
+				_ = o.store.Log("fallback", "%s has no capacity; rented %s instead", reg.ServerType, serverType)
+			}
+			_ = o.store.MetaSet("rented_type", serverType)
+			return srv, serverType, nil
+		}
+		if !errors.Is(err, hetzner.ErrUnavailable) {
+			return nil, "", err
+		}
+		lastErr = err
+		o.log.Warn("no capacity", "type", serverType, "location", reg.Location)
+		_ = o.store.Log("no-capacity", "%s in %s: %v", serverType, reg.Location, err)
+	}
+
+	return nil, "", fmt.Errorf("no capacity in %s for any of %v: %w", reg.Location, types, lastErr)
 }
 
 // Stop asks for a graceful shutdown. Tick does the work.
@@ -641,7 +672,11 @@ func (o *Orchestrator) persistWorld(ctx context.Context, st store.ServerState) (
 	}
 
 	// Give the JVM time to exit so the tar is not of a half-written region file.
-	wait := `for i in $(seq 1 60); do pgrep -f fabric-server-launch >/dev/null || exit 0; sleep 2; done; exit 1`
+	//
+	// The bracket in [f]abric... is load-bearing: this command's own text
+	// contains "fabric-server-launch", so a plain `pgrep -f` matches the shell
+	// running it and the loop always runs its full two minutes.
+	wait := `for i in $(seq 1 60); do pgrep -f '[f]abric-server-launch' >/dev/null || exit 0; sleep 2; done; exit 1`
 	if _, err := o.deps.Remote.Run(ctx, st.TailnetHost, wait); err != nil {
 		o.log.Warn("minecraft did not stop cleanly", "err", err)
 	}
