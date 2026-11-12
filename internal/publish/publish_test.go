@@ -332,7 +332,12 @@ func TestFabricServerPicksTheNewestStableLoader(t *testing.T) {
 				{"loader":{"version":"0.20.1","stable":true}},
 				{"loader":{"version":"0.19.0","stable":true}}
 			]`)
-		case "/v2/versions/loader/1.20.1/0.20.1/server/jar":
+		case "/v2/versions/installer":
+			_, _ = io.WriteString(w, `[
+				{"version":"1.1.2","stable":true},
+				{"version":"1.1.1","stable":true}
+			]`)
+		case "/v2/versions/loader/1.20.1/0.20.1/1.1.2/server/jar":
 			asked = r.URL.Path
 			_, _ = w.Write([]byte("PK\x03\x04rest-of-a-jar"))
 		default:
@@ -359,6 +364,10 @@ func TestFabricServerPicksTheNewestStableLoader(t *testing.T) {
 
 func TestFabricServerRejectsAnErrorPage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/versions/installer" {
+			_, _ = io.WriteString(w, `[{"version":"1.1.2","stable":true}]`)
+			return
+		}
 		_, _ = io.WriteString(w, "<html>not found</html>")
 	}))
 	defer srv.Close()
@@ -369,6 +378,24 @@ func TestFabricServerRejectsAnErrorPage(t *testing.T) {
 	if _, _, err := FabricServer(context.Background(), "1.20.1", "0.20.1"); err == nil {
 		t.Fatal("an HTML error page should not be accepted as a jar")
 	}
+}
+
+func TestFabricServerFromTheRealMeta(t *testing.T) {
+	// The fake above cannot catch a wrong path: real Fabric Meta answers a bad
+	// endpoint with a 200 and a text body. This test is the guard, and it is
+	// opt-in because it needs the network.
+	if os.Getenv("OUTPOST_LIVE_TESTS") == "" {
+		t.Skip("set OUTPOST_LIVE_TESTS=1 to hit the real Fabric Meta")
+	}
+
+	loader, jar, err := FabricServer(context.Background(), "1.20.1", "")
+	if err != nil {
+		t.Fatalf("fabric: %v", err)
+	}
+	if loader == "" || len(jar) < 10_000 {
+		t.Fatalf("loader = %q, jar = %d bytes", loader, len(jar))
+	}
+	t.Logf("loader %s, launcher %d bytes", loader, len(jar))
 }
 
 func TestPlayerFilesResolveUUIDs(t *testing.T) {
