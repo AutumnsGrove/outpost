@@ -38,7 +38,16 @@ func FabricServer(ctx context.Context, mcVersion, loaderVersion string) (string,
 		loaderVersion = v
 	}
 
-	url := fmt.Sprintf("%s/v2/versions/loader/%s/%s/server/jar", fabricMetaBase, mcVersion, loaderVersion)
+	// The installer version is part of the path, not an option. Leaving it out
+	// answers "Endpoint GET ... not found" as a 67-byte text body, which is why
+	// the zip check below exists rather than trusting a 200.
+	installer, err := newestStableInstaller(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+
+	url := fmt.Sprintf("%s/v2/versions/loader/%s/%s/%s/server/jar",
+		fabricMetaBase, mcVersion, loaderVersion, installer)
 	jar, err := get(ctx, url)
 	if err != nil {
 		return "", nil, fmt.Errorf("fabric launcher for %s/%s: %w", mcVersion, loaderVersion, err)
@@ -74,6 +83,29 @@ func newestStableLoader(ctx context.Context, mcVersion string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("fabric: no stable loader for minecraft %s", mcVersion)
+}
+
+// newestStableInstaller returns the current Fabric installer version. The
+// launcher jar is built by the installer, and its version is a path segment.
+func newestStableInstaller(ctx context.Context) (string, error) {
+	raw, err := get(ctx, fabricMetaBase+"/v2/versions/installer")
+	if err != nil {
+		return "", fmt.Errorf("fabric installer list: %w", err)
+	}
+
+	var entries []struct {
+		Version string `json:"version"`
+		Stable  bool   `json:"stable"`
+	}
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return "", fmt.Errorf("parse fabric installer list: %w", err)
+	}
+	for _, e := range entries {
+		if e.Stable && e.Version != "" {
+			return e.Version, nil
+		}
+	}
+	return "", fmt.Errorf("fabric: no stable installer version")
 }
 
 // Player is one entry in whitelist.json or ops.json.
