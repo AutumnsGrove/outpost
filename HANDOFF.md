@@ -35,9 +35,11 @@ finished. `PLAN.md` has the full reasoning.
 | Touched real infra | **No.** No Hetzner call has been made from this code. |
 
 Built: config loader, SQLite store, Hetzner client, Cloudflare DNS client, RCON
-client, SSH runner, cloud-init renderer, the state machine, the JSON API, the CLI.
+client, SSH runner, cloud-init renderer, the state machine, the JSON API, the CLI,
+and `outpost publish` (R2 over the S3 API, Fabric launcher, Mojang UUIDs).
 
-Not built: anything that puts files *into* R2. That is the blocker — see below.
+Still not built: the modpack itself. `publish` takes a directory; nobody has
+chosen what goes in it yet.
 
 ---
 
@@ -76,12 +78,19 @@ save leaves the VPS running rather than deleting a world it could not back up.
 
 ## Open work, in order
 
-### 1. Publishing assets to R2 — the one blocker
+### 1. ~~Publishing assets to R2~~ — done
 
-Nothing can put a modpack, a world, or `server.properties` into R2 yet. Until that
-exists, a first run is vanilla-or-nothing.
+`outpost publish` (written 2026-11-11, after this handoff) fills the asset bucket:
+it fetches a Fabric launcher from Fabric Meta, resolves whitelist names to UUIDs
+through Mojang, generates `eula.txt`, `server.properties` and `start.sh` when the
+pack has none, uploads `server/`, `mods/`, `config/` and `scripts/`, and verifies
+every key's size in R2 before it reports success. `--prune` removes stale mods,
+`--dry-run` prints the plan.
 
-The layout the template reads:
+What is left of this item is the *content* question, not the plumbing: vanilla
+first, then decide on a modpack.
+
+The layout it writes is the one the template reads:
 
 ```
 mc-assets/server/{fabric-server-launch.jar,server.properties,ops.json,whitelist.json,eula.txt}
@@ -91,18 +100,15 @@ mc-assets/scripts/{start.sh,stop.sh}
 mc-worlds/current/world.tar.gz        optional — absent means "generate one"
 ```
 
-`legacy/v1/r2-manage.sh` and `legacy/v1/upload-mods.sh` already do most of this
-against an rclone remote, including a client-only mod filter (`client-only-mods.txt`,
-84 entries) so the server does not try to load rendering mods. Reviving those is
-the cheapest path to a first session.
+`legacy/v1/r2-manage.sh` and `legacy/v1/upload-mods.sh` were the alternative and
+are now dead: a bash script would have been the third language in the project and
+the only piece that decides what a server boots from. The client-only filter they
+carried (118 lines, 84 mods) moved to `internal/publish/client-only-mods.txt` as
+the default, and a pack can override it with its own copy.
 
-The tidier long-term answer is `outpost publish` in the Go CLI — a `minio-go` S3
-client is the smallest dependency that does it. Pick one; do not leave both.
-
-Also needed for a real modpack: `ops.json` and `whitelist.json` with real
-UUIDs/names. Mojang's `api.mojang.com/users/profiles/minecraft/<name>` returns them.
-v1 only ever had one entry, `AutumnsAdventure` — the point of this project is
-playing with someone else, so the whitelist needs both people this time.
+The whitelist is generated from names at publish time, so v1's single-entry
+`AutumnsAdventure` file cannot come back by accident: `--whitelist` takes both
+people and Mojang supplies the UUIDs.
 
 ### 2. Server pricing needs a second look
 

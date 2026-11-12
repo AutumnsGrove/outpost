@@ -4,7 +4,9 @@ config.yaml
 outpost.db
 outpost.db-shm
 outpost.db-wal
-outpost
-outpost-arm64
+# The built binaries live at the repo root. Anchored, because a bare `outpost`
+# also matched cmd/outpost/ and silently ignored new files there.
+/outpost
+/outpost-arm64
 node_modules/
 .wrangler/
