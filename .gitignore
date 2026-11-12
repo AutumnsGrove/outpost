@@ -4,6 +4,7 @@ config.yaml
 outpost.db
 outpost.db-shm
 outpost.db-wal
+outpost.db.lock
 # The built binaries live at the repo root. Anchored, because a bare `outpost`
 # also matched cmd/outpost/ and silently ignored new files there.
 /outpost

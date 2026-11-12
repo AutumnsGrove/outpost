@@ -20,6 +20,12 @@ var apiBase = "https://api.hetzner.cloud/v1"
 // condition: Outpost deletes servers and then asks about them again.
 var ErrNotFound = errors.New("hetzner: server not found")
 
+// ErrUnavailable means the plan exists but could not be placed in this
+// location, which Hetzner answers with 412 resource_unavailable ("error during
+// placement") while stock is thin. It is worth trying a different size; it is
+// not worth retrying the same one forever.
+var ErrUnavailable = errors.New("hetzner: no capacity for that server type in that location")
+
 // Server is the subset of the API object Outpost cares about.
 type Server struct {
 	ID         int64  `json:"id"`
@@ -90,8 +96,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return nil
 	}
 	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, bytes.TrimSpace(msg))
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		var apiErr struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &apiErr)
+		if apiErr.Error.Code == "resource_unavailable" {
+			return fmt.Errorf("%s %s: %s: %w", method, path, apiErr.Error.Message, ErrUnavailable)
+		}
+		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, bytes.TrimSpace(raw))
 	}
 	if out == nil {
 		return nil
