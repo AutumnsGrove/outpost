@@ -24,6 +24,46 @@ finished. `PLAN.md` has the full reasoning.
 
 ---
 
+## First real runs — 2026-11-12
+
+Four sessions against a real Hetzner project and real R2, from the Mac, before any
+deploy. Total spend **€0.0072**. The last one went the whole way:
+
+```
+12:23:56  rent cx23 in nbg1
+12:31:02  RUNNING      (7m06s from rent, RCON answering over the tailnet)
+12:32:02  IDLE         (1m grace, short timings for the test)
+12:34:00  TERMINATING  (idle limit)
+12:34:36  world in R2 (5,994,477 bytes), VPS deleted, session closed: 640s, €0.0018
+```
+
+Verified afterwards: zero servers in Hetzner, `mc-worlds` holds `current/world.tar.gz`
+plus one timestamped backup, the backup row and the session row are in `outpost.db`,
+`mc-assets` holds exactly the six files `publish` uploaded, and `mc.grove.place` still
+points at the last IP (by design — a dead IP fails to connect in a second).
+
+What the real runs broke, all now fixed and covered by tests:
+
+| Bug | How it showed |
+|---|---|
+| `tailscale up --ephemeral` | 1.104.6: "flag provided but not defined" — join skipped, every port closed, box unreachable |
+| default `tag:outpost` | "requested tags are invalid or not permitted" — same outcome |
+| root-owned `/opt/minecraft` | `rclone` pull as `minecraft`: EACCES on all five server files |
+| Ubuntu's rclone 1.60 | world upload: `501 NotImplemented` |
+| no `no_check_bucket` | scoped token 403s the HEAD, rclone tries `CreateBucket`, `403 AccessDenied` |
+| `pgrep -f fabric-server-launch` | matched its own command line, so the stop-wait always burned its full 2 minutes |
+| sold-out plan | `412 resource_unavailable` meant no session at all; now `fallback_types` |
+
+Timings worth knowing: cloud-init takes **3.5–7 minutes**, dominated by
+`package_upgrade` and the vanilla server download; world was 6 MB for a fresh
+1.20.1 world; DNS updates under a second after RCON first answers. MagicDNS
+resolution of a brand-new node can lag by 2–3 minutes (a negative cache on the
+resolver), which the 15-minute provisioning timeout absorbs.
+
+Still open from this pass: the Tailscale auth key is not ephemeral (create one
+with the ephemeral flag in the console) and `tag:outpost` needs an ACL owner
+before tags can be used at all.
+
 ## What is actually done
 
 | | |
