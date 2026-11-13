@@ -1,0 +1,41 @@
+# Outpost — the reconcile loop, on the Le Potato.
+#
+# Install:
+#   sudo install -m 0644 deploy/outpost.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now outpost
+#
+# The box orchestrates; it does not run Minecraft. What it needs that a plain
+# unit does not cover:
+#
+#   /home/autumn/outpost/config.yaml        0600, no secrets (see config.example.yaml)
+#   /etc/outpost.env                        0600 root:autumn, the six credentials
+#   /home/autumn/outpost/outpost.db         the only state: sessions, backups, events
+#
+# Type=simple, not notify: the daemon does not ping systemd, and adding a
+# watchdog is a code change, not a unit tweak. Restart=always is the part that
+# matters — a daemon that dies mid-session leaves a VPS billing until someone
+# notices, because nothing else reaches the idle timeout.
+
+[Unit]
+Description=Outpost — on-demand Minecraft server orchestrator
+Documentation=https://github.com/AutumnsGrove/outpost/blob/main/HANDOFF.md
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autumn
+WorkingDirectory=/home/autumn/outpost
+EnvironmentFile=/etc/outpost.env
+ExecStart=/home/autumn/outpost/outpost serve
+Restart=always
+RestartSec=10
+
+# 127.0.0.1:8896, published with `tailscale serve --bg 8896`. The listener is
+# loopback-only on purpose: the tailnet is the access control, as everywhere
+# else on this box.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
