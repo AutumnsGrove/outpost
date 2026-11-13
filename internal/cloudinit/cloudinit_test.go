@@ -177,6 +177,25 @@ func TestRenderSetsUpAnRcloneThatWorksWithR2(t *testing.T) {
 	}
 }
 
+func TestRenderCanActuallyRestoreAWorld(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	// The rclone runs as `minecraft`, so the staging directory must belong to
+	// it before the copy, not after.
+	if !strings.Contains(out, "chown minecraft:minecraft /tmp/world") {
+		t.Fatal("nothing takes ownership of /tmp/world; the restore will fail with EACCES")
+	}
+	// And it must not swallow the reason: a silent restore failure overwrites a
+	// real world with a fresh one and says "no world in R2".
+	restore := out[strings.Index(out, "/tmp/world"):]
+	if strings.Contains(restore[:600], "2>/dev/null") {
+		t.Fatal("the world restore discards stderr; a failure would look like an empty bucket")
+	}
+}
+
 func TestRenderTurnsRCONOn(t *testing.T) {
 	out, err := Render(sample())
 	if err != nil {
