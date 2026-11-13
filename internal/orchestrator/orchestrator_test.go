@@ -23,6 +23,14 @@ type fakeServers struct {
 	mu      sync.Mutex
 	nextID  int64
 	servers map[string]*hetzner.Server
+
+	// unavailable counts how many create attempts of a type should fail with
+	// ErrUnavailable, the way a sold-out plan answers.
+	unavailable map[string]int
+	// createErr fails Create outright, for errors that must not be retried.
+	createErr error
+	// created records every server type asked for, in order.
+	created []string
 }
 
 func newFakeServers() *fakeServers {
@@ -32,6 +40,16 @@ func newFakeServers() *fakeServers {
 func (f *fakeServers) Create(_ context.Context, spec hetzner.CreateRequest) (*hetzner.Server, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	f.created = append(f.created, spec.ServerType)
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	if f.unavailable[spec.ServerType] > 0 {
+		f.unavailable[spec.ServerType]--
+		return nil, hetzner.ErrUnavailable
+	}
+
 	f.nextID++
 	s := &hetzner.Server{ID: f.nextID, Name: spec.Name, Status: "running"}
 	s.PublicNet.IPv4.IP = "203.0.113.10"
@@ -445,5 +463,185 @@ func TestTickIsIdempotentWhenOffline(t *testing.T) {
 	}
 	if h.servers.count() != 0 {
 		t.Fatal("ticking offline should not create anything")
+	}
+}
+
+func TestStartRefusesWhenTheVPSNeverCameUpHardlyMatters(t *testing.T) {
+	// The provisioning timeout must not try to archive a world that was never
+	// generated: v1's failure mode was backing up on every death, this is the
+	// mirror of it.
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	h.probeErr = errors.New("never comes up")
+	h.clock = h.clock.Add(16 * time.Minute)
+	h.tick(t) // -> TERMINATING
+	h.tick(t) // -> OFFLINE
+
+	if h.remote.savedWorld() {
+		t.Fatal("a server that never ran should not attempt a world save")
+	}
+	if got := h.mustState(t); got != store.Offline {
+		t.Fatalf("state = %s, want OFFLINE", got)
+	}
+	if h.servers.count() != 0 {
+		t.Fatal("timed-out server was not deleted")
+	}
+}
+
+func TestStartRefusesFromErrorWithALiveVPS(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, err := h.o.Start(ctx, "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t) // RUNNING
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// The world never uploads, so the machine lands in ERROR with the VPS alive.
+	h.remote.err = errors.New("rclone: 403")
+	for i := 0; i < maxWorldSaveAttempts; i++ {
+		h.tick(t)
+	}
+	if got := h.mustState(t); got != store.Error {
+		t.Fatalf("state = %s, want ERROR", got)
+	}
+
+	if _, err := h.o.Start(ctx, "eu"); err == nil {
+		t.Fatal("starting from ERROR with a live server should be refused")
+	} else if !strings.Contains(err.Error(), "reset") {
+		t.Fatalf("error should say what to do: %v", err)
+	}
+	if h.servers.count() != 1 {
+		t.Fatalf("a second server was rented; %d exist", h.servers.count())
+	}
+}
+
+func TestStartRefusesWhenHetznerHasAStrayServer(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// SQLite says OFFLINE, Hetzner says otherwise: a lost or restored outpost.db.
+	if _, err := h.servers.Create(ctx, hetzner.CreateRequest{Name: "outpost-eu-old"}); err != nil {
+		t.Fatalf("seed stray: %v", err)
+	}
+
+	if _, err := h.o.Start(ctx, "eu"); err == nil {
+		t.Fatal("start should be refused while a labelled server exists")
+	} else if !strings.Contains(err.Error(), "already exist") {
+		t.Fatalf("error should name the problem: %v", err)
+	}
+	if h.servers.count() != 1 {
+		t.Fatalf("a second server was rented; %d exist", h.servers.count())
+	}
+}
+
+func TestStartIsRefusedWhileAnotherProcessHoldsTheLock(t *testing.T) {
+	h := newHarness(t)
+
+	release, err := h.store.LockStart()
+	if err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	defer release()
+
+	if _, err := h.o.Start(context.Background(), "eu"); err == nil {
+		t.Fatal("start should be refused while another process is renting")
+	}
+	if h.servers.count() != 0 {
+		t.Fatal("a server was rented despite the lock")
+	}
+}
+
+func TestRCONFailureLimitIsConfigurable(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.o.cfg.Server.RCONFailureLimit = 2
+	if _, err := h.o.Start(ctx, "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t) // RUNNING
+
+	h.probeErr = errors.New("timed out")
+	h.tick(t)
+	if got := h.mustState(t); got != store.Running {
+		t.Fatalf("one failed probe should not end the session, state = %s", got)
+	}
+	h.tick(t)
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state at the limit = %s, want TERMINATING", got)
+	}
+}
+
+func TestStartFallsBackWhenThePreferredSizeIsSoldOut(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.servers.unavailable = map[string]int{"cx32": 1}
+	h.o.cfg.Regions["eu"] = config.Region{
+		Location:      "nbg1",
+		ServerType:    "cx32",
+		HourlyRate:    10,
+		FallbackTypes: []string{"cx31"},
+	}
+
+	st, err := h.o.Start(ctx, "eu")
+	if err != nil {
+		t.Fatalf("start should fall back, got %v", err)
+	}
+	if st.ServerType != "cx31" {
+		t.Fatalf("server type = %q, want the fallback", st.ServerType)
+	}
+	if len(h.servers.created) != 2 || h.servers.created[0] != "cx32" || h.servers.created[1] != "cx31" {
+		t.Fatalf("create order = %v", h.servers.created)
+	}
+	if got := h.mustState(t); got != store.Provisioning {
+		t.Fatalf("state = %s", got)
+	}
+}
+
+func TestStartDoesNotFallBackOnRealErrors(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.servers.createErr = errors.New("invalid token")
+	h.o.cfg.Regions["eu"] = config.Region{
+		Location: "nbg1", ServerType: "cx32", HourlyRate: 10,
+		FallbackTypes: []string{"cx31", "cx21"},
+	}
+
+	if _, err := h.o.Start(ctx, "eu"); err == nil {
+		t.Fatal("expected the error")
+	}
+	if len(h.servers.created) != 1 {
+		t.Fatalf("kept trying after a real error: %v", h.servers.created)
+	}
+}
+
+func TestStartReportsEverySizeItTried(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.servers.unavailable = map[string]int{"cx32": 1, "cx31": 1}
+	h.o.cfg.Regions["eu"] = config.Region{
+		Location: "nbg1", ServerType: "cx32", HourlyRate: 10,
+		FallbackTypes: []string{"cx31", "cx21"},
+	}
+
+	st, err := h.o.Start(ctx, "eu")
+	if err != nil {
+		t.Fatalf("third size should succeed: %v", err)
+	}
+	if st.ServerType != "cx21" {
+		t.Fatalf("type = %q", st.ServerType)
+	}
+	if len(h.servers.created) != 3 {
+		t.Fatalf("tried %v", h.servers.created)
 	}
 }

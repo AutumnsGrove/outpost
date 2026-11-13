@@ -37,12 +37,19 @@ type Region struct {
 	Location   string  `yaml:"location"`
 	ServerType string  `yaml:"server_type"`
 	HourlyRate float64 `yaml:"hourly_rate"`
+
+	// FallbackTypes are tried in order when the preferred ServerType has no
+	// capacity in Location. Hetzner's stock has been thin since 2026, and a
+	// sold-out plan answers 412 resource_unavailable rather than queueing, so
+	// without this a single missing size means no session at all.
+	FallbackTypes []string `yaml:"fallback_types"`
 }
 
 // Server holds the lifecycle knobs.
 type Server struct {
-	// AssetBucket and WorldBucket are the R2 buckets . They keep v1's key
-	// layout on purpose: the 188 mods and the existing world load unchanged.
+	// AssetBucket and WorldBucket are the R2 buckets. They keep v1's key layout
+	// on purpose, because internal/cloudinit reads exactly those keys; the
+	// contents are a fresh start (see PLAN.md, decision 6).
 	AssetBucket string `yaml:"asset_bucket"`
 	WorldBucket string `yaml:"world_bucket"`
 
@@ -61,6 +68,13 @@ type Server struct {
 
 	// TickInterval is the reconcile period.
 	TickInterval Duration `yaml:"tick_interval"`
+
+	// RCONFailureLimit is how many consecutive failed probes a live server is
+	// allowed before it is assumed wedged and taken down. At the default tick
+	// interval each failure is one tick, so 15 is five minutes: long enough to
+	// ride out a tailnet reconnect or a laggy save, short enough that a dead
+	// server does not bill for an hour.
+	RCONFailureLimit int `yaml:"rcon_failure_limit"`
 }
 
 // Cloudflare identifies the DNS record to keep pointed at the current VPS.
@@ -77,6 +91,10 @@ type Hetzner struct {
 	SSHUser        string `yaml:"ssh_user"`
 	SnapshotID     int    `yaml:"snapshot_id"`
 	ServerNameBase string `yaml:"server_name_base"`
+
+	// FirewallID is an existing Hetzner Cloud Firewall applied at create time.
+	// Optional: ufw in the cloud-init template is the floor, this is the belt.
+	FirewallID int `yaml:"firewall_id"`
 }
 
 // R2 is used by the VPS (via rclone) and by the orchestrator (to size backups).
@@ -115,6 +133,10 @@ type Config struct {
 }
 
 // Load reads path, applies defaults, then pulls secrets from the environment.
+//
+// It deliberately does not validate. Reading the state of things — `outpost
+// status` — should work on a box where the cloud credentials are not exported,
+// and every command that does need them calls Validate itself.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -136,9 +158,6 @@ func Load(path string) (*Config, error) {
 		APIToken:         os.Getenv("OUTPOST_TOKEN"),
 	}
 
-	if err := c.validate(); err != nil {
-		return nil, err
-	}
 	return &c, nil
 }
 
@@ -170,6 +189,9 @@ func (c *Config) applyDefaults() {
 	if c.Server.TickInterval == 0 {
 		c.Server.TickInterval = Duration(20 * time.Second)
 	}
+	if c.Server.RCONFailureLimit == 0 {
+		c.Server.RCONFailureLimit = 15
+	}
 	if c.Hetzner.Image == "" {
 		c.Hetzner.Image = "ubuntu-24.04"
 	}
@@ -192,12 +214,17 @@ func (c *Config) applyDefaults() {
 			"us": {Location: "ash", ServerType: "cx22", HourlyRate: 0.0063},
 		}
 	}
-	if len(c.Tailscale.Tags) == 0 {
-		c.Tailscale.Tags = []string{"tag:outpost"}
-	}
+	// No default tags on purpose. `tailscale up --advertise-tags=tag:outpost`
+	// without a tag that exists in the tailnet's ACLs with an owner fails with
+	// "requested tags are invalid or not permitted" and the node never joins,
+	// which strands the VPS with every port closed. Tagging is opt-in: set
+	// tailscale.tags once the tag is defined in the admin console.
 }
 
-func (c *Config) validate() error {
+// Validate checks that the config and the environment together are enough to
+// touch cloud infrastructure. Commands that only read the database do not call
+// it, so `outpost status` keeps working with no credentials exported.
+func (c *Config) Validate() error {
 	missing := []string{}
 	if c.Secrets.HetznerToken == "" {
 		missing = append(missing, "HETZNER_TOKEN")
@@ -208,12 +235,7 @@ func (c *Config) validate() error {
 	if c.Secrets.TailscaleAuthKey == "" {
 		missing = append(missing, "TS_AUTHKEY")
 	}
-	if c.Secrets.R2AccessKey == "" {
-		missing = append(missing, "R2_ACCESS_KEY")
-	}
-	if c.Secrets.R2SecretKey == "" {
-		missing = append(missing, "R2_SECRET_KEY")
-	}
+	missing = append(missing, c.missingR2()...)
 	if c.R2.AccountID == "" {
 		return fmt.Errorf("r2.account_id is required")
 	}
@@ -230,6 +252,32 @@ func (c *Config) validate() error {
 		return fmt.Errorf("at least one region is required")
 	}
 	return nil
+}
+
+// ValidateR2 is the half of Validate that publishing needs: it writes to R2 and
+// does not rent anything, so it has no use for a Hetzner or Tailscale token.
+func (c *Config) ValidateR2() error {
+	if c.R2.AccountID == "" {
+		return fmt.Errorf("r2.account_id is required")
+	}
+	if missing := c.missingR2(); len(missing) > 0 {
+		return fmt.Errorf("missing required environment variables: %v", missing)
+	}
+	if c.Server.AssetBucket == "" {
+		return fmt.Errorf("server.asset_bucket is required")
+	}
+	return nil
+}
+
+func (c *Config) missingR2() []string {
+	var missing []string
+	if c.Secrets.R2AccessKey == "" {
+		missing = append(missing, "R2_ACCESS_KEY")
+	}
+	if c.Secrets.R2SecretKey == "" {
+		missing = append(missing, "R2_SECRET_KEY")
+	}
+	return missing
 }
 
 // Region returns the named region, or an error naming the ones that exist.

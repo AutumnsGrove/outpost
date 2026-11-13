@@ -63,7 +63,7 @@ One-time, none of it in this repo:
    mc-worlds/current/world.tar.gz        optional
    ```
 
-   Publishing assets into R2 is not built yet — see `HANDOFF.md`.
+   Fill those keys with `outpost publish` (below) — nothing else writes to R2.
 
 Secrets are environment variables, never the config file:
 
@@ -93,12 +93,42 @@ three-minute rebuild.
 
 ```bash
 outpost serve            # the reconcile loop + JSON API (this is the daemon)
+outpost publish [dir]    # upload a server pack to R2
 outpost start [region]   # rent a server (default region: eu)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
 outpost tick             # one reconcile pass, for cron
 outpost reset            # delete every outpost server, back to OFFLINE
 ```
+
+## Publishing a server
+
+`outpost publish` is what puts the server files in R2. A pack directory looks
+like this, and everything except `mods/` is optional:
+
+```
+pack/
+  server/       server.properties, eula.txt, ops.json, whitelist.json, the launcher jar
+  mods/*.jar    with client-only-mods.txt listing what the server must not load
+  config/       mod config
+  scripts/      start.sh, stop.sh
+```
+
+The shortest useful first publish generates the rest:
+
+```bash
+outpost publish ./pack --fabric 1.20.1 \
+  --whitelist AutumnsAdventure,OtherPlayer --op AutumnsAdventure
+```
+
+That fetches the Fabric launcher for 1.20.1, resolves both names to UUIDs through
+Mojang, writes `eula.txt`, a default `server.properties` and a `start.sh`, uploads
+everything, and verifies each key's size in R2 before claiming success. Add
+`--prune` to delete mods and config files the pack no longer has, and `--dry-run`
+to see the plan without writing anything.
+
+Vanilla is `--fabric 1.20.1` with an empty `mods/`. A modpack is the same command
+with jars in `mods/` and a `start.sh` sized for the instance you rent.
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --bg 8896` in front of it gives you
@@ -117,17 +147,20 @@ gymnastics.
 
 ## Costs
 
-The only thing that bills is a running VPS: roughly a cent an hour, so a two-hour
-session is about two cents and a heavy month is under a dollar. R2 holds the
-modpack and a world, well inside the free tier.
+The only thing that bills is a running VPS, and Hetzner bills in euros:
+`cx23` (2 vCPU / 4 GB) is €0.0104/hr, so a two-hour session is **€0.021** and a
+heavy month is under a euro. `cx33` (4 vCPU / 8 GB) doubles the RAM for €0.016/hr
+— €0.032 a session — which is the one to switch to if the modpack needs it. R2
+holds the modpack and a world, well inside the free tier.
 
 Two caveats worth knowing before trusting any number here:
 
 - **Hetzner repriced its cloud plans in June 2026**, and the `hourly_rate` values
   in `config.yaml` are estimates that only feed the status readout — never a bill.
-- **Instance size is the dominant lever, not the provider.** Dropping from 8 GB to
-  4 GB is roughly a threefold saving; switching providers at the same size is
-  worth pennies. `HANDOFF.md` has the comparison and the availability caveat.
+- **Instance size is the lever, not the provider.** Halving the RAM now saves
+  35%, not the threefold it saved in 2025 — Hetzner repriced the 8 GB tier
+  downwards. `config.example.yaml` lists the four plans worth knowing, and `ash`
+  is no longer one of them at six times the price.
 
 ## Layout
 

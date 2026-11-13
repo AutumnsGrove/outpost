@@ -14,9 +14,9 @@ package_upgrade: true
 
 packages:
   - openjdk-17-jdk-headless
-  - rclone
   - curl
   - tar
+  - unzip
   - ufw
 
 write_files:
@@ -29,7 +29,11 @@ write_files:
       access_key_id = {{ .R2AccessKey }}
       secret_access_key = {{ .R2SecretKey }}
       endpoint = https://{{ .R2AccountID }}.r2.cloudflarestorage.com
-      acl = private
+      # no_check_bucket: rclone HEADs the bucket first, and a token scoped to
+      # these buckets answers 403 rather than 404 — so it decides the bucket is
+      # missing and tries to CreateBucket, which fails AccessDenied. This flag
+      # is Cloudflare's documented answer for scoped tokens.
+      no_check_bucket = true
 
   - path: /etc/systemd/system/minecraft.service
     content: |
@@ -52,21 +56,45 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
-  # --- tailnet first, so the orchestrator can reach this box as soon as it is up
+  # --- rclone from Ubuntu is 1.60 and too old for R2: every upload answers 501
+  # NotImplemented. Take the current static build for this machine's
+  # architecture instead (the box may be amd64 or arm64, depending on which
+  # server type had capacity).
+  - |
+    ARCH=$(dpkg --print-architecture)
+    curl -fsSL -o /tmp/rclone.zip "https://downloads.rclone.org/rclone-current-linux-$ARCH.zip"
+    unzip -qo /tmp/rclone.zip -d /tmp/rcx
+    install -m 0755 "$(find /tmp/rcx -name rclone -type f | head -1)" /usr/local/bin/rclone
+    /usr/local/bin/rclone version | head -1
+    rm -rf /tmp/rclone.zip /tmp/rcx
+
+  # --- tailnet first, so the orchestrator can reach this box as soon as it is up.
+  # Two things learned on the first two real runs:
+  #   * Ephemerality is a property of the auth key, NOT a flag here. 1.104.6
+  #     answers "flag provided but not defined: -ephemeral" and skips the join.
+  #   * --advertise-tags needs the tag to exist in the tailnet's ACLs with an
+  #     owner. Without it: "requested tags [tag:outpost] are invalid or not
+  #     permitted". So tags are only passed when config asks for them.
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey={{ .TailscaleAuthKey }} --hostname={{ .Hostname }} {{ range .TailscaleTags }}--advertise-tags={{ . }} {{ end }}--accept-dns=false
 
-  # --- firewall: Minecraft from anywhere, everything else only over the tailnet
+  # --- firewall: Minecraft from anywhere, everything else only over the tailnet.
+  # Note what is NOT here: there is no rule opening port 22. SSH and RCON are
+  # reached over tailscale0, which the next rule already permits. Leaving 22
+  # open to the internet would make "only 25565 is public" untrue.
   - ufw default deny incoming
   - ufw default allow outgoing
   - ufw allow 25565/tcp comment 'minecraft'
   - ufw allow in on tailscale0
-  - ufw allow OpenSSH
   - ufw --force enable
 
   # --- minecraft user and layout
   - useradd -m -s /bin/bash minecraft
   - mkdir -p /opt/minecraft/logs /opt/minecraft/mods /opt/minecraft/config
+  # The pull below runs as `minecraft`, so it must own the tree BEFORE it runs.
+  # Owning it afterwards is what the first real run did, and rclone could not
+  # create a single file: "open /opt/minecraft/whitelist.json: permission denied".
+  - chown -R minecraft:minecraft /opt/minecraft
   - mkdir -p /home/minecraft/.config/rclone
   - cp /root/.config/rclone/rclone.conf /home/minecraft/.config/rclone/rclone.conf
   - chown -R minecraft:minecraft /home/minecraft/.config

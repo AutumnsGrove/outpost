@@ -24,6 +24,46 @@ finished. `PLAN.md` has the full reasoning.
 
 ---
 
+## First real runs — 2026-11-12
+
+Four sessions against a real Hetzner project and real R2, from the Mac, before any
+deploy. Total spend **€0.0072**. The last one went the whole way:
+
+```
+12:23:56  rent cx23 in nbg1
+12:31:02  RUNNING      (7m06s from rent, RCON answering over the tailnet)
+12:32:02  IDLE         (1m grace, short timings for the test)
+12:34:00  TERMINATING  (idle limit)
+12:34:36  world in R2 (5,994,477 bytes), VPS deleted, session closed: 640s, €0.0018
+```
+
+Verified afterwards: zero servers in Hetzner, `mc-worlds` holds `current/world.tar.gz`
+plus one timestamped backup, the backup row and the session row are in `outpost.db`,
+`mc-assets` holds exactly the six files `publish` uploaded, and `mc.grove.place` still
+points at the last IP (by design — a dead IP fails to connect in a second).
+
+What the real runs broke, all now fixed and covered by tests:
+
+| Bug | How it showed |
+|---|---|
+| `tailscale up --ephemeral` | 1.104.6: "flag provided but not defined" — join skipped, every port closed, box unreachable |
+| default `tag:outpost` | "requested tags are invalid or not permitted" — same outcome |
+| root-owned `/opt/minecraft` | `rclone` pull as `minecraft`: EACCES on all five server files |
+| Ubuntu's rclone 1.60 | world upload: `501 NotImplemented` |
+| no `no_check_bucket` | scoped token 403s the HEAD, rclone tries `CreateBucket`, `403 AccessDenied` |
+| `pgrep -f fabric-server-launch` | matched its own command line, so the stop-wait always burned its full 2 minutes |
+| sold-out plan | `412 resource_unavailable` meant no session at all; now `fallback_types` |
+
+Timings worth knowing: cloud-init takes **3.5–7 minutes**, dominated by
+`package_upgrade` and the vanilla server download; world was 6 MB for a fresh
+1.20.1 world; DNS updates under a second after RCON first answers. MagicDNS
+resolution of a brand-new node can lag by 2–3 minutes (a negative cache on the
+resolver), which the 15-minute provisioning timeout absorbs.
+
+Still open from this pass: the Tailscale auth key is not ephemeral (create one
+with the ephemeral flag in the console) and `tag:outpost` needs an ACL owner
+before tags can be used at all.
+
 ## What is actually done
 
 | | |
@@ -35,9 +75,11 @@ finished. `PLAN.md` has the full reasoning.
 | Touched real infra | **No.** No Hetzner call has been made from this code. |
 
 Built: config loader, SQLite store, Hetzner client, Cloudflare DNS client, RCON
-client, SSH runner, cloud-init renderer, the state machine, the JSON API, the CLI.
+client, SSH runner, cloud-init renderer, the state machine, the JSON API, the CLI,
+and `outpost publish` (R2 over the S3 API, Fabric launcher, Mojang UUIDs).
 
-Not built: anything that puts files *into* R2. That is the blocker — see below.
+Still not built: the modpack itself. `publish` takes a directory; nobody has
+chosen what goes in it yet.
 
 ---
 
@@ -76,12 +118,19 @@ save leaves the VPS running rather than deleting a world it could not back up.
 
 ## Open work, in order
 
-### 1. Publishing assets to R2 — the one blocker
+### 1. ~~Publishing assets to R2~~ — done
 
-Nothing can put a modpack, a world, or `server.properties` into R2 yet. Until that
-exists, a first run is vanilla-or-nothing.
+`outpost publish` (written 2026-11-11, after this handoff) fills the asset bucket:
+it fetches a Fabric launcher from Fabric Meta, resolves whitelist names to UUIDs
+through Mojang, generates `eula.txt`, `server.properties` and `start.sh` when the
+pack has none, uploads `server/`, `mods/`, `config/` and `scripts/`, and verifies
+every key's size in R2 before it reports success. `--prune` removes stale mods,
+`--dry-run` prints the plan.
 
-The layout the template reads:
+What is left of this item is the *content* question, not the plumbing: vanilla
+first, then decide on a modpack.
+
+The layout it writes is the one the template reads:
 
 ```
 mc-assets/server/{fabric-server-launch.jar,server.properties,ops.json,whitelist.json,eula.txt}
@@ -91,20 +140,27 @@ mc-assets/scripts/{start.sh,stop.sh}
 mc-worlds/current/world.tar.gz        optional — absent means "generate one"
 ```
 
-`legacy/v1/r2-manage.sh` and `legacy/v1/upload-mods.sh` already do most of this
-against an rclone remote, including a client-only mod filter (`client-only-mods.txt`,
-84 entries) so the server does not try to load rendering mods. Reviving those is
-the cheapest path to a first session.
+`legacy/v1/r2-manage.sh` and `legacy/v1/upload-mods.sh` were the alternative and
+are now dead: a bash script would have been the third language in the project and
+the only piece that decides what a server boots from. The client-only filter they
+carried (118 lines, 84 mods) moved to `internal/publish/client-only-mods.txt` as
+the default, and a pack can override it with its own copy.
 
-The tidier long-term answer is `outpost publish` in the Go CLI — a `minio-go` S3
-client is the smallest dependency that does it. Pick one; do not leave both.
+The whitelist is generated from names at publish time, so v1's single-entry
+`AutumnsAdventure` file cannot come back by accident: `--whitelist` takes both
+people and Mojang supplies the UUIDs.
 
-Also needed for a real modpack: `ops.json` and `whitelist.json` with real
-UUIDs/names. Mojang's `api.mojang.com/users/profiles/minecraft/<name>` returns them.
-v1 only ever had one entry, `AutumnsAdventure` — the point of this project is
-playing with someone else, so the whitelist needs both people this time.
+### 2. Server pricing ~~needs a second look~~ — checked 2026-11-12
 
-### 2. Server pricing needs a second look
+Read off the Hetzner API with a real token, so this replaces the estimates below:
+**CX22 no longer exists.** The 4 GB plan is `cx23` at €0.0104/hr and the 8 GB one
+is `cx33` at €0.0160/hr — 54% more, not double. `cax11` (2c/4 GB ARM) is
+€0.0112/hr and `cax21` (4c/8 GB ARM) €0.0200/hr, so ARM stopped being the cheap
+option. Ashburn's cheapest 4–8 GB plan is `cpx21` at €0.0601/hr, six times
+Nuremberg, so `us` is out of the config. Stock is still unverified: the API lists
+`cx23` but only a create call can prove it is orderable.
+
+The table below is kept as the record of what was estimated in November 2026.
 
 Hetzner raised prices on 15 June 2026 for new orders and rescales — some plans
 more than doubled — so the `hourly_rate` values in `config.yaml` are stale and the
