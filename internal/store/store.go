@@ -100,25 +100,29 @@ func Open(path string) (*Store, error) {
 	return &Store{path: path, db: db}, nil
 }
 
-// LockStart takes an exclusive lock for the duration of renting a server.
+// TryLock takes an exclusive, non-blocking lock over the state machine.
 //
-// It is a file lock, not a mutex, because the two processes that can call Start
-// are `outpost serve` and an `outpost start` shell, and they share nothing but
-// this database. `flock` is per open file description, so a second Open in the
-// same process is excluded too.
-func (s *Store) LockStart() (release func(), err error) {
+// It is a file lock, not a mutex, because more than one process can drive the
+// machine: `outpost serve`, `outpost start`, `outpost stop`, and `outpost tick`
+// from cron. They share nothing but this database. `flock` is per open file
+// description, so a second Open in the same process is excluded too.
+//
+// Non-blocking on purpose: a caller that cannot get the lock should skip its
+// pass and let the holder finish, never queue behind a fifteen-minute SSH
+// timeout.
+func (s *Store) TryLock() (release func(), ok bool, err error) {
 	f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
+		return nil, false, fmt.Errorf("open lock file: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("another outpost process is already starting a server")
+		return nil, false, nil
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
-	}, nil
+	}, true, nil
 }
 
 // Close closes the database.
