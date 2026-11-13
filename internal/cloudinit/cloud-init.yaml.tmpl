@@ -105,12 +105,25 @@ runcmd:
   - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/config/ /opt/minecraft/config/
   - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/scripts/ /opt/minecraft/
 
-  # --- restore the world (v1 laid this out as a single tarball)
+  # --- restore the world (a single tarball, laid out by v1)
+  #
+  # Two traps here, both found the hard way:
+  #   * /tmp/world has to be owned by minecraft, because the rclone runs as that
+  #     user and root's 0755 directory is not writable. Without the chown the
+  #     restore silently failed and Minecraft generated a fresh world over the
+  #     top of a real one.
+  #   * Nothing is redirected to /dev/null. The first version swallowed the
+  #     error and printed "no world in R2", which is a lie with a clean-looking
+  #     log, so the failure was invisible for three sessions.
   - |
     mkdir -p /tmp/world
-    if sudo -u minecraft rclone copy r2:{{ .WorldBucket }}/current/world.tar.gz /tmp/world/ 2>/dev/null && [ -f /tmp/world/world.tar.gz ]; then
-      tar -xzf /tmp/world/world.tar.gz -C /opt/minecraft/
-      echo "world restored"
+    chown minecraft:minecraft /tmp/world
+    if sudo -u minecraft rclone copyto r2:{{ .WorldBucket }}/current/world.tar.gz /tmp/world/world.tar.gz; then
+      if tar -xzf /tmp/world/world.tar.gz -C /opt/minecraft/; then
+        echo "world restored"
+      else
+        echo "WORLD TARBALL WOULD NOT EXTRACT - generating a new one"
+      fi
     else
       echo "no world in R2, Minecraft will generate one"
     fi
