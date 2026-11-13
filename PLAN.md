@@ -142,7 +142,8 @@ Le Potato (~/outpost, Go binary, SQLite, tailscale serve :8896)
   ├── SSH over tailnet   rclone the world up
   └── JSON API + tile in Meridian
         │
-        ├──► Hetzner CX22 in nbg1  ─ ephemeral, deleted on idle
+        ├──► Hetzner cx23 in nbg1  ─ ephemeral, deleted on idle
+        │      (cx33 is the 8 GB step; swapping is one line in config)
         │      cloud-init: tailscale, java 17, rclone pull from R2,
         │      restore world, start MC, RCON on
         └──► R2  mc-assets/ + mc-worlds/   (unchanged from v1)
@@ -172,3 +173,67 @@ These touch things outside the repo and need Autumn's go-ahead:
    `grove-term-manifest.json`; clean the stale `mc.grove.place` A and SRV records.
 4. Deploy to the Potato: `docs/outpost.md` in the homelab repo, systemd unit,
    Meridian tile, entry in `service-healthcheck.sh`.
+
+## Decisions from the hardening pass (2026-11-11, before the first real run)
+
+Written while fixing the seven things that would have turned a bad first session into a
+billing problem. None of them change the shape above; they close holes in it.
+
+### 9. Renting is serialised, and `Start` refuses two situations outright
+
+`outpost start` and `outpost serve` are two processes sharing one SQLite file, so
+"is anything already running?" is not a question either of them can answer alone. `Start`
+now takes an exclusive file lock (`outpost.db.lock`) before it reads state, and it asks
+Hetzner what exists before it rents: a lost or restored database must not become two
+billing servers. It also refuses to start from `ERROR` while a VPS is still recorded —
+`ERROR` is exactly where a failed save leaves a server running, and renting over it would
+orphan the world. The message names `outpost reset`, because that is the fix.
+
+### 10. A server that never came up has no world, so it is not saved
+
+`PROVISIONING` timing out used to fall into the normal shutdown path, which tried to tar a
+`world/` directory that was never generated, failed three times, and landed in `ERROR` with
+a VPS nobody had a shell on. The shutdown path now asks two questions first: did this VPS
+ever answer RCON (recorded as `ever_running` when it reaches `RUNNING`), and does
+`/opt/minecraft/world` exist. Only if both say yes does it try to save; otherwise it
+deletes. A world that cannot be confirmed missing is still saved — that asymmetry is the
+whole point.
+
+### 11. Five minutes of RCON silence, not one
+
+`maxRCONFailures` was 3 ticks, so 60 seconds of a stalled main thread, a tailnet rekey or a
+laggy save would save and tear down a live session. The limit is
+`server.rcon_failure_limit`, default 15 ticks (five minutes at the default interval): long
+enough to ride out a blip, short enough that a dead server does not bill for an hour.
+
+### 12. The VPS exposes one port, and its tailnet node is disposable
+
+The cloud-init template no longer runs `ufw allow OpenSSH`. SSH and RCON are reached over
+`tailscale0`, which the rules already permit; a public 22 contradicted "only 25565 is
+public". `tailscale up` also takes `--ephemeral`, so each session's node leaves the tailnet
+when the machine is deleted instead of accumulating dead devices. `hetzner.firewall_id` is
+available for a second, API-side layer; ufw remains the floor.
+
+### 13. `config.Load` parses, `config.Validate` gates
+
+Reading state must not require cloud credentials. `Load` no longer validates, and each
+command declares whether it needs them (`requiresCloud`): `serve`, `start`, `stop`, `tick`
+and `reset` do, `status` does not. That is what makes `outpost status` usable on a box where
+nothing has been exported yet.
+
+### 14. A sold-out plan falls back to another size, not to a failed start
+
+Hetzner's stock has been thin since 2026 and answers a plan it cannot place with
+`412 resource_unavailable` rather than queueing. On the first real run that meant
+`cx23` and `cx33` were both unavailable in `nbg1` and the session simply could not
+start, even though `cax11` was sitting there. `regions.*.fallback_types` is now a
+list tried in order; a real error (bad token, bad image) still aborts immediately
+instead of walking the list. Only `resource_unavailable` triggers a fallback,
+because only that one means "try another shape".
+
+### 15. Publishing assets is a Go command, not a bash script
+
+Rejected: reviving `legacy/v1/r2-manage.sh`. It would have been the third language in a
+Go project, and the one piece of the system that decides what a server boots from. `outpost
+publish` (R2 over the S3 API, Fabric launcher fetched from Fabric Meta, whitelist UUIDs from
+Mojang) is the same code path on the Mac and the Potato, and it can be tested.

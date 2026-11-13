@@ -73,7 +73,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
 	if body.Region == "" {
-		body.Region = "eu"
+		body.Region = s.orch.DefaultRegion()
 	}
 
 	st, err := s.orch.Start(r.Context(), body.Region)

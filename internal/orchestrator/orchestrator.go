@@ -31,9 +31,10 @@ import (
 // rconPort is fixed by server.properties.
 const rconPort = 25575
 
-// maxRCONFailures is how many consecutive failed probes are tolerated before a
-// live server is assumed to be wedged and taken down.
-const maxRCONFailures = 3
+// maxRCONFailures is the fallback for a config that does not set
+// server.rcon_failure_limit. At the default 20s tick this is five minutes of a
+// wedged server before it is taken down and its world saved.
+const maxRCONFailures = 15
 
 // maxWorldSaveAttempts is how many times the shutdown path will retry the world
 // upload before giving up. Giving up leaves the VPS alive on purpose: a running
@@ -119,6 +120,19 @@ func NewWith(cfg *config.Config, st *store.Store, log *slog.Logger, deps Deps) *
 
 func (o *Orchestrator) now() time.Time { return o.deps.Now() }
 
+// DefaultRegion is the region `outpost start` uses when told nothing else. The
+// HTTP API asks this rather than hard-coding one, so a config without "eu"
+// does not try to rent in a region nobody configured.
+func (o *Orchestrator) DefaultRegion() string { return o.cfg.DefaultRegion() }
+
+// rconFailureLimit tolerates a config built without defaults (tests, mostly).
+func (o *Orchestrator) rconFailureLimit() int {
+	if n := o.cfg.Server.RCONFailureLimit; n > 0 {
+		return n
+	}
+	return maxRCONFailures
+}
+
 // Status is the snapshot the API and the CLI both render.
 type Status struct {
 	State        string  `json:"state"`
@@ -133,9 +147,9 @@ type Status struct {
 	TTLSec       int64   `json:"ttlSeconds"`
 	StartedAt    string  `json:"startedAt"`
 	HourlyRate   float64 `json:"hourlyRate"`
-	SessionCost  float64 `json:"sessionCostUsd"`
+	SessionCost  float64 `json:"sessionCost"`
 	TotalHours   float64 `json:"totalHours"`
-	TotalCost    float64 `json:"totalCostUsd"`
+	TotalCost    float64 `json:"totalCost"`
 	LastError    string  `json:"lastError"`
 	DNSName      string  `json:"dnsName"`
 	IdleGraceSec int64   `json:"idleGraceSeconds"`
@@ -143,6 +157,10 @@ type Status struct {
 }
 
 // Status reads the current state and decorates it with costs and timers.
+//
+// Money is euros, because that is the only currency Hetzner bills in. The
+// numbers come from config's hourly_rate, so they are an estimate for the
+// readout and never the bill.
 func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 	st, err := o.store.GetState()
 	if err != nil {
@@ -190,12 +208,36 @@ func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 // asked Hetzner" and "Hetzner answered" cannot lose the server: the vps_id is
 // committed as soon as it exists.
 func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerState, error) {
+	// Renting is the one action that costs money the instant it succeeds, so it
+	// is serialised across processes before anything else is read: `outpost
+	// serve` and an `outpost start` shell must not both pass the state check.
+	release, err := o.store.LockStart()
+	if err != nil {
+		return store.ServerState{}, err
+	}
+	defer release()
+
 	st, err := o.store.GetState()
 	if err != nil {
 		return st, err
 	}
-	if st.State != store.Offline && st.State != store.Error {
+	switch {
+	case st.State == store.Error && st.VPSID != "":
+		// ERROR is where a failed world save leaves a live, billing server.
+		// Renting a second one would orphan the first and its unsaved world.
+		return st, fmt.Errorf("state is ERROR with server %s still running; run `outpost reset` (or `outpost stop`) first", st.VPSID)
+	case st.State != store.Offline && st.State != store.Error:
 		return st, fmt.Errorf("server is %s; stop it first", st.State)
+	}
+
+	// Ask Hetzner what exists, not just what SQLite remembers. A restored or
+	// lost outpost.db must not turn into two rented servers.
+	stray, err := o.deps.Servers.List(ctx)
+	if err != nil {
+		return st, fmt.Errorf("check for existing servers: %w", err)
+	}
+	if len(stray) > 0 {
+		return st, fmt.Errorf("%d outpost server(s) already exist in Hetzner (%s); run `outpost reset` first", len(stray), stray[0].Name)
 	}
 
 	reg, err := o.cfg.Region(region)
@@ -231,15 +273,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 
 	o.log.Info("renting server", "region", region, "type", reg.ServerType, "hostname", hostname)
 
-	srv, err := o.deps.Servers.Create(ctx, hetzner.CreateRequest{
-		Name:       hostname,
-		ServerType: reg.ServerType,
-		Location:   reg.Location,
-		Image:      o.cfg.Hetzner.Image,
-		SSHKeyID:   o.cfg.Hetzner.SSHKeyID,
-		SnapshotID: o.cfg.Hetzner.SnapshotID,
-		UserData:   userData,
-	})
+	srv, serverType, err := o.rent(ctx, hostname, reg, userData)
 	if err != nil {
 		return st, err
 	}
@@ -250,7 +284,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		VPSIP:        srv.PublicNet.IPv4.IP,
 		TailnetHost:  hostname,
 		Region:       region,
-		ServerType:   reg.ServerType,
+		ServerType:   serverType,
 		RCONPassword: password,
 		StartedAt:    o.now(),
 	}
@@ -262,13 +296,54 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	_ = o.store.MetaSet("world_saved", "")
 	_ = o.store.MetaSet("save_attempts", "0")
 	_ = o.store.MetaSet("rcon_failures", "0")
+	_ = o.store.MetaSet("ever_running", "")
 
-	if _, err := o.store.StartSession(st.StartedAt, region, reg.ServerType, fmt.Sprint(srv.ID)); err != nil {
+	if _, err := o.store.StartSession(st.StartedAt, region, serverType, fmt.Sprint(srv.ID)); err != nil {
 		return st, err
 	}
-	_ = o.store.Log("start", "rented %s in %s (%s)", hostname, reg.Location, reg.ServerType)
+	_ = o.store.Log("start", "rented %s in %s (%s)", hostname, reg.Location, serverType)
 
 	return st, nil
+}
+
+// rent creates the server, walking through the configured fallback sizes when
+// Hetzner has no capacity for the preferred one. Thin stock is the normal state
+// of the world Outpost lives in, not an exceptional condition.
+func (o *Orchestrator) rent(ctx context.Context, hostname string, reg config.Region, userData string) (*hetzner.Server, string, error) {
+	types := append([]string{reg.ServerType}, reg.FallbackTypes...)
+
+	var lastErr error
+	for _, serverType := range types {
+		if serverType == "" {
+			continue
+		}
+		srv, err := o.deps.Servers.Create(ctx, hetzner.CreateRequest{
+			Name:       hostname,
+			ServerType: serverType,
+			Location:   reg.Location,
+			Image:      o.cfg.Hetzner.Image,
+			SSHKeyID:   o.cfg.Hetzner.SSHKeyID,
+			SnapshotID: o.cfg.Hetzner.SnapshotID,
+			FirewallID: o.cfg.Hetzner.FirewallID,
+			UserData:   userData,
+		})
+		if err == nil {
+			if serverType != reg.ServerType {
+				o.log.Info("fell back to another size", "type", serverType, "wanted", reg.ServerType)
+				_ = o.store.Log("fallback", "%s has no capacity; rented %s instead", reg.ServerType, serverType)
+			}
+			_ = o.store.MetaSet("rented_type", serverType)
+			return srv, serverType, nil
+		}
+		if !errors.Is(err, hetzner.ErrUnavailable) {
+			return nil, "", err
+		}
+		lastErr = err
+		o.log.Warn("no capacity", "type", serverType, "location", reg.Location)
+		_ = o.store.Log("no-capacity", "%s in %s: %v", serverType, reg.Location, err)
+	}
+
+	return nil, "", fmt.Errorf("no capacity in %s for any of %v: %w", reg.Location, types, lastErr)
 }
 
 // Stop asks for a graceful shutdown. Tick does the work.
@@ -358,6 +433,9 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 	next.Players = players.Online
 	next.VPSIP = srv.PublicNet.IPv4.IP
 	next.LastError = ""
+	// Record that this VPS actually served, so the shutdown path can tell a
+	// server with a world from one that never got past its own boot.
+	_ = o.store.MetaSet("ever_running", st.VPSID)
 	// Record a server that came up with nobody on it, so the idle clock starts
 	// now rather than one tick later.
 	next.IdleSince = time.Time{}
@@ -405,7 +483,7 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		_ = o.store.MetaSet("rcon_failures", fmt.Sprint(failures))
 		o.log.Warn("rcon probe failed", "host", st.TailnetHost, "attempt", failures, "err", probeErr)
 
-		if failures >= maxRCONFailures {
+		if failures >= o.rconFailureLimit() {
 			_ = o.store.MetaSet("rcon_failures", "0")
 			_ = o.store.Log("rcon-dead", "%d consecutive failures, shutting down", failures)
 			st.LastError = fmt.Sprintf("rcon unreachable: %v", probeErr)
@@ -480,31 +558,21 @@ func (o *Orchestrator) tickTerminating(ctx context.Context, st store.ServerState
 	}
 
 	if saved != st.VPSID {
-		size, err := o.persistWorld(ctx, st)
+		skip, err := o.nothingToSave(ctx, st)
 		if err != nil {
-			attempts, _ := o.store.MetaInt("save_attempts")
-			attempts++
-			_ = o.store.MetaSet("save_attempts", fmt.Sprint(attempts))
-			o.log.Error("world save failed", "attempt", attempts, "err", err)
-
-			if attempts >= maxWorldSaveAttempts {
-				// Deliberately leave the VPS running. A server you are still
-				// paying for is recoverable; a deleted world is not.
-				st.LastError = fmt.Sprintf("world save failed after %d attempts: %v", attempts, err)
-				_ = o.store.SetState(st)
-				_ = o.store.Log("save-failed", "%v (vps %s left running)", err, st.VPSID)
-				return o.transition(st, store.Error)
-			}
-			return nil
-		}
-
-		if sess, _ := o.store.CurrentSession(); sess != nil {
-			_ = o.store.RecordBackup(size, sess.ID, "shutdown")
-		}
-		if err := o.store.MetaSet("world_saved", st.VPSID); err != nil {
 			return err
 		}
-		_ = o.store.Log("saved", "world uploaded, %d bytes", size)
+		if !skip {
+			done, err := o.archiveWorld(ctx, st)
+			if err != nil {
+				return err
+			}
+			if !done {
+				// The world is not in R2 yet. Stop here rather than deleting the
+				// server: the next tick retries the save.
+				return nil
+			}
+		}
 	}
 
 	if err := o.deps.Servers.Delete(ctx, st.VPSID); err != nil {
@@ -524,6 +592,73 @@ func (o *Orchestrator) tickTerminating(ctx context.Context, st store.ServerState
 	return o.finalize(st, "terminated")
 }
 
+// nothingToSave decides whether a terminating server has a world worth
+// archiving. Two cases say no: it never answered RCON, so Minecraft never
+// started (the provisioning-timeout path), or the world directory is not there
+// (a boot that died before the R2 pull finished).
+//
+// Anything uncertain — SSH down, unrecognised output — returns false, because
+// trying to save and failing is recoverable and deleting an unbacked-up world
+// is not.
+func (o *Orchestrator) nothingToSave(ctx context.Context, st store.ServerState) (bool, error) {
+	everRunning, err := o.store.MetaGet("ever_running")
+	if err != nil {
+		return false, err
+	}
+	if everRunning != st.VPSID {
+		o.log.Info("no world to save: server never reached RUNNING", "id", st.VPSID)
+		_ = o.store.Log("no-world", "vps %s never reached RUNNING, deleting without a save", st.VPSID)
+		return true, nil
+	}
+
+	out, err := o.deps.Remote.Run(ctx, st.TailnetHost,
+		"test -d /opt/minecraft/world && echo outpost=world-present || echo outpost=world-absent")
+	if err != nil {
+		return false, nil
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "outpost=world-absent" {
+			o.log.Warn("no world directory on the vps, deleting without a save", "id", st.VPSID)
+			_ = o.store.Log("no-world", "vps %s has no world directory, deleting without a save", st.VPSID)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// archiveWorld stops the server, uploads the world to R2 and records the backup.
+// done is false when the attempt failed and the caller should retry on the next
+// tick; after maxWorldSaveAttempts it moves the machine to ERROR and leaves the
+// VPS running, on purpose.
+func (o *Orchestrator) archiveWorld(ctx context.Context, st store.ServerState) (done bool, err error) {
+	size, err := o.persistWorld(ctx, st)
+	if err != nil {
+		attempts, _ := o.store.MetaInt("save_attempts")
+		attempts++
+		_ = o.store.MetaSet("save_attempts", fmt.Sprint(attempts))
+		o.log.Error("world save failed", "attempt", attempts, "err", err)
+
+		if attempts >= maxWorldSaveAttempts {
+			// Deliberately leave the VPS running. A server you are still paying
+			// for is recoverable; a deleted world is not.
+			st.LastError = fmt.Sprintf("world save failed after %d attempts: %v", attempts, err)
+			_ = o.store.SetState(st)
+			_ = o.store.Log("save-failed", "%v (vps %s left running)", err, st.VPSID)
+			return false, o.transition(st, store.Error)
+		}
+		return false, nil
+	}
+
+	if sess, _ := o.store.CurrentSession(); sess != nil {
+		_ = o.store.RecordBackup(size, sess.ID, "shutdown")
+	}
+	if err := o.store.MetaSet("world_saved", st.VPSID); err != nil {
+		return false, err
+	}
+	_ = o.store.Log("saved", "world uploaded, %d bytes", size)
+	return true, nil
+}
+
 // persistWorld stops Minecraft cleanly and ships the world to R2.
 func (o *Orchestrator) persistWorld(ctx context.Context, st store.ServerState) (int64, error) {
 	addr := fmt.Sprintf("%s:%d", st.TailnetHost, rconPort)
@@ -537,7 +672,11 @@ func (o *Orchestrator) persistWorld(ctx context.Context, st store.ServerState) (
 	}
 
 	// Give the JVM time to exit so the tar is not of a half-written region file.
-	wait := `for i in $(seq 1 60); do pgrep -f fabric-server-launch >/dev/null || exit 0; sleep 2; done; exit 1`
+	//
+	// The bracket in [f]abric... is load-bearing: this command's own text
+	// contains "fabric-server-launch", so a plain `pgrep -f` matches the shell
+	// running it and the loop always runs its full two minutes.
+	wait := `for i in $(seq 1 60); do pgrep -f '[f]abric-server-launch' >/dev/null || exit 0; sleep 2; done; exit 1`
 	if _, err := o.deps.Remote.Run(ctx, st.TailnetHost, wait); err != nil {
 		o.log.Warn("minecraft did not stop cleanly", "err", err)
 	}

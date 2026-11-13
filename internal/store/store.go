@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"os"
+	"syscall"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -78,7 +80,8 @@ type Event struct {
 
 // Store wraps the SQLite handle.
 type Store struct {
-	db *sql.DB
+	path string
+	db   *sql.DB
 }
 
 // Open opens (creating if needed) the database at path and applies the schema.
@@ -94,7 +97,28 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{path: path, db: db}, nil
+}
+
+// LockStart takes an exclusive lock for the duration of renting a server.
+//
+// It is a file lock, not a mutex, because the two processes that can call Start
+// are `outpost serve` and an `outpost start` shell, and they share nothing but
+// this database. `flock` is per open file description, so a second Open in the
+// same process is excluded too.
+func (s *Store) LockStart() (release func(), err error) {
+	f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("another outpost process is already starting a server")
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 // Close closes the database.
