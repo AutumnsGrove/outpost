@@ -5,6 +5,7 @@ package cloudinit
 import (
 	_ "embed"
 	"fmt"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -13,6 +14,11 @@ import (
 var tmpl string
 
 var parsed = template.Must(template.New("cloud-init").Parse(tmpl))
+
+var (
+	safeSecret = regexp.MustCompile(`^[A-Za-z0-9._~+=/:-]+$`)
+	safeName   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+)
 
 // Data is everything the template needs. Secrets arrive here already read from
 // the orchestrator's environment and are never written to disk anywhere else.
@@ -54,9 +60,28 @@ func (d Data) Validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("cloud-init: missing %s", strings.Join(missing, ", "))
 	}
-	for _, v := range []string{d.TailscaleAuthKey, d.R2AccessKey, d.R2SecretKey, d.RCONPassword} {
-		if strings.ContainsAny(v, " \t\n'\"") {
-			return fmt.Errorf("cloud-init: secret values must not contain whitespace or quotes")
+	// These land unquoted in shell commands and an INI file. An allowlist rather
+	// than a blacklist: the real values are alphanumeric plus a few separators,
+	// and a `$`, backtick or `;` in a pasted key is a typo to be caught here, not
+	// a command to be run as root on a fresh server.
+	for name, v := range map[string]string{
+		"tailscale auth key": d.TailscaleAuthKey,
+		"r2 access key":      d.R2AccessKey,
+		"r2 secret key":      d.R2SecretKey,
+		"rcon password":      d.RCONPassword,
+	} {
+		if !safeSecret.MatchString(v) {
+			return fmt.Errorf("cloud-init: %s has characters outside A-Z a-z 0-9 . _ ~ + = / : -", name)
+		}
+	}
+	for _, v := range []string{d.Hostname, d.AssetBucket, d.WorldBucket, d.R2AccountID} {
+		if !safeName.MatchString(v) {
+			return fmt.Errorf("cloud-init: %q is not a plain name (letters, digits, - . _)", v)
+		}
+	}
+	for _, tag := range d.TailscaleTags {
+		if !safeName.MatchString(strings.ReplaceAll(tag, ":", "-")) {
+			return fmt.Errorf("cloud-init: tailscale tag %q is not a plain name", tag)
 		}
 	}
 	return nil

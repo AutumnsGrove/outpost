@@ -31,6 +31,12 @@ type fakeServers struct {
 	createErr error
 	// created records every server type asked for, in order.
 	created []string
+	// lostReply creates the server and then reports an error anyway, the way a
+	// timed-out HTTP call does when Hetzner placed the order.
+	lostReply bool
+	// deleteLeavesDeleting makes Delete leave the server listed as "deleting" for
+	// this many Gets, like Hetzner's asynchronous delete.
+	deleteLeavesDeleting int
 }
 
 func newFakeServers() *fakeServers {
@@ -54,6 +60,9 @@ func (f *fakeServers) Create(_ context.Context, spec hetzner.CreateRequest) (*he
 	s := &hetzner.Server{ID: f.nextID, Name: spec.Name, Status: "running"}
 	s.PublicNet.IPv4.IP = "203.0.113.10"
 	f.servers[strconv.FormatInt(f.nextID, 10)] = s
+	if f.lostReply {
+		return nil, errors.New("post /servers: context deadline exceeded")
+	}
 	return s, nil
 }
 
@@ -64,12 +73,26 @@ func (f *fakeServers) Get(_ context.Context, id string) (*hetzner.Server, error)
 	if !ok {
 		return nil, hetzner.ErrNotFound
 	}
+	if s.Status == "deleting" {
+		if f.deleteLeavesDeleting > 0 {
+			f.deleteLeavesDeleting--
+		} else {
+			delete(f.servers, id)
+			return nil, hetzner.ErrNotFound
+		}
+	}
 	return s, nil
 }
 
 func (f *fakeServers) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.deleteLeavesDeleting > 0 {
+		if s, ok := f.servers[id]; ok {
+			s.Status = "deleting"
+		}
+		return nil
+	}
 	delete(f.servers, id)
 	return nil
 }
@@ -103,6 +126,8 @@ func (d *fakeDNS) SetA(_ context.Context, ip string) error {
 type fakeRemote struct {
 	out string
 	err error
+	// failMatching fails only commands containing this text.
+	failMatching string
 	// calls records the commands, so tests can assert the world was archived.
 	calls []string
 }
@@ -111,6 +136,9 @@ func (r *fakeRemote) Run(_ context.Context, _ string, cmd string) (string, error
 	r.calls = append(r.calls, cmd)
 	if r.err != nil {
 		return "", r.err
+	}
+	if r.failMatching != "" && strings.Contains(cmd, r.failMatching) {
+		return "", errors.New("remote: command failed")
 	}
 	return r.out, nil
 }
@@ -724,5 +752,206 @@ func TestTickSkipsWhileAnotherProcessHoldsTheLock(t *testing.T) {
 	h.tick(t)
 	if got := h.mustState(t); got != store.Offline {
 		t.Fatalf("state after the lock is free = %s, want OFFLINE", got)
+	}
+}
+
+// --- review-pass regressions ----------------------------------------------
+
+// runningHarness gets a harness to RUNNING with nobody on.
+func runningHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t)
+	if got := h.mustState(t); got != store.Running {
+		t.Fatalf("state = %s, want RUNNING", got)
+	}
+	return h
+}
+
+// A Stop that lands while a tick is mid-pass used to be overwritten: the tick
+// writes back the row it read before Stop ran, and the button press vanished.
+func TestStopDuringATickIsNotLost(t *testing.T) {
+	h := runningHarness(t)
+	ctx := context.Background()
+
+	stopDone := make(chan error, 1)
+	inProbe := h.o.deps.Probe
+	h.o.deps.Probe = func(c context.Context, addr, pw string) (rcon.Players, error) {
+		go func() { stopDone <- h.o.Stop(ctx) }()
+		time.Sleep(150 * time.Millisecond) // long enough for Stop to try to land
+		return inProbe(c, addr, pw)
+	}
+
+	h.tick(t)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("stop: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop never returned")
+	}
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state = %s, want TERMINATING: the stop was overwritten by the tick", got)
+	}
+}
+
+func TestResetRefusesToDeleteAnUnsavedWorld(t *testing.T) {
+	h := runningHarness(t)
+	ctx := context.Background()
+
+	err := h.o.Reset(ctx, false)
+	if !errors.Is(err, ErrUnsavedWorld) {
+		t.Fatalf("reset of a live, unsaved server = %v, want ErrUnsavedWorld", err)
+	}
+	if h.servers.count() != 1 {
+		t.Fatal("the server was deleted despite the refusal")
+	}
+
+	if err := h.o.Reset(ctx, true); err != nil {
+		t.Fatalf("forced reset: %v", err)
+	}
+	if h.servers.count() != 0 || h.mustState(t) != store.Offline {
+		t.Fatal("forced reset did not clean up")
+	}
+}
+
+func TestResetRefusesUntrackedServersWithoutForce(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.servers.Create(ctx, hetzner.CreateRequest{Name: "outpost-eu-old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.o.Reset(ctx, false); err == nil {
+		t.Fatal("reset deleted a server this database was not tracking")
+	}
+	if h.servers.count() != 1 {
+		t.Fatal("untracked server was deleted")
+	}
+}
+
+func TestResetAfterTheWorldIsSavedNeedsNoForce(t *testing.T) {
+	h := runningHarness(t)
+	ctx := context.Background()
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The save succeeds but the delete is slow: the world is safe, so reset is.
+	h.servers.deleteLeavesDeleting = 99
+	h.tick(t)
+	if err := h.o.Reset(ctx, false); err != nil {
+		t.Fatalf("reset after a saved world: %v", err)
+	}
+}
+
+// Leaving ERROR must be a fresh attempt, not one try and straight back.
+func TestStopFromErrorGetsAFullSetOfSaveAttempts(t *testing.T) {
+	h := runningHarness(t)
+	ctx := context.Background()
+
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.remote.err = errors.New("rclone: 403")
+	for i := 0; i < maxWorldSaveAttempts; i++ {
+		h.tick(t)
+	}
+	if got := h.mustState(t); got != store.Error {
+		t.Fatalf("state = %s, want ERROR", got)
+	}
+
+	h.remote.err = nil
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatalf("stop from ERROR: %v", err)
+	}
+	h.remote.err = errors.New("rclone: still 403")
+	h.tick(t) // one failure must not be enough to land back in ERROR
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state = %s after one failed retry, want TERMINATING", got)
+	}
+}
+
+func TestDNSFailureIsRetriedWhileTheServerIsUp(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.dns.err = errors.New("cloudflare: 500")
+
+	if _, err := h.o.Start(ctx, "eu"); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t) // RUNNING, but the record did not take
+	if st, _ := h.store.GetState(); st.DNSValue != "" {
+		t.Fatalf("dns_value = %q after a failed update", st.DNSValue)
+	}
+
+	h.dns.err = nil
+	h.tick(t)
+	st, _ := h.store.GetState()
+	if st.DNSValue != st.VPSIP || st.VPSIP == "" {
+		t.Fatalf("dns_value = %q, want %q: the record was never retried", st.DNSValue, st.VPSIP)
+	}
+}
+
+func TestStartAdoptsAServerWhoseCreateReplyWasLost(t *testing.T) {
+	h := newHarness(t)
+	h.servers.lostReply = true
+
+	st, err := h.o.Start(context.Background(), "eu")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if h.servers.count() != 1 || st.VPSID == "" {
+		t.Fatalf("the server exists in Hetzner (%d) but is not tracked (id %q)", h.servers.count(), st.VPSID)
+	}
+	if got := h.mustState(t); got != store.Provisioning {
+		t.Fatalf("state = %s, want PROVISIONING", got)
+	}
+}
+
+func TestADeletingServerIsNotAFailure(t *testing.T) {
+	h := runningHarness(t)
+	ctx := context.Background()
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	h.servers.deleteLeavesDeleting = 2
+	h.tick(t) // saves, asks Hetzner to delete, sees "deleting": no error
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state = %s, want TERMINATING while Hetzner finishes", got)
+	}
+	for i := 0; i < 4 && h.mustState(t) != store.Offline; i++ {
+		h.tick(t)
+	}
+	if got := h.mustState(t); got != store.Offline {
+		t.Fatalf("state = %s, want OFFLINE once the server is gone", got)
+	}
+}
+
+// If Minecraft is still running when the wait ends, archiving would upload a
+// torn world over the only good copy.
+func TestAServerThatWillNotStopIsNotArchived(t *testing.T) {
+	h := runningHarness(t)
+	ctx := context.Background()
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	h.remote.failMatching = "systemctl is-active"
+	h.tick(t)
+	if h.remote.savedWorld() {
+		t.Fatal("the world was archived while Minecraft was still running")
+	}
+	if h.servers.count() != 1 {
+		t.Fatal("the server was deleted without a save")
+	}
+
+	h.remote.failMatching = ""
+	h.tick(t)
+	if !h.remote.savedWorld() || h.servers.count() != 0 {
+		t.Fatal("once the server stopped, the save and delete should go through")
 	}
 }
