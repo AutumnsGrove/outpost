@@ -293,10 +293,16 @@ Then restore the real timings (10m / 20m).
   `createServer` and unused. Once one clean run has produced a working
   `/opt/minecraft`, snapshot it: provisioning drops from ~3 minutes of downloading
   the whole modpack to about 40 seconds, and the snapshot costs cents per month.
-- **Undeploy v1.** `wrangler delete` the `mc-control` worker, drop D1 `mc-state`,
-  empty and delete the `mc-assets` and `mc-worlds` buckets (298 MB + 849 MB of
-  December 2025 that is now explicitly disposable), and delete the stale
-  `mc.grove.place` A record and `_minecraft._tcp.grove.place` SRV record.
+- **Undeploy v1 — the worker and the database only.**
+  `wrangler delete` the `mc-control` worker and drop D1 `mc-state`.
+
+  **Do not delete any of these — Outpost v2 now owns them:**
+  - `mc-assets` and `mc-worlds`. Both were emptied on 2026-11-12 and are the live
+    buckets (`mc-assets` holds the server files, `mc-worlds` the world).
+  - the `mc.grove.place` A record. It is updated on every `RUNNING` and is where
+    players connect.
+  - the `_minecraft._tcp.grove.place` SRV record. It points at `mc.grove.place`
+    and is still correct.
 - **Lattice cleanup PR.** Remove the last grove-shaped traces:
   - delete `Lattice/_junkdrawer/features/outpost-routes/` and
     `_junkdrawer/features/outpost-heartwood/`
