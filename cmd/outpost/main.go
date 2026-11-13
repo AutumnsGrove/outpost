@@ -72,6 +72,7 @@ func rootCmd() *cobra.Command {
 		a.tickCmd(),
 		a.resetCmd(),
 		a.publishCmd(),
+		a.updateCmd(),
 	)
 	return root
 }
@@ -119,7 +120,11 @@ func (a *app) serveCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			handler := api.New(a.orch, a.store, a.cfg.Secrets.APIToken, a.log)
+			handler := api.New(a.orch, a.store, api.Options{
+				Token:  a.cfg.Secrets.APIToken,
+				Update: a.selfUpdater(),
+				Log:    a.log,
+			})
 			srv := &http.Server{
 				Addr:              a.cfg.Listen,
 				Handler:           handler,

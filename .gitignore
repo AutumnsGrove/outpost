@@ -11,3 +11,5 @@ outpost.db.lock
 /outpost-arm64
 node_modules/
 .wrangler/
+web/node_modules/
+web/.svelte-kit/

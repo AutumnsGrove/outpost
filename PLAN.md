@@ -231,7 +231,32 @@ list tried in order; a real error (bad token, bad image) still aborts immediatel
 instead of walking the list. Only `resource_unavailable` triggers a fallback,
 because only that one means "try another shape".
 
-### 15. Publishing assets is a Go command, not a bash script
+### 15. The control surface is a page, not buttons on the hub
+
+Meridian is a front door: a tile is a link, and a link to a JSON endpoint is a
+404 in a browser. Outpost gets its own page at `/` — state, players, the address
+to hand out, session cost, recent events, and Start / Save-and-stop / Update —
+built as a static SvelteKit site embedded with `go:embed`, the same shape as
+bwmon and Polaris. That keeps the frontend build out of the box (`web/build` is
+committed; `git pull && go build` stays the whole deploy) and keeps the
+spending buttons one deliberate click away from the dashboard, where a stray tap
+is less likely. Meridian keeps a link and a Restart button.
+
+The page's POSTs carry a per-process form token. That is not authentication —
+the tailnet is, as everywhere else here — it stops some other page in a browser
+from submitting a form that rents a server.
+
+### 16. The daemon updates itself, from the page or from the CLI
+
+`outpost update` does `git pull --ff-only`, builds to `outpost.new`, renames it
+over the running binary only if the build succeeded, then restarts the unit.
+`--ff-only` because an edited checkout on the box should fail loudly rather than
+create a merge nobody can explain; the rename-last because `Restart=always`
+saves you from a crash, not from a binary that starts and loops; and it refuses
+while a server is rented, because a restart mid-session is survivable but
+pointless. Warm rebuild is about five seconds.
+
+### 17. Publishing assets is a Go command, not a bash script
 
 Rejected: reviving `legacy/v1/r2-manage.sh`. It would have been the third language in a
 Go project, and the one piece of the system that decides what a server boots from. `outpost
