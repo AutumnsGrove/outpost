@@ -8,7 +8,9 @@
 # unit does not cover:
 #
 #   /home/autumn/outpost/config.yaml        0600, no secrets (see config.example.yaml)
-#   /etc/outpost.env                        0600 root:autumn, the six credentials
+#   /etc/outpost.env                        0640 root:autumn, the six credentials
+#     (0640, not 0600, so the CLI can be run as autumn:
+#      set -a; . /etc/outpost.env; set +a; ./outpost status)
 #   /home/autumn/outpost/outpost.db         the only state: sessions, backups, events
 #
 # Type=simple, not notify: the daemon does not ping systemd, and adding a
