@@ -171,18 +171,18 @@ func TestLockStartExcludesASecondProcess(t *testing.T) {
 	}
 	defer second.Close()
 
-	release, err := first.LockStart()
-	if err != nil {
-		t.Fatalf("first lock: %v", err)
+	release, ok, err := first.TryLock()
+	if err != nil || !ok {
+		t.Fatalf("first lock: %v ok=%v", err, ok)
 	}
-	if _, err := second.LockStart(); err == nil {
+	if _, ok, err := second.TryLock(); err != nil || ok {
 		t.Fatal("second lock should have been refused while the first is held")
 	}
 
 	release()
-	releaseAgain, err := second.LockStart()
-	if err != nil {
-		t.Fatalf("lock should be free after release: %v", err)
+	releaseAgain, ok, err := second.TryLock()
+	if err != nil || !ok {
+		t.Fatalf("lock should be free after release: %v ok=%v", err, ok)
 	}
 	releaseAgain()
 }
