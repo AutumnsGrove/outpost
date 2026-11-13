@@ -558,9 +558,9 @@ func TestStartRefusesWhenHetznerHasAStrayServer(t *testing.T) {
 func TestStartIsRefusedWhileAnotherProcessHoldsTheLock(t *testing.T) {
 	h := newHarness(t)
 
-	release, err := h.store.LockStart()
-	if err != nil {
-		t.Fatalf("lock: %v", err)
+	release, ok, err := h.store.TryLock()
+	if err != nil || !ok {
+		t.Fatalf("lock: %v ok=%v", err, ok)
 	}
 	defer release()
 
@@ -690,5 +690,39 @@ func TestProbeFallsBackToTheNameWhenTheTailnetCannotAnswer(t *testing.T) {
 	}
 	if got := h.mustState(t); got != store.Running {
 		t.Fatalf("state = %s, want RUNNING", got)
+	}
+}
+
+func TestTickSkipsWhileAnotherProcessHoldsTheLock(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	if _, err := h.o.Start(ctx, "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := h.o.Stop(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// Something else (a second `outpost` process) is mid-pass.
+	release, ok, err := h.store.TryLock()
+	if err != nil || !ok {
+		t.Fatalf("lock: %v ok=%v", err, ok)
+	}
+
+	if err := h.o.Tick(ctx); err != nil {
+		t.Fatalf("tick should be a no-op while locked, got %v", err)
+	}
+	if h.remote.savedWorld() {
+		t.Fatal("a second process saved the world while the first held the lock")
+	}
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state = %s, want TERMINATING (untouched)", got)
+	}
+
+	release()
+	h.tick(t)
+	if got := h.mustState(t); got != store.Offline {
+		t.Fatalf("state after the lock is free = %s, want OFFLINE", got)
 	}
 }

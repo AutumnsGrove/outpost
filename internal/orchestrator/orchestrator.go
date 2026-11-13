@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"outpost/internal/cloudinit"
@@ -84,6 +85,10 @@ type Orchestrator struct {
 	store *store.Store
 	deps  Deps
 	log   *slog.Logger
+
+	// mu serialises Tick and Start inside one process, so the cross-process
+	// file lock below never has to talk to itself.
+	mu sync.Mutex
 }
 
 // New wires an Orchestrator to the real world.
@@ -238,9 +243,15 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	// Renting is the one action that costs money the instant it succeeds, so it
 	// is serialised across processes before anything else is read: `outpost
 	// serve` and an `outpost start` shell must not both pass the state check.
-	release, err := o.store.LockStart()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	release, ok, err := o.store.TryLock()
 	if err != nil {
 		return store.ServerState{}, err
+	}
+	if !ok {
+		return store.ServerState{}, fmt.Errorf("another outpost process is busy; try again")
 	}
 	defer release()
 
@@ -391,7 +402,25 @@ func (o *Orchestrator) Stop(ctx context.Context) error {
 
 // Tick advances the machine by one step. Safe to call from any state, as often
 // as you like.
+//
+// Only one process ticks at a time. Two ticks racing on the same state is how a
+// world gets saved twice and two backup rows appear for one shutdown: the first
+// real session's `outpost stop` ran while `outpost serve` was mid-tick, and both
+// of them archived the world.
 func (o *Orchestrator) Tick(ctx context.Context) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	release, ok, err := o.store.TryLock()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		o.log.Debug("another process is ticking, skipping this pass")
+		return nil
+	}
+	defer release()
+
 	st, err := o.store.GetState()
 	if err != nil {
 		return err
@@ -773,7 +802,7 @@ func (o *Orchestrator) finalize(st store.ServerState, reason string) error {
 			return err
 		}
 		o.log.Info("session closed", "seconds", duration, "cost_usd", cost)
-		_ = o.store.Log("session", "%dm, $%.4f", duration/60, cost)
+		_ = o.store.Log("session", "%dm, %.4f EUR", duration/60, cost)
 	}
 
 	if err := o.store.Reset(); err != nil {
