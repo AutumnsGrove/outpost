@@ -97,6 +97,7 @@ outpost publish [dir]    # upload a server pack to R2
 outpost start [region]   # rent a server (default region: eu)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
+outpost update           # git pull, rebuild, restart — see "Updating"
 outpost tick             # one reconcile pass, for cron
 outpost reset            # delete every outpost server, back to OFFLINE
 ```
@@ -131,8 +132,14 @@ Vanilla is `--fabric 1.20.1` with an empty `mods/`. A modpack is the same comman
 with jars in `mods/` and a `start.sh` sized for the instance you rent.
 
 `outpost serve` is the only long-running piece:
-`tailscale serve --bg 8896` in front of it gives you
-`https://<host>.ts.net:8896/api/status`.
+`tailscale serve --https=8896` in front of it gives you a page at
+`https://<host>.ts.net:8896/` — state, who is playing, the address to hand out,
+what the session has cost, and **Start / Save and stop / Update** buttons.
+
+The page is a SvelteKit app built to static files and embedded with `go:embed`
+(the same shape as bwmon and Polaris), so the box needs no Node at runtime and
+`git pull && go build` is the whole deploy. The built output in `web/build` is
+committed on purpose; `make web` rebuilds it.
 
 ## Building
 
@@ -140,7 +147,11 @@ with jars in `mods/` and a `start.sh` sized for the instance you rent.
 make build      # local
 make potato     # linux/arm64, the binary that goes to the Le Potato
 make test
+make web        # rebuild web/build after touching web/src, then commit it
 ```
+
+`make build` does not touch the frontend: `web/build` is committed, so a plain
+`go build` on the box produces a complete binary.
 
 Pure Go SQLite, no cgo, so the cross-compile works from the Mac with no toolchain
 gymnastics.
