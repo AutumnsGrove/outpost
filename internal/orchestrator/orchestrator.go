@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"outpost/internal/rcon"
 	"outpost/internal/remote"
 	"outpost/internal/store"
+	"outpost/internal/tailnet"
 )
 
 // rconPort is fixed by server.properties.
@@ -70,6 +72,10 @@ type Deps struct {
 	Remote  Remote
 	Probe   Probe
 	Now     func() time.Time
+
+	// Resolve turns the VPS's tailnet name into an address without DNS. See
+	// internal/tailnet for why that matters.
+	Resolve func(ctx context.Context, host string) (string, error)
 }
 
 // Orchestrator drives the lifecycle.
@@ -92,6 +98,7 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Orchestrator {
 			Remote:  remote.New(cfg.Hetzner.SSHUser, cfg.Hetzner.SSHPrivateKey),
 			Probe:   probe,
 			Now:     func() time.Time { return time.Now().UTC() },
+			Resolve: tailnet.Resolve,
 		},
 	}
 }
@@ -115,10 +122,30 @@ func NewWith(cfg *config.Config, st *store.Store, log *slog.Logger, deps Deps) *
 	if deps.Now != nil {
 		o.deps.Now = deps.Now
 	}
+	if deps.Resolve != nil {
+		o.deps.Resolve = deps.Resolve
+	}
 	return o
 }
 
 func (o *Orchestrator) now() time.Time { return o.deps.Now() }
+
+// dialHost is the address to actually connect to.
+//
+// MagicDNS is one cached NXDOMAIN away from lying, and the orchestrator reads
+// that as "the server never came up". Ask the local tailnet first; fall back to
+// the name so a host without the tailscale CLI still works.
+func (o *Orchestrator) dialHost(ctx context.Context, st store.ServerState) string {
+	if o.deps.Resolve == nil {
+		return st.TailnetHost
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if ip, err := o.deps.Resolve(ctx, st.TailnetHost); err == nil && ip != "" {
+		return ip
+	}
+	return st.TailnetHost
+}
 
 // DefaultRegion is the region `outpost start` uses when told nothing else. The
 // HTTP API asks this rather than hard-coding one, so a config without "eu"
@@ -420,8 +447,9 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 	}
 
 	// RCON answering is the only proof that the server is usable: systemd can
-	// say "active" while Fabric is still loading 188 mods.
-	addr := fmt.Sprintf("%s:%d", st.TailnetHost, rconPort)
+	// say "active" while Fabric is still loading.
+	host := o.dialHost(ctx, st)
+	addr := net.JoinHostPort(host, fmt.Sprint(rconPort))
 	players, err := o.deps.Probe(ctx, addr, st.RCONPassword)
 	if err != nil {
 		o.log.Debug("not ready yet", "host", st.TailnetHost, "err", err)
@@ -474,7 +502,7 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		return o.transition(st, store.Terminating)
 	}
 
-	addr := fmt.Sprintf("%s:%d", st.TailnetHost, rconPort)
+	addr := net.JoinHostPort(o.dialHost(ctx, st), fmt.Sprint(rconPort))
 	players, probeErr := o.deps.Probe(ctx, addr, st.RCONPassword)
 
 	if probeErr != nil {
@@ -611,7 +639,7 @@ func (o *Orchestrator) nothingToSave(ctx context.Context, st store.ServerState) 
 		return true, nil
 	}
 
-	out, err := o.deps.Remote.Run(ctx, st.TailnetHost,
+	out, err := o.deps.Remote.Run(ctx, o.dialHost(ctx, st),
 		"test -d /opt/minecraft/world && echo outpost=world-present || echo outpost=world-absent")
 	if err != nil {
 		return false, nil
@@ -661,7 +689,8 @@ func (o *Orchestrator) archiveWorld(ctx context.Context, st store.ServerState) (
 
 // persistWorld stops Minecraft cleanly and ships the world to R2.
 func (o *Orchestrator) persistWorld(ctx context.Context, st store.ServerState) (int64, error) {
-	addr := fmt.Sprintf("%s:%d", st.TailnetHost, rconPort)
+	host := o.dialHost(ctx, st)
+	addr := net.JoinHostPort(host, fmt.Sprint(rconPort))
 
 	if c, err := rcon.Dial(ctx, addr, st.RCONPassword); err == nil {
 		_, _ = c.Command(ctx, "save-all flush")
@@ -677,7 +706,7 @@ func (o *Orchestrator) persistWorld(ctx context.Context, st store.ServerState) (
 	// contains "fabric-server-launch", so a plain `pgrep -f` matches the shell
 	// running it and the loop always runs its full two minutes.
 	wait := `for i in $(seq 1 60); do pgrep -f '[f]abric-server-launch' >/dev/null || exit 0; sleep 2; done; exit 1`
-	if _, err := o.deps.Remote.Run(ctx, st.TailnetHost, wait); err != nil {
+	if _, err := o.deps.Remote.Run(ctx, host, wait); err != nil {
 		o.log.Warn("minecraft did not stop cleanly", "err", err)
 	}
 
@@ -694,7 +723,7 @@ rclone delete r2:%[1]s/backups/ --include "world-*.tar.gz" --min-age 14d || true
 rm -f /tmp/outpost-world.tar.gz
 echo SIZE=$SIZE`, o.cfg.Server.WorldBucket)
 
-	out, err := o.deps.Remote.Run(ctx, st.TailnetHost, script)
+	out, err := o.deps.Remote.Run(ctx, host, script)
 	if err != nil {
 		return 0, err
 	}

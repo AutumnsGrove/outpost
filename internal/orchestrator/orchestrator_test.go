@@ -176,6 +176,13 @@ type harness struct {
 	// probe answers the RCON question. Tests set it per scenario.
 	players  int
 	probeErr error
+
+	// probeAddr records where the last probe was pointed.
+	probeAddr string
+
+	// resolveIP/resolveErr control what the tailnet lookup answers.
+	resolveIP  string
+	resolveErr error
 }
 
 func newHarness(t *testing.T) *harness {
@@ -193,6 +200,9 @@ func newHarness(t *testing.T) *harness {
 		dns:     &fakeDNS{},
 		remote:  &fakeRemote{out: "SIZE=4096\n"},
 		clock:   time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC),
+		// Loopback so the real rcon.Dial inside persistWorld refuses instantly
+		// instead of waiting out a 5s connect timeout on a fake address.
+		resolveIP: "127.0.0.1",
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -201,8 +211,12 @@ func newHarness(t *testing.T) *harness {
 		DNS:     h.dns,
 		Remote:  h.remote,
 		Now:     func() time.Time { return h.clock },
-		Probe: func(context.Context, string, string) (rcon.Players, error) {
+		Probe: func(_ context.Context, addr, _ string) (rcon.Players, error) {
+			h.probeAddr = addr
 			return rcon.Players{Online: h.players, Max: 20}, h.probeErr
+		},
+		Resolve: func(context.Context, string) (string, error) {
+			return h.resolveIP, h.resolveErr
 		},
 	})
 	return h
@@ -643,5 +657,38 @@ func TestStartReportsEverySizeItTried(t *testing.T) {
 	}
 	if len(h.servers.created) != 3 {
 		t.Fatalf("tried %v", h.servers.created)
+	}
+}
+
+func TestProbeUsesTheTailnetAddressNotTheName(t *testing.T) {
+	h := newHarness(t)
+	h.resolveIP = "100.64.0.5"
+	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t)
+
+	// MagicDNS can answer NXDOMAIN for minutes after a node joins; the probe
+	// must not depend on it.
+	if h.probeAddr != "100.64.0.5:25575" {
+		t.Fatalf("probe addr = %q, want the resolved tailnet IP", h.probeAddr)
+	}
+}
+
+func TestProbeFallsBackToTheNameWhenTheTailnetCannotAnswer(t *testing.T) {
+	h := newHarness(t)
+	h.resolveErr = errors.New("no tailscale here")
+
+	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	st, _ := h.store.GetState()
+	h.tick(t)
+
+	if want := st.TailnetHost + ":25575"; h.probeAddr != want {
+		t.Fatalf("probe addr = %q, want %q", h.probeAddr, want)
+	}
+	if got := h.mustState(t); got != store.Running {
+		t.Fatalf("state = %s, want RUNNING", got)
 	}
 }
