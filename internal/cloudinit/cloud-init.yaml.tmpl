@@ -79,12 +79,13 @@ runcmd:
   - tailscale up --authkey={{ .TailscaleAuthKey }} --hostname={{ .Hostname }} {{ range .TailscaleTags }}--advertise-tags={{ . }} {{ end }}--accept-dns=false
 
   # --- firewall: Minecraft from anywhere, everything else only over the tailnet.
+  # The port is the one server.properties is told to use below, not a literal.
   # Note what is NOT here: there is no rule opening port 22. SSH and RCON are
   # reached over tailscale0, which the next rule already permits. Leaving 22
   # open to the internet would make "only 25565 is public" untrue.
   - ufw default deny incoming
   - ufw default allow outgoing
-  - ufw allow 25565/tcp comment 'minecraft'
+  - ufw allow {{ .MCPort }}/tcp comment 'minecraft'
   - ufw allow in on tailscale0
   - ufw --force enable
 
@@ -107,7 +108,13 @@ runcmd:
 
   # --- restore the world (a single tarball, laid out by v1)
   #
-  # Two traps here, both found the hard way:
+  # The rule: a world that EXISTS in R2 and cannot be restored must stop the boot,
+  # never fall through to a fresh one. Shutdown uploads whatever is in
+  # /opt/minecraft/world over current/world.tar.gz, so a server that started on a
+  # blank world because of a network blip would replace the real world on the way
+  # out. Only a world that is verifiably ABSENT is allowed to be generated.
+  #
+  # Three traps, all found the hard way:
   #   * /tmp/world has to be owned by minecraft, because the rclone runs as that
   #     user and root's 0755 directory is not writable. Without the chown the
   #     restore silently failed and Minecraft generated a fresh world over the
@@ -115,14 +122,22 @@ runcmd:
   #   * Nothing is redirected to /dev/null. The first version swallowed the
   #     error and printed "no world in R2", which is a lie with a clean-looking
   #     log, so the failure was invisible for three sessions.
+  #   * "Is it there?" is answered by LISTING the bucket, which can only fail for
+  #     a real reason (credentials, network). Treating any failed copy as "no
+  #     world" is how a blip becomes a wiped world.
   - |
     mkdir -p /tmp/world
     chown minecraft:minecraft /tmp/world
-    if sudo -u minecraft rclone copyto r2:{{ .WorldBucket }}/current/world.tar.gz /tmp/world/world.tar.gz; then
-      if tar -xzf /tmp/world/world.tar.gz -C /opt/minecraft/; then
+    if ! LISTING=$(sudo -u minecraft rclone lsf -R r2:{{ .WorldBucket }}); then
+      echo "COULD NOT LIST THE WORLD BUCKET - not starting Minecraft over a world that may exist"
+      touch /run/outpost-no-start
+    elif echo "$LISTING" | grep -qx 'current/world.tar.gz'; then
+      if sudo -u minecraft rclone copyto r2:{{ .WorldBucket }}/current/world.tar.gz /tmp/world/world.tar.gz && tar -xzf /tmp/world/world.tar.gz -C /opt/minecraft/; then
         echo "world restored"
       else
-        echo "WORLD TARBALL WOULD NOT EXTRACT - generating a new one"
+        echo "WORLD EXISTS IN R2 BUT COULD NOT BE RESTORED - not starting Minecraft"
+        rm -rf /opt/minecraft/world
+        touch /run/outpost-no-start
       fi
     else
       echo "no world in R2, Minecraft will generate one"
@@ -142,7 +157,12 @@ runcmd:
   - chown -R minecraft:minecraft /opt/minecraft
   - chmod +x /opt/minecraft/*.sh
   - systemctl daemon-reload
-  - systemctl enable minecraft
-  - systemctl start minecraft
+  - |
+    if [ -e /run/outpost-no-start ]; then
+      echo "NOT STARTING MINECRAFT: the world could not be restored, see above. The orchestrator will time out and delete this server; the world in R2 is untouched."
+    else
+      systemctl enable minecraft
+      systemctl start minecraft
+    fi
 
 final_message: "outpost {{ .Hostname }} up after $UPTIME seconds"

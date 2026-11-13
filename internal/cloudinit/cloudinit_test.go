@@ -1,6 +1,9 @@
 package cloudinit
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,6 +82,187 @@ func TestRenderKeepsThePublicPortSurfaceSmall(t *testing.T) {
 	}
 	if !strings.Contains(out, "ufw allow 25565/tcp") {
 		t.Fatal("Minecraft's port is not opened")
+	}
+}
+
+// The firewall and server.properties must agree about the port, or a custom
+// mc_port yields a server that is up and unreachable.
+func TestRenderOpensTheConfiguredPort(t *testing.T) {
+	d := sample()
+	d.MCPort = 25570
+	out, err := Render(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "ufw allow 25570/tcp") || strings.Contains(out, "ufw allow 25565/tcp") {
+		t.Fatal("firewall does not follow server.mc_port")
+	}
+	if !strings.Contains(out, "server-port=25570") {
+		t.Fatal("server.properties does not follow server.mc_port")
+	}
+}
+
+func TestValidateRejectsShellMetacharacters(t *testing.T) {
+	for _, bad := range []string{"a$(reboot)", "a`id`", "a;b", "a&b", "a|b", "a\\b", "a#b", "a>b"} {
+		d := sample()
+		d.TailscaleAuthKey = bad
+		if _, err := Render(d); err == nil {
+			t.Fatalf("secret %q was accepted; it would be run as root", bad)
+		}
+	}
+	d := sample()
+	d.AssetBucket = "x; rm -rf /"
+	if _, err := Render(d); err == nil {
+		t.Fatal("a bucket name with shell syntax was accepted")
+	}
+}
+
+// restoreScript pulls the world-restore step out of the rendered cloud-config.
+func restoreScript(t *testing.T) string {
+	t.Helper()
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range doc.Runcmd {
+		if cmd, ok := c.(string); ok && strings.Contains(cmd, "lsf -R") {
+			return cmd
+		}
+	}
+	t.Fatal("no world-restore step in runcmd")
+	return ""
+}
+
+// runRestore executes the REAL restore step under a sandbox: paths are
+// redirected into a temp dir and rclone, sudo and chown are stubs. What it
+// proves is the decision logic, which is the part that can wipe a world.
+//
+//	list: "fail" | "empty" | "present"      what `rclone lsf -R` does
+//	copy: "ok" | "fail"                      what `rclone copyto` does
+//	tar:  "good" | "bad"                     whether the downloaded archive extracts
+func runRestore(t *testing.T, list, copy, tarball string) (noStart bool, worldExists bool, output string) {
+	t.Helper()
+	dir := t.TempDir()
+	mc := filepath.Join(dir, "minecraft")
+	bin := filepath.Join(dir, "bin")
+	flag := filepath.Join(dir, "no-start")
+	stage := filepath.Join(dir, "stage")
+	for _, d := range []string{mc, bin} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A pre-existing partial world, as left by an interrupted earlier step.
+	if err := os.MkdirAll(filepath.Join(mc, "world"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real archive for the success case, garbage for the corrupt one.
+	src := filepath.Join(dir, "src")
+	_ = os.MkdirAll(filepath.Join(src, "world"), 0o755)
+	_ = os.WriteFile(filepath.Join(src, "world", "level.dat"), []byte("real"), 0o644)
+	archive := filepath.Join(dir, "world.tar.gz")
+	if err := exec.Command("tar", "-czf", archive, "-C", src, "world").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if tarball == "bad" {
+		_ = os.WriteFile(archive, []byte("not a tarball"), 0o644)
+	}
+
+	stub := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub("sudo", `shift 2; exec "$@"`) // sudo -u minecraft <cmd>
+	stub("chown", `exit 0`)
+	stub("rclone", `
+case "$1" in
+  lsf)
+    case "`+list+`" in
+      fail) echo "Failed to lsf: AccessDenied" >&2; exit 1;;
+      empty) exit 0;;
+      present) printf 'backups/world-1.tar.gz\ncurrent/world.tar.gz\n'; exit 0;;
+    esac;;
+  copyto)
+    [ "`+copy+`" = fail ] && { echo "copyto: connection reset" >&2; exit 1; }
+    cp "`+archive+`" "$3"; exit 0;;
+esac`)
+
+	script := restoreScript(t)
+	script = strings.ReplaceAll(script, "/run/outpost-no-start", flag)
+	script = strings.ReplaceAll(script, "/opt/minecraft", mc)
+	script = strings.ReplaceAll(script, "/tmp/world", stage)
+
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("script exited non-zero (allowed): %v", err)
+	}
+	_, flagErr := os.Stat(flag)
+	_, worldErr := os.Stat(filepath.Join(mc, "world"))
+	return flagErr == nil, worldErr == nil, string(out)
+}
+
+// A blip while checking for the world must never turn into a blank world that
+// then overwrites the real one at shutdown.
+func TestRestoreRefusesToStartWhenTheWorldBucketCannotBeListed(t *testing.T) {
+	noStart, _, out := runRestore(t, "fail", "ok", "good")
+	if !noStart {
+		t.Fatalf("Minecraft would start on a blank world after a failed listing:\n%s", out)
+	}
+}
+
+func TestRestoreRefusesToStartWhenAnExistingWorldCannotBeDownloaded(t *testing.T) {
+	noStart, _, out := runRestore(t, "present", "fail", "good")
+	if !noStart {
+		t.Fatalf("a failed download fell through to a fresh world:\n%s", out)
+	}
+}
+
+func TestRestoreRefusesToStartOnACorruptWorldAndRemovesTheWreckage(t *testing.T) {
+	noStart, worldExists, out := runRestore(t, "present", "ok", "bad")
+	if !noStart {
+		t.Fatalf("a corrupt archive fell through to a fresh world:\n%s", out)
+	}
+	if worldExists {
+		t.Fatalf("a half-extracted world was left in place for Minecraft to load:\n%s", out)
+	}
+}
+
+func TestRestoreGeneratesAWorldOnlyWhenNoneExists(t *testing.T) {
+	noStart, _, out := runRestore(t, "empty", "ok", "good")
+	if noStart {
+		t.Fatalf("a verifiably empty bucket must still allow a first world:\n%s", out)
+	}
+	if !strings.Contains(out, "no world in R2") {
+		t.Fatalf("expected the first-world message, got:\n%s", out)
+	}
+}
+
+func TestRestoreRestoresARealWorld(t *testing.T) {
+	noStart, worldExists, out := runRestore(t, "present", "ok", "good")
+	if noStart || !worldExists || !strings.Contains(out, "world restored") {
+		t.Fatalf("noStart=%v worldExists=%v\n%s", noStart, worldExists, out)
+	}
+}
+
+func TestMinecraftStartIsGuardedByTheRestoreFlag(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := strings.Index(out, "if [ -e /run/outpost-no-start ]")
+	start := strings.Index(out, "systemctl start minecraft")
+	if guard < 0 || start < 0 || guard > start {
+		t.Fatal("systemctl start minecraft is not behind the no-start guard")
 	}
 }
 

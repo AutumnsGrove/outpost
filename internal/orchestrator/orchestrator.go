@@ -72,6 +72,7 @@ type Deps struct {
 	DNS     Records
 	Remote  Remote
 	Probe   Probe
+	Exec    Exec
 	Now     func() time.Time
 
 	// Resolve turns the VPS's tailnet name into an address without DNS. See
@@ -123,6 +124,9 @@ func NewWith(cfg *config.Config, st *store.Store, log *slog.Logger, deps Deps) *
 	}
 	if deps.Probe != nil {
 		o.deps.Probe = deps.Probe
+	}
+	if deps.Exec != nil {
+		o.deps.Exec = deps.Exec
 	}
 	if deps.Now != nil {
 		o.deps.Now = deps.Now
@@ -236,6 +240,30 @@ func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 	return out, nil
 }
 
+// Health is the control loop's own vital signs, for the page.
+type Health struct {
+	RCONFailures        int    `json:"rconFailures"`
+	RCONFailureLimit    int    `json:"rconFailureLimit"`
+	EverRunning         bool   `json:"everRunning"`
+	ProvisionTimeoutSec int64  `json:"provisionTimeoutSeconds"`
+	LastDNS             string `json:"lastDns"`
+}
+
+// Health reads the counters Tick keeps in the meta table.
+func (o *Orchestrator) Health() Health {
+	st, _ := o.store.GetState()
+	failures, _ := o.store.MetaInt("rcon_failures")
+	ran, _ := o.store.MetaGet("ever_running")
+	last, _ := o.store.MetaGet("last_dns")
+	return Health{
+		RCONFailures:        failures,
+		RCONFailureLimit:    o.rconFailureLimit(),
+		EverRunning:         st.VPSID != "" && ran == st.VPSID,
+		ProvisionTimeoutSec: int64(o.cfg.Server.ProvisionTimeout.Std().Seconds()),
+		LastDNS:             last,
+	}
+}
+
 // Start rents a VPS. Provisioning itself is Tick's job, so a crash between "we
 // asked Hetzner" and "Hetzner answered" cannot lose the server: the vps_id is
 // committed as soon as it exists.
@@ -245,6 +273,12 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	// serve` and an `outpost start` shell must not both pass the state check.
 	o.mu.Lock()
 	defer o.mu.Unlock()
+
+	// A browser tab closed between "Hetzner accepted the order" and "Hetzner
+	// answered" must not cancel the call that records the server. Renting runs
+	// to completion on its own clock; the request that asked for it only waits.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
 
 	release, ok, err := o.store.TryLock()
 	if err != nil {
@@ -263,7 +297,9 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	case st.State == store.Error && st.VPSID != "":
 		// ERROR is where a failed world save leaves a live, billing server.
 		// Renting a second one would orphan the first and its unsaved world.
-		return st, fmt.Errorf("state is ERROR with server %s still running; run `outpost reset` (or `outpost stop`) first", st.VPSID)
+		// `stop` is listed first on purpose: it retries the save, whereas `reset`
+		// deletes the server and the world with it.
+		return st, fmt.Errorf("state is ERROR with server %s still running; run `outpost stop` to retry the world save (`outpost reset --force` abandons it)", st.VPSID)
 	case st.State != store.Offline && st.State != store.Error:
 		return st, fmt.Errorf("server is %s; stop it first", st.State)
 	}
@@ -275,7 +311,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		return st, fmt.Errorf("check for existing servers: %w", err)
 	}
 	if len(stray) > 0 {
-		return st, fmt.Errorf("%d outpost server(s) already exist in Hetzner (%s); run `outpost reset` first", len(stray), stray[0].Name)
+		return st, fmt.Errorf("%d outpost server(s) already exist in Hetzner (%s) that this database does not know about; look at it before deleting anything, then `outpost reset --force`", len(stray), stray[0].Name)
 	}
 
 	reg, err := o.cfg.Region(region)
@@ -374,6 +410,15 @@ func (o *Orchestrator) rent(ctx context.Context, hostname string, reg config.Reg
 			return srv, serverType, nil
 		}
 		if !errors.Is(err, hetzner.ErrUnavailable) {
+			// A transport error does not mean the order failed: Hetzner may have
+			// placed it and lost the reply. Look before giving up, or the server
+			// bills with nothing tracking it.
+			if adopted := o.adoptByName(hostname); adopted != nil {
+				o.log.Warn("create reported an error but the server exists, adopting it", "id", adopted.ID, "err", err)
+				_ = o.store.Log("adopted", "create failed (%v) but %s exists; tracking it", err, hostname)
+				_ = o.store.MetaSet("rented_type", serverType)
+				return adopted, serverType, nil
+			}
 			return nil, "", err
 		}
 		lastErr = err
@@ -384,8 +429,56 @@ func (o *Orchestrator) rent(ctx context.Context, hostname string, reg config.Reg
 	return nil, "", fmt.Errorf("no capacity in %s for any of %v: %w", reg.Location, types, lastErr)
 }
 
+// adoptByName finds a server this process asked for by name. It uses its own
+// short deadline because the caller's context may be the thing that just failed.
+func (o *Orchestrator) adoptByName(hostname string) *hetzner.Server {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	servers, err := o.deps.Servers.List(ctx)
+	if err != nil {
+		return nil
+	}
+	for i := range servers {
+		if servers[i].Name == hostname {
+			return &servers[i]
+		}
+	}
+	return nil
+}
+
+// lockTimeout bounds how long Stop and Reset wait for a tick that is mid-pass.
+// A pass that is uploading a world can run for minutes; ten is generous and
+// still ends, which a CLI blocked forever on a wedged holder would not.
+const lockTimeout = 10 * time.Minute
+
+// lockForWrite takes the in-process mutex and the cross-process file lock,
+// waiting for both. Stop and Reset use it instead of TryLock because they must
+// not be dropped, and must not interleave with a tick that holds a stale copy
+// of the row: Tick writes back the whole state it read at the start of its
+// pass, so an unlocked Stop that lands mid-tick is silently overwritten.
+func (o *Orchestrator) lockForWrite(ctx context.Context) (func(), error) {
+	o.mu.Lock()
+	lctx, cancel := context.WithTimeout(ctx, lockTimeout)
+	defer cancel()
+	release, err := o.store.Lock(lctx)
+	if err != nil {
+		o.mu.Unlock()
+		return nil, err
+	}
+	return func() {
+		release()
+		o.mu.Unlock()
+	}, nil
+}
+
 // Stop asks for a graceful shutdown. Tick does the work.
 func (o *Orchestrator) Stop(ctx context.Context) error {
+	unlock, err := o.lockForWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	st, err := o.store.GetState()
 	if err != nil {
 		return err
@@ -395,6 +488,12 @@ func (o *Orchestrator) Stop(ctx context.Context) error {
 		return fmt.Errorf("server is already offline")
 	case store.Terminating:
 		return nil
+	}
+	if st.State == store.Error {
+		// Leaving ERROR is a fresh attempt at the save. The counter that put the
+		// machine here would otherwise turn the retry into one try and straight
+		// back to ERROR.
+		_ = o.store.MetaSet("save_attempts", "0")
 	}
 	_ = o.store.Log("stop", "manual shutdown requested")
 	return o.transition(st, store.Terminating)
@@ -493,6 +592,7 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 	// Record that this VPS actually served, so the shutdown path can tell a
 	// server with a world from one that never got past its own boot.
 	_ = o.store.MetaSet("ever_running", st.VPSID)
+	_ = o.store.MetaSet("online_names", strings.Join(players.Names, ","))
 	// Record a server that came up with nobody on it, so the idle clock starts
 	// now rather than one tick later.
 	next.IdleSince = time.Time{}
@@ -510,6 +610,7 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 	} else {
 		next.DNSValue = next.VPSIP
 		_ = o.store.SetState(next)
+		_ = o.store.MetaSet("last_dns", next.VPSIP)
 	}
 
 	o.log.Info("server ready", "host", st.TailnetHost, "ip", next.VPSIP)
@@ -550,10 +651,24 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		return nil
 	}
 	_ = o.store.MetaSet("rcon_failures", "0")
+	_ = o.store.MetaSet("online_names", strings.Join(players.Names, ","))
 
 	next := st
 	next.Players = players.Online
 	next.LastError = ""
+
+	// The record is set once, when RCON first answers. If that call failed the
+	// server is up and nobody can find it by name, so try again every pass until
+	// it takes: players use mc.<domain>, not the IP.
+	if next.DNSValue != next.VPSIP && next.VPSIP != "" {
+		if err := o.deps.DNS.SetA(ctx, next.VPSIP); err != nil {
+			o.log.Warn("dns update still failing", "err", err)
+		} else {
+			next.DNSValue = next.VPSIP
+			_ = o.store.MetaSet("last_dns", next.VPSIP)
+			_ = o.store.Log("dns", "%s now points at %s", o.cfg.Cloudflare.RecordName, next.VPSIP)
+		}
+	}
 
 	if sess, err := o.store.CurrentSession(); err == nil && sess != nil {
 		_ = o.store.UpdateSessionPlayers(sess.ID, players.Online)
@@ -635,15 +750,23 @@ func (o *Orchestrator) tickTerminating(ctx context.Context, st store.ServerState
 	if err := o.deps.Servers.Delete(ctx, st.VPSID); err != nil {
 		return err
 	}
-	o.log.Info("vps deleted", "id", st.VPSID)
-	_ = o.store.Log("deleted", "vps %s deleted", st.VPSID)
+	o.log.Info("vps delete requested", "id", st.VPSID)
 
 	// Confirm it is gone before claiming OFFLINE, otherwise a failed delete gets
-	// forgotten and keeps billing.
-	if _, err := o.deps.Servers.Get(ctx, st.VPSID); err == nil {
-		return fmt.Errorf("vps %s still present after delete", st.VPSID)
-	} else if !errors.Is(err, hetzner.ErrNotFound) {
+	// forgotten and keeps billing. Hetzner deletes asynchronously, so for a few
+	// seconds the server is still listed with status "deleting": that is progress,
+	// not a failure, and the next pass finishes the job.
+	srv, err := o.deps.Servers.Get(ctx, st.VPSID)
+	switch {
+	case errors.Is(err, hetzner.ErrNotFound):
+		_ = o.store.Log("deleted", "vps %s deleted", st.VPSID)
+	case err != nil:
 		return err
+	case srv.Status == "deleting":
+		o.log.Info("vps is being deleted", "id", st.VPSID)
+		return nil
+	default:
+		return fmt.Errorf("vps %s still present after delete (status %s)", st.VPSID, srv.Status)
 	}
 
 	return o.finalize(st, "terminated")
@@ -729,14 +852,17 @@ func (o *Orchestrator) persistWorld(ctx context.Context, st store.ServerState) (
 		o.log.Warn("could not ask minecraft to save, archiving anyway", "err", err)
 	}
 
-	// Give the JVM time to exit so the tar is not of a half-written region file.
+	// Wait for the JVM to exit so the tar is not of a half-written region file.
 	//
-	// The bracket in [f]abric... is load-bearing: this command's own text
-	// contains "fabric-server-launch", so a plain `pgrep -f` matches the shell
-	// running it and the loop always runs its full two minutes.
-	wait := `for i in $(seq 1 60); do pgrep -f '[f]abric-server-launch' >/dev/null || exit 0; sleep 2; done; exit 1`
+	// Ask systemd, not pgrep: the unit is the one thing that knows when
+	// start.sh's process is gone whatever the loader is called, and a pgrep
+	// pattern has to match its own command line (the first real run burned the
+	// whole two minutes on that). If the server is still up after the wait the
+	// attempt fails rather than archiving a live world: this upload replaces
+	// current/world.tar.gz, so a torn tar would overwrite the only good copy.
+	wait := `for i in $(seq 1 60); do systemctl is-active --quiet minecraft || exit 0; sleep 2; done; exit 1`
 	if _, err := o.deps.Remote.Run(ctx, host, wait); err != nil {
-		o.log.Warn("minecraft did not stop cleanly", "err", err)
+		return 0, fmt.Errorf("minecraft did not stop within two minutes, not archiving a live world: %w", err)
 	}
 
 	// rclone runs on the VPS, so the world crosses the network once (out to R2)
@@ -801,7 +927,7 @@ func (o *Orchestrator) finalize(st store.ServerState, reason string) error {
 		if err := o.store.EndSession(sess.ID, duration, cost, sess.MaxPlayers); err != nil {
 			return err
 		}
-		o.log.Info("session closed", "seconds", duration, "cost_usd", cost)
+		o.log.Info("session closed", "seconds", duration, "cost_eur", cost)
 		_ = o.store.Log("session", "%dm, %.4f EUR", duration/60, cost)
 	}
 
@@ -810,6 +936,7 @@ func (o *Orchestrator) finalize(st store.ServerState, reason string) error {
 	}
 	_ = o.store.MetaSet("world_saved", "")
 	_ = o.store.MetaSet("rcon_failures", "0")
+	_ = o.store.MetaSet("online_names", "")
 
 	o.log.Info("offline", "reason", reason)
 	return o.store.Log("offline", "%s", reason)
@@ -821,25 +948,58 @@ func (o *Orchestrator) transition(st store.ServerState, to store.State) error {
 	return o.store.SetState(st)
 }
 
+// ErrUnsavedWorld is what Reset answers when deleting would lose a world.
+var ErrUnsavedWorld = errors.New("the world on this server has not been saved to R2")
+
 // Reset deletes any Outpost-labelled server that exists and returns to OFFLINE.
 // The escape hatch for when something has gone properly wrong.
-func (o *Orchestrator) Reset(ctx context.Context) error {
+//
+// It is also the one command that can destroy a world, so it refuses when the
+// tracked server has run (so it has a world) and that world was never uploaded,
+// unless force is set. `outpost stop` is the command that retries the save.
+func (o *Orchestrator) Reset(ctx context.Context, force bool) error {
+	unlock, err := o.lockForWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	st, err := o.store.GetState()
 	if err != nil {
 		return err
 	}
+	if st.VPSID != "" && !force {
+		ran, _ := o.store.MetaGet("ever_running")
+		saved, _ := o.store.MetaGet("world_saved")
+		if ran == st.VPSID && saved != st.VPSID {
+			return fmt.Errorf("%w (server %s); `outpost stop` retries the save, `outpost reset --force` deletes it anyway", ErrUnsavedWorld, st.VPSID)
+		}
+	}
+	servers, err := o.deps.Servers.List(ctx)
+	if err != nil {
+		return err
+	}
+	if !force {
+		// Servers this database does not know about have worlds nobody has
+		// looked at; deleting them is a decision, not a cleanup.
+		var unknown []string
+		for _, s := range servers {
+			if fmt.Sprint(s.ID) != st.VPSID {
+				unknown = append(unknown, s.Name)
+			}
+		}
+		if len(unknown) > 0 {
+			return fmt.Errorf("%d server(s) exist in Hetzner that this database is not tracking (%s); check them, then `outpost reset --force`", len(unknown), strings.Join(unknown, ", "))
+		}
+	}
+
 	if st.VPSID != "" {
 		if err := o.deps.Servers.Delete(ctx, st.VPSID); err != nil {
 			return err
 		}
 	}
-
-	servers, err := o.deps.Servers.List(ctx)
-	if err != nil {
-		return err
-	}
 	for _, s := range servers {
-		o.log.Warn("deleting stray server", "id", s.ID, "name", s.Name, "status", s.Status)
+		o.log.Warn("deleting server", "id", s.ID, "name", s.Name, "status", s.Status)
 		if err := o.deps.Servers.Delete(ctx, fmt.Sprint(s.ID)); err != nil {
 			return err
 		}

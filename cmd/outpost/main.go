@@ -73,6 +73,8 @@ func rootCmd() *cobra.Command {
 		a.resetCmd(),
 		a.publishCmd(),
 		a.updateCmd(),
+		a.consoleCmd(),
+		a.playerCmd(),
 	)
 	return root
 }
@@ -113,18 +115,34 @@ func (a *app) serveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:         "serve",
 		Short:       "Run the reconcile loop and the HTTP API",
-		Annotations: map[string]string{requiresCloud: "true"},
+		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			handler := api.New(a.orch, a.store, api.Options{
+			rost, err := a.rosterFor()
+			if err != nil {
+				return err
+			}
+			opts := api.Options{
 				Token:  a.cfg.Secrets.APIToken,
 				Update: a.selfUpdater(),
+				Roster: rost,
 				Log:    a.log,
-			})
+			}
+			// Under systemd the way to restart is to leave: Restart=always brings
+			// the new binary up. The unit runs with NoNewPrivileges, which stops
+			// the `sudo systemctl restart` the CLI path uses from working here.
+			// INVOCATION_ID is set by systemd and by nothing else.
+			if os.Getenv("INVOCATION_ID") != "" {
+				opts.Restart = func() {
+					a.log.Info("update installed; exiting so systemd starts the new binary")
+					stop()
+				}
+			}
+			handler := api.New(a.orch, a.store, opts)
 			srv := &http.Server{
 				Addr:              a.cfg.Listen,
 				Handler:           handler,
@@ -139,10 +157,18 @@ func (a *app) serveCmd() *cobra.Command {
 				}
 			}()
 
-			go a.orch.Run(ctx)
+			loopDone := make(chan struct{})
+			go func() {
+				defer close(loopDone)
+				a.orch.Run(ctx)
+			}()
+			// The loop owns the database. Closing it under a tick that is mid-save
+			// turns a clean shutdown into a half-recorded one.
+			defer func() { <-loopDone }()
 
 			select {
 			case err := <-errs:
+				stop()
 				return err
 			case <-ctx.Done():
 				a.log.Info("shutting down")
@@ -159,7 +185,7 @@ func (a *app) startCmd() *cobra.Command {
 		Use:         "start [region]",
 		Short:       "Rent a server and start provisioning it",
 		Args:        cobra.MaximumNArgs(1),
-		Annotations: map[string]string{requiresCloud: "true"},
+		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 
@@ -183,7 +209,7 @@ func (a *app) stopCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:         "stop",
 		Short:       "Save the world, then delete the server",
-		Annotations: map[string]string{requiresCloud: "true"},
+		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 
@@ -195,17 +221,30 @@ func (a *app) stopCmd() *cobra.Command {
 				fmt.Println("already offline")
 				return nil
 			}
-			if err := a.orch.Tick(cmd.Context()); err != nil {
-				a.log.Warn("tick failed before stop", "err", err)
+
+			// Stop is idempotent (already TERMINATING is fine) and waits for any
+			// tick in flight, so the order is: mark it, then do one pass of the
+			// work. `outpost serve` keeps retrying a failed save on its own.
+			if err := a.orch.Stop(cmd.Context()); err != nil {
+				return err
 			}
 			fmt.Println("saving the world and deleting the server...")
 			if err := a.orch.Tick(cmd.Context()); err != nil {
 				return err
 			}
-			if err := a.orch.Stop(cmd.Context()); err != nil {
+			after, err := a.store.GetState()
+			if err != nil {
 				return err
 			}
-			return a.orch.Tick(cmd.Context())
+			switch after.State {
+			case store.Offline:
+				fmt.Println("offline")
+			case store.Error:
+				return fmt.Errorf("the world could not be saved: %s", after.LastError)
+			default:
+				fmt.Printf("still %s; `outpost serve` will finish it, or run `outpost stop` again\n", after.State)
+			}
+			return nil
 		},
 	}
 }
@@ -253,7 +292,7 @@ func (a *app) tickCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:         "tick",
 		Short:       "Run one reconcile pass (for cron)",
-		Annotations: map[string]string{requiresCloud: "true"},
+		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 			return a.orch.Tick(cmd.Context())
@@ -262,19 +301,25 @@ func (a *app) tickCmd() *cobra.Command {
 }
 
 func (a *app) resetCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:         "reset",
-		Short:       "Delete every Outpost server and go back to OFFLINE",
-		Annotations: map[string]string{requiresCloud: "true"},
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "reset",
+		Short: "Delete every Outpost server and go back to OFFLINE",
+		Long: "Deletes every Outpost server and returns to OFFLINE. It refuses when that would\n" +
+			"throw away a world that was never saved to R2, or servers this database is not\n" +
+			"tracking; `outpost stop` retries the save, and --force overrides the refusal.",
+		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
 
 			fmt.Println("deleting any Outpost server that still exists...")
-			if err := a.orch.Reset(cmd.Context()); err != nil {
+			if err := a.orch.Reset(cmd.Context(), force); err != nil {
 				return err
 			}
 			fmt.Println("offline")
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "delete even if the world was never saved, or the server is untracked")
+	return cmd
 }

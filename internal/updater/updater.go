@@ -102,6 +102,21 @@ func (u Update) PullAndBuild(ctx context.Context) (Result, error) {
 	res.Before = strings.TrimSpace(before)
 	res.After = res.Before
 
+	// HEAD says what is checked out, not what is running. After a pull whose
+	// build failed (out of disk, a transient module fetch) HEAD has moved but the
+	// binary has not, and comparing against HEAD would call every later update
+	// "already up to date" and never retry. So the commit a binary was built from
+	// is written next to it, and that is what "changed" is measured against.
+	built := u.builtCommit()
+	if built == "" {
+		// First update by this binary: assume it was built from what is checked
+		// out now, and write that down BEFORE pulling, so a failed build below
+		// still leaves a record of what is actually running.
+		built = res.Before
+		_ = os.WriteFile(u.Binary+".commit", []byte(built+"\n"), 0o644)
+	}
+	res.Before = built
+
 	u.log().Info("pulling", "dir", u.Dir, "commit", res.Before)
 	if _, err := r.Run(ctx, u.Dir, "git", "pull", "--ff-only"); err != nil {
 		return res, fmt.Errorf("git pull failed (has the checkout been edited on this box?): %w", err)
@@ -112,7 +127,7 @@ func (u Update) PullAndBuild(ctx context.Context) (Result, error) {
 		return res, err
 	}
 	res.After = strings.TrimSpace(after)
-	res.Changed = res.After != res.Before
+	res.Changed = res.After != built
 	if !res.Changed {
 		u.log().Info("already up to date", "commit", res.After)
 		return res, nil
@@ -130,8 +145,23 @@ func (u Update) PullAndBuild(ctx context.Context) (Result, error) {
 		return res, fmt.Errorf("install new binary: %w", err)
 	}
 	res.Built = true
+	if err := os.WriteFile(u.Binary+".commit", []byte(res.After+"\n"), 0o644); err != nil {
+		// The binary is good; only the bookkeeping failed. The cost is one
+		// redundant rebuild next time, never a skipped one.
+		u.log().Warn("could not record the built commit", "err", err)
+	}
 	u.log().Info("installed", "binary", u.Binary, "commit", res.After)
 	return res, nil
+}
+
+// builtCommit is the commit the installed binary was built from, or "" when
+// this binary has never been installed by an update.
+func (u Update) builtCommit() string {
+	raw, err := os.ReadFile(u.Binary + ".commit")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // Restart asks systemd to restart the unit. It needs passwordless sudo for this
