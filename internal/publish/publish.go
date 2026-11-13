@@ -15,8 +15,11 @@
 package publish
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,8 +45,8 @@ var defaultClientOnlyList string
 // Store is the slice of R2 publish needs. The real implementation is *r2.Client;
 // tests use a map.
 type Store interface {
-	Put(ctx context.Context, bucket, key string, r io.Reader, size int64) error
-	Stat(ctx context.Context, bucket, key string) (int64, error)
+	Put(ctx context.Context, bucket, key string, r io.Reader, size int64, sha256 string) error
+	Stat(ctx context.Context, bucket, key string) (r2.Info, error)
 	List(ctx context.Context, bucket, prefix string) ([]r2.Object, error)
 	Remove(ctx context.Context, bucket, key string) error
 }
@@ -121,9 +124,17 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// uploads 187 of 188 jars is a server that fails to boot in a way nobody can
 	// read from a log.
 	for _, obj := range objects {
+		sum, err := sum(obj)
+		if err != nil {
+			return res, err
+		}
 		existing, err := st.Stat(ctx, opts.AssetBucket, obj.Key)
 		switch {
-		case err == nil && existing == obj.Size:
+		// Same length is not same content: flipping `difficulty=hard` to
+		// `difficulty=easy` changes nothing a size check can see. An object with
+		// no recorded checksum (written by an older publish) is uploaded once so
+		// it gets one.
+		case err == nil && existing.Size == obj.Size && existing.SHA256 == sum:
 			res.Unchanged = append(res.Unchanged, obj.Key)
 			continue
 		case err != nil && !errors.Is(err, ErrNotFound):
@@ -136,15 +147,15 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 			continue
 		}
 
-		if err := put(ctx, st, opts.AssetBucket, obj); err != nil {
+		if err := put(ctx, st, opts.AssetBucket, obj, sum); err != nil {
 			return res, err
 		}
 		got, err := st.Stat(ctx, opts.AssetBucket, obj.Key)
 		if err != nil {
 			return res, fmt.Errorf("verify %s: %w", obj.Key, err)
 		}
-		if got != obj.Size {
-			return res, fmt.Errorf("verify %s: uploaded %d bytes, R2 says %d", obj.Key, obj.Size, got)
+		if got.Size != obj.Size {
+			return res, fmt.Errorf("verify %s: uploaded %d bytes, R2 says %d", obj.Key, obj.Size, got.Size)
 		}
 		res.Uploaded = append(res.Uploaded, obj.Key)
 		res.TotalSize += obj.Size
@@ -365,16 +376,35 @@ func whitelistNames(objects []Object) []string {
 	return nil
 }
 
-func put(ctx context.Context, st Store, bucket string, obj Object) error {
+func put(ctx context.Context, st Store, bucket string, obj Object, sum string) error {
 	if obj.Content != nil {
-		return st.Put(ctx, bucket, obj.Key, strings.NewReader(string(obj.Content)), obj.Size)
+		return st.Put(ctx, bucket, obj.Key, bytes.NewReader(obj.Content), obj.Size, sum)
 	}
 	f, err := os.Open(obj.Path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", obj.Path, err)
 	}
 	defer f.Close()
-	return st.Put(ctx, bucket, obj.Key, f, obj.Size)
+	return st.Put(ctx, bucket, obj.Key, f, obj.Size, sum)
+}
+
+// sum is the hex SHA-256 of an object's bytes, whether it lives on disk or was
+// generated in memory.
+func sum(obj Object) (string, error) {
+	h := sha256.New()
+	if obj.Content != nil {
+		h.Write(obj.Content)
+	} else {
+		f, err := os.Open(obj.Path)
+		if err != nil {
+			return "", fmt.Errorf("open %s: %w", obj.Path, err)
+		}
+		defer f.Close()
+		if _, err := io.Copy(h, f); err != nil {
+			return "", fmt.Errorf("hash %s: %w", obj.Path, err)
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func fileObject(key, p string) (Object, error) {
