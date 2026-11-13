@@ -6,18 +6,20 @@
 	--line: #332c25;
 	--line-soft: #2a241e;
 	--text: #ece4d8;
-	--dim: #a1937f;
-	--faint: #6e6255;
+	--dim: #b0a28e;
+	/* was #6e6255: 2.95:1 on --panel. This is 5.3:1, past WCAG AA. */
+	--faint: #9a8c7a;
 	--moss: #b8d99a;
-	--moss-dim: #7f9c68;
+	--moss-dim: #8fae77;
 	--amber: #d9a94a;
 	--gold: #d9c04a;
-	--clay: #c46b5a;
-	--slate: #7c8794;
+	--clay: #e08a78;
+	--clay-deep: #c46b5a;
+	--slate: #8f9aa6;
 
 	--radius: 14px;
-	--mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
-	--sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+	--mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+	--sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Inter, sans-serif;
 }
 
 * {
@@ -40,8 +42,13 @@ body {
 	-webkit-font-smoothing: antialiased;
 }
 
-button {
+button,
+input {
 	font: inherit;
+	color: inherit;
+}
+
+button {
 	cursor: pointer;
 }
 
@@ -52,9 +59,157 @@ a {
 }
 
 code,
-.mono {
+.mono,
+.num {
 	font-family: var(--mono);
 	font-variant-numeric: tabular-nums;
+}
+
+/* One visible focus ring for everything tappable. */
+:focus-visible {
+	outline: 2px solid var(--moss);
+	outline-offset: 2px;
+	border-radius: 6px;
+}
+
+.sr {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+.card {
+	background: var(--panel);
+	border: 1px solid var(--line-soft);
+	border-radius: var(--radius);
+	padding: 1rem 1.05rem;
+}
+
+.card h2 {
+	font-size: 0.72rem;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: var(--faint);
+	margin: 0 0 0.7rem;
+	font-weight: 650;
+}
+
+.muted {
+	color: var(--faint);
+	font-size: 0.88rem;
+	margin: 0;
+}
+
+/* Buttons: every one is at least 44px tall. */
+.btn {
+	min-height: 44px;
+	border-radius: 10px;
+	border: 1px solid transparent;
+	padding: 0.65rem 1.15rem;
+	font-weight: 600;
+	background: transparent;
+	transition:
+		transform 80ms ease,
+		background 120ms ease,
+		border-color 120ms ease;
+}
+
+.btn.primary {
+	background: var(--moss);
+	color: #16180f;
+}
+
+.btn.primary:hover:not(:disabled) {
+	background: #c9e7ad;
+}
+
+.btn.danger {
+	color: var(--clay);
+	border-color: color-mix(in srgb, var(--clay) 45%, transparent);
+}
+
+.btn.danger:hover:not(:disabled),
+.btn.danger.armed {
+	background: color-mix(in srgb, var(--clay) 16%, transparent);
+}
+
+.btn.quiet {
+	color: var(--dim);
+	border-color: var(--line);
+	font-weight: 500;
+}
+
+.btn.quiet:hover:not(:disabled) {
+	color: var(--text);
+	border-color: var(--faint);
+}
+
+.btn.small {
+	min-height: 44px;
+	padding: 0.4rem 0.8rem;
+	font-size: 0.85rem;
+}
+
+.btn:active:not(:disabled) {
+	transform: translateY(1px);
+}
+
+.btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	background: var(--bg-glow);
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	padding: 0.2rem 0.7rem;
+	font-size: 0.88rem;
+}
+
+.badge {
+	font-size: 0.66rem;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--gold);
+	border: 1px solid color-mix(in srgb, var(--gold) 40%, transparent);
+	border-radius: 6px;
+	padding: 0.05rem 0.35rem;
+}
+
+.field {
+	min-height: 44px;
+	background: var(--bg-glow);
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	padding: 0.5rem 0.75rem;
+	min-width: 0;
+}
+
+.field::placeholder {
+	color: var(--faint);
+}
+
+@keyframes shimmer {
+	0% {
+		background-position: 100% 0;
+	}
+	100% {
+		background-position: -100% 0;
+	}
+}
+
+.skel {
+	border-radius: 8px;
+	background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%);
+	background-size: 200% 100%;
+	animation: shimmer 1.6s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -62,6 +217,7 @@ code,
 	*::before,
 	*::after {
 		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
 		transition-duration: 0.001ms !important;
 	}
 }
