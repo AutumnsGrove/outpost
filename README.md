@@ -316,19 +316,27 @@ last for 1.20.1 that accepts 0.15; 0.92.4+ demands loader 0.16.10). The pack nee
 
 ### Pointing the mod at the daemon
 
-`server.game_endpoint` is the URL the VPS posts to, and it is written into the VPS
-only when it is set:
+`server.game_endpoint` is the URL the VPS posts to. Use the tailnet **name** that
+`tailscale serve` already publishes:
 
 ```yaml
 server:
-  game_endpoint: "http://100.64.0.5:8896"   # the Potato's tailnet IP
+  game_endpoint: "https://lepotato.taild95077.ts.net:8896"
 ```
 
-One gotcha, learned the hard way: the VPS joins the tailnet with `--accept-dns=false`,
-so **MagicDNS names do not resolve there**. Use the daemon's tailnet IP, and serve it
-over plain HTTP (`tailscale serve --http=8896`) so the address needs no name. Tailnet
-traffic is already WireGuard-encrypted; TLS buys nothing but a cert the IP cannot
-match.
+That is the one place this feature needed help from the plumbing. The VPS joins the
+tailnet with `--accept-dns=false`, so MagicDNS names do not resolve there, and an
+https URL against a bare `100.x` address fails certificate validation because the
+certificate is issued for the name. So the daemon resolves that hostname *from its
+own tailnet* at rent time and cloud-init pins it in the VPS's `/etc/hosts`:
+
+```
+100.81.103.51   lepotato.taild95077.ts.net
+```
+
+A resolvable name, a valid certificate, and no change to how the page is served. If
+the lookup fails the session still starts, `/outpost` just answers that it cannot
+reach the daemon, and `game-unreachable` lands in the event log.
 
 ## Building
 

@@ -32,6 +32,8 @@ type fakeServers struct {
 	createErr error
 	// created records every server type asked for, in order.
 	created []string
+	// lastSpec is the last create request, so tests can read the cloud-init.
+	lastSpec hetzner.CreateRequest
 	// lostReply creates the server and then reports an error anyway, the way a
 	// timed-out HTTP call does when Hetzner placed the order.
 	lostReply bool
@@ -49,6 +51,7 @@ func (f *fakeServers) Create(_ context.Context, spec hetzner.CreateRequest) (*he
 	defer f.mu.Unlock()
 
 	f.created = append(f.created, spec.ServerType)
+	f.lastSpec = spec
 	if f.createErr != nil {
 		return nil, f.createErr
 	}

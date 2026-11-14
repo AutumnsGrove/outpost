@@ -374,6 +374,34 @@ existing `Status.SessionCost` for the session. Neither went into `Status`: `/api
 contract with Meridian's tile and a test pins its field count, so `hold` and `month` are new
 top-level fields on `/api/overview`.
 
+### 26. The mod reaches the daemon by name, pinned in the VPS's hosts file
+
+The first deployed launcher pins Fabric Loader 0.20.1 (read from
+`fabric-server-launcher.properties` in the bucket, not assumed from the issue), and the
+bucket's `mods/` prefix was empty — the server is vanilla. So a mod that needs Fabric
+API needs it *shipped*, and both jars went up alongside the existing pack in one
+`outpost publish` with no `--prune`. `publish` refuses a mods-only directory, so the
+pack was pulled out of R2 first and republished; identical keys upload nothing.
+
+The endpoint then ran into the same seam as everything else here. The page is served
+as `https://<potato>.ts.net:8896`, and the VPS joins the tailnet with
+`--accept-dns=false`, so the name does not resolve there — while an https URL against
+the raw tailnet address fails certificate validation, because the certificate is
+issued for the name. Three options, and the third is the one taken:
+
+- change `tailscale serve` to plain http on the endpoint port: visible change to how
+  the page is reached, for one background call;
+- put the address in `game_endpoint` and turn certificate checks off in the mod:
+  disabling TLS validation to work around DNS is the wrong trade;
+- **resolve the name where the tailnet is and pin it in the VPS's `/etc/hosts`.** The
+  daemon is on the tailnet and can resolve the name at rent time; cloud-init writes
+  one line. A resolvable name, a valid certificate, no change to how anything is
+  served.
+
+A lookup failure does not stop the rental — the server is still worth having without a
+working `/outpost` — but it is logged, because the alternative is a player typing a
+command into a black hole.
+
 ## Decisions from the modpack branch (2026-11-15)
 
 Issue #12. Phase 1: Modrinth packs on Fabric, done at publish time. This went first,

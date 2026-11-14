@@ -568,3 +568,78 @@ func TestValidateRejectsAnEndpointThatCouldBreakTheFile(t *testing.T) {
 		}
 	}
 }
+
+// The in-game command needs the daemon's NAME to resolve on the VPS with a
+// certificate that matches it. --accept-dns=false rules out MagicDNS, so the
+// name is pinned to the tailnet address at boot.
+func TestTheDaemonNameIsPinnedForTheInGameCommand(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "https://lepotato.taild95077.ts.net:8896"
+	d.GameToken = "abc123"
+	d.GameHostIP = "100.81.103.51"
+
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	hostsAt, upAt := -1, -1
+	for i, c := range doc.Runcmd {
+		cmd, ok := c.(string)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.Contains(cmd, "/etc/hosts"):
+			hostsAt = i
+			// The exact line, because a wrong separator or a missing name means a
+			// server that boots fine and answers nothing.
+			if !strings.Contains(cmd, `printf '%s\t%s\n' "100.81.103.51" "lepotato.taild95077.ts.net"`) {
+				t.Errorf("hosts line is not the expected mapping:\n%s", cmd)
+			}
+		case strings.Contains(cmd, "tailscale up"):
+			upAt = i
+		}
+	}
+	if hostsAt < 0 {
+		t.Fatal("no /etc/hosts step in runcmd")
+	}
+	if upAt < 0 || hostsAt < upAt {
+		t.Errorf("the hosts line should follow the tailnet join (up at %d, hosts at %d)", upAt, hostsAt)
+	}
+}
+
+func TestNoHostsLineWithoutAnAddressToPin(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "http://100.64.0.5:8896"
+	d.GameToken = "abc123"
+	// No GameHostIP: an endpoint that is already an IP needs no name.
+
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "/etc/hosts") {
+		t.Error("an IP endpoint should not write a hosts line")
+	}
+	// But the token file is still written, which is the other half.
+	if !strings.Contains(out, "outpost.json") {
+		t.Error("the token file should still be written")
+	}
+}
+
+func TestValidateRejectsANonsenseHostPin(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "https://lepotato.taild95077.ts.net:8896"
+	d.GameToken = "abc123"
+	d.GameHostIP = "not-an-ip"
+	if err := d.Validate(); err == nil {
+		t.Fatal("a non-IP host pin was accepted")
+	}
+}

@@ -5,6 +5,8 @@ package cloudinit
 import (
 	_ "embed"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"text/template"
@@ -47,6 +49,25 @@ type Data struct {
 	// no URL, and it answers "not configured" instead of dialling nowhere.
 	GameEndpoint string
 	GameToken    string
+
+	// GameHostIP pins the endpoint's hostname to this address in /etc/hosts.
+	//
+	// The VPS joins the tailnet with --accept-dns=false, so a MagicDNS name does
+	// not resolve there, and an HTTPS URL against a bare IP fails certificate
+	// validation because the certificate is for the name. Writing one hosts line
+	// gets a valid certificate AND no dependency on MagicDNS, without changing
+	// how the daemon is published.
+	GameHostIP string
+}
+
+// GameHost is the hostname out of GameEndpoint, for the hosts line in the
+// template. Empty when there is no endpoint to point at.
+func (d Data) GameHost() string {
+	u, err := url.Parse(d.GameEndpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // Validate catches the mistakes that would otherwise show up as a half-built
@@ -110,6 +131,9 @@ func (d Data) Validate() error {
 		}
 		if !safeSecret.MatchString(d.GameToken) {
 			return fmt.Errorf("cloud-init: game token has characters outside A-Z a-z 0-9 . _ ~ + = / : -")
+		}
+		if d.GameHostIP != "" && net.ParseIP(d.GameHostIP) == nil {
+			return fmt.Errorf("cloud-init: game host %q is not an IP address", d.GameHostIP)
 		}
 	}
 	return nil
