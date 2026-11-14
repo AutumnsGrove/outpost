@@ -1,0 +1,45 @@
+plugins {
+	id 'fabric-loom' version '1.7-SNAPSHOT'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+	// Only for CommandRegistrationCallback. Fabric API is in essentially every
+	// server pack already; if one is missing it, it is one more jar in mods/.
+	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+processResources {
+	inputs.property "version", project.version
+	filesMatching("fabric.mod.json") {
+		expand "version": project.version
+	}
+}
+
+// Java 17 is what Minecraft 1.20.1 runs on. A jar built for a newer target would
+// load on the dev machine and fail on the server, which is the wrong way round.
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 17
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_17
+	targetCompatibility = JavaVersion.VERSION_17
+}
+
+// No sources jar on purpose: everything in mods/ gets loaded, and a jar with no
+// fabric.mod.json in it is a warning in the server log every boot.
