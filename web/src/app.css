@@ -65,6 +65,21 @@ code,
 	font-variant-numeric: tabular-nums;
 }
 
+/* Lucide icons sit with the type: one em square, currentColor, hairline stroke
+   set once in +layout.svelte. Never fetched at runtime — they are inline SVG. */
+svg.lucide {
+	width: 1em;
+	height: 1em;
+	flex: none;
+	vertical-align: -0.125em;
+}
+
+/* A glyph in a card heading reads at 11px type, so give it a little more room. */
+.card h2 svg.lucide {
+	width: 1.125em;
+	height: 1.125em;
+}
+
 /* One visible focus ring for everything tappable. */
 :focus-visible {
 	outline: 2px solid var(--moss);
@@ -89,6 +104,9 @@ code,
 }
 
 .card h2 {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
 	font-size: 0.72rem;
 	letter-spacing: 0.09em;
 	text-transform: uppercase;
@@ -105,6 +123,10 @@ code,
 
 /* Buttons: every one is at least 44px tall. */
 .btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.45rem;
 	min-height: 44px;
 	border-radius: 10px;
 	border: 1px solid transparent;
@@ -174,13 +196,14 @@ code,
 }
 
 .badge {
-	font-size: 0.66rem;
-	letter-spacing: 0.07em;
-	text-transform: uppercase;
+	display: inline-flex;
+	align-items: center;
 	color: var(--gold);
 	border: 1px solid color-mix(in srgb, var(--gold) 40%, transparent);
 	border-radius: 6px;
-	padding: 0.05rem 0.35rem;
+	padding: 0.08rem 0.28rem;
+	/* the crown is 1em, so this is its size */
+	font-size: 0.9rem;
 }
 
 .field {
