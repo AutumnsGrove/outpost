@@ -49,6 +49,10 @@
 		session: Receipt,
 		console: Terminal,
 		'console-refused': Ban,
+		hold: Clock,
+		'hold-cancelled': Minus,
+		'hold-expired': TimerOff,
+		'game-refused': Ban,
 		dns: Globe,
 		'dns-error': Globe,
 		deleted: Trash,
@@ -105,6 +109,10 @@
 			>over {o.totals.sessions} session{o.totals.sessions === 1 ? '' : 's'}, {o.totals.hours.toFixed(2)} h</span
 		>
 	</p>
+	<p class="month muted">
+		This month {euros(o.month.cost)} over {o.month.sessions} session{o.month.sessions === 1 ? '' : 's'},
+		{o.month.hours.toFixed(2)} h — the number <code>/outpost cost</code> gives in game.
+	</p>
 	{#if o.sessions.filter((s) => s.endedAt).length === 0}
 		<p class="muted">No finished sessions yet. Each one lands here with its cost.</p>
 	{:else}
@@ -155,6 +163,13 @@
 	}
 	.lead .num {
 		font-size: 1.35rem;
+	}
+	.month {
+		margin: -0.2rem 0 0.7rem;
+		font-size: 0.82rem;
+	}
+	.month code {
+		font-size: 0.95em;
 	}
 	.list {
 		list-style: none;
@@ -251,7 +266,8 @@
 	}
 	.kind[data-kind='idle'],
 	.kind[data-kind='idle-limit'],
-	.kind[data-kind='no-capacity'] {
+	.kind[data-kind='no-capacity'],
+	.kind[data-kind='hold-expired'] {
 		color: var(--amber);
 	}
 	.what {

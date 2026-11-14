@@ -78,12 +78,27 @@ export interface Players {
 	rosterError?: string;
 }
 
+/**
+ * A hold keeps the server up with nobody on it — the one deliberate exception
+ * to "stop billing when nobody is playing". `seconds` is time LEFT, not time
+ * held, so the page never does clock maths against a timestamp from another box.
+ */
+export interface Hold {
+	active: boolean;
+	until: string;
+	seconds: number;
+	maxSeconds: number;
+}
+
 export interface Overview {
 	status: Status;
 	health: Health;
 	events: Event[];
 	sessions: Session[];
 	totals: { hours: number; cost: number; sessions: number };
+	/** The calendar month to date, live session included. */
+	month: { hours: number; cost: number; sessions: number };
+	hold: Hold;
 	backups: Backup[];
 	dns: Dns;
 	players: Players;
