@@ -77,6 +77,18 @@ runcmd:
   #     permitted". So tags are only passed when config asks for them.
   - curl -fsSL https://tailscale.com/install.sh | sh
   - tailscale up --authkey={{ .TailscaleAuthKey }} --hostname={{ .Hostname }} {{ range .TailscaleTags }}--advertise-tags={{ . }} {{ end }}--accept-dns=false
+{{- if and .GameEndpoint .GameHostIP }}
+
+  # --- where the in-game /outpost command sends its questions.
+  #
+  # --accept-dns=false above means MagicDNS names do not resolve on this box, and
+  # the daemon's certificate is issued for its name, not its address. One hosts
+  # line gives a resolvable name with a valid certificate. Written after the
+  # tailnet join so it is clear why it exists.
+  - |
+    printf '%s\t%s\n' "{{ .GameHostIP }}" "{{ .GameHost }}" >> /etc/hosts
+    getent hosts {{ .GameHost }} || echo "outpost: {{ .GameHost }} did not resolve; /outpost will not work"
+{{- end }}
 
   # --- firewall: Minecraft from anywhere, everything else only over the tailnet.
   # The port is the one server.properties is told to use below, not a literal.

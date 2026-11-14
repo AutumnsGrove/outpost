@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -443,6 +444,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		RCONPassword:     password,
 		GameToken:        gameToken,
 		GameEndpoint:     o.cfg.Server.GameEndpoint,
+		GameHostIP:       o.gameHostIP(ctx, o.cfg.Server.GameEndpoint),
 		TailscaleAuthKey: o.cfg.Secrets.TailscaleAuthKey,
 		TailscaleTags:    o.cfg.Tailscale.Tags,
 		R2AccountID:      o.cfg.R2.AccountID,
@@ -490,6 +492,40 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	_ = o.store.Log("start", "rented %s in %s (%s)", hostname, reg.Location, serverType)
 
 	return st, nil
+}
+
+// gameHostIP resolves the daemon's hostname from inside our own tailnet, so the
+// VPS can pin it in /etc/hosts.
+//
+// The VPS joins with --accept-dns=false and the daemon's certificate is for its
+// name, not its address, so a name that resolves is what makes HTTPS work over
+// the tailnet. Empty means "nothing to pin": no endpoint, an endpoint that is
+// already an IP, or a lookup that failed. A failure is not fatal — the server is
+// still worth renting without a working /outpost — but it is recorded, because
+// the alternative is a player typing a command and getting a timeout.
+func (o *Orchestrator) gameHostIP(ctx context.Context, endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	if net.ParseIP(u.Hostname()) != nil {
+		return ""
+	}
+	if o.deps.Resolve == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ip, err := o.deps.Resolve(ctx, u.Hostname())
+	if err != nil || net.ParseIP(ip) == nil {
+		o.log.Warn("cannot resolve the daemon host, /outpost will not work this session", "host", u.Hostname(), "err", err)
+		_ = o.store.Log("game-unreachable", "cannot resolve %s for the in-game command: %v", u.Hostname(), err)
+		return ""
+	}
+	return ip
 }
 
 // rent creates the server, walking through the configured fallback sizes when

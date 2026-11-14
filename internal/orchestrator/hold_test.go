@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,5 +255,44 @@ func TestShortDurationReadsLikeTheCommandItAccepts(t *testing.T) {
 		if got := ShortDuration(in); got != want {
 			t.Errorf("ShortDuration(%v) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The VPS cannot resolve MagicDNS, so the daemon's name has to be resolved here
+// — where the tailnet is — and handed to cloud-init to pin.
+func TestStartPinsTheDaemonNameInTheHostsFile(t *testing.T) {
+	h := newHarness(t)
+	h.o.cfg.Server.GameEndpoint = "https://lepotato.taild95077.ts.net:8896"
+	h.resolveIP = "100.81.103.51"
+
+	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	userData := h.servers.lastSpec.UserData
+	if !strings.Contains(userData, "100.81.103.51") || !strings.Contains(userData, "lepotato.taild95077.ts.net") {
+		t.Fatalf("the daemon name is not pinned in the user-data:\n%s", userData)
+	}
+	if !strings.Contains(userData, `"token"`) && !strings.Contains(userData, "game token") && !strings.Contains(userData, "outpost.json") {
+		t.Fatal("the token file is missing from the user-data")
+	}
+
+	// The token itself is per session and must not be the empty string.
+	st, _ := h.store.GetState()
+	if len(st.GameToken) < 32 {
+		t.Fatalf("game token looks wrong: %q", st.GameToken)
+	}
+}
+
+func TestNoEndpointMeansNoHostsLineAndNoToken(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	userData := h.servers.lastSpec.UserData
+	if strings.Contains(userData, "/etc/hosts") {
+		t.Error("no game_endpoint should not write a hosts line")
+	}
+	if strings.Contains(userData, "outpost.json") {
+		t.Error("no game_endpoint should not write a token file")
 	}
 }
