@@ -105,6 +105,9 @@ outpost update           # git pull, rebuild, restart — see "Updating"
 outpost tick             # one reconcile pass, for cron
 outpost reset [--force]  # delete every outpost server, back to OFFLINE
 outpost console [cmd]    # one command on the live server (-i for a prompt)
+outpost cost             # this session and this calendar month
+outpost hold 48h         # keep it up with nobody on (capped, priced, see below)
+outpost hold cancel      # drop the hold
 outpost player list      # who may join, and who is an operator
 outpost player add|remove|op|deop <name>
 ```
@@ -112,6 +115,12 @@ outpost player add|remove|op|deop <name>
 `outpost reset` refuses to delete a world that was never saved to R2, or servers
 this database is not tracking; `--force` overrides it. `outpost stop` is the
 command that retries the save.
+
+`outpost hold` needs no cloud credentials: it writes one row and one audit event,
+and the tick loop that honours it runs wherever the daemon runs. Anything over
+12h prints the projected cost and refuses without `--yes`, because 48h is about
+25× a normal session and that is not something a typo should buy. `server.max_hold`
+(default `72h`) is the ceiling.
 
 ## Publishing a server
 
@@ -266,6 +275,60 @@ service gets from systemd and an interactive shell does not:
 ```bash
 set -a; . /etc/outpost.env; set +a
 ```
+
+## In-game commands
+
+Players get the same surface without leaving Minecraft:
+
+```
+/outpost cost            this session, this month, the rate, what 2h more adds
+/outpost status          state, players, time until shutdown, any hold
+/outpost hold 48h        keep the server up with nobody on (op only)
+/outpost hold 48h confirm  the second half of anything over 12h
+/outpost cancel          drop the hold (op only)
+```
+
+That needs a mod, because Fabric has no plugin API and RCON can only send commands
+*into* the game, never carry one out. `mod/` is a small server-side Fabric mod —
+clients do not need it and do not load it — that registers `/outpost` with Brigadier
+and prints whatever the daemon says. It contains no rules: who may hold, what it
+costs, how long is too long are all decided by `POST /api/game/command`, which is
+why that endpoint is testable with `curl` and the jar is under 200 lines.
+
+Two locks on the door. The mod carries a **per-session token** that cloud-init writes
+into `config/outpost.json` next to the RCON password; the jar ships in the public
+`mods/` prefix, so a secret baked into it would be a published secret. And
+`hold`/`cancel` are checked against `ops.json` in R2 as well as refused by the mod
+at permission level 2 — the daemon cannot see the game's op state and does not take
+the caller's word for it.
+
+### Building and shipping the mod
+
+```bash
+cd mod && ./gradlew build        # needs a JDK 17; produces build/libs/outpost-1.0.0.jar
+cd .. && cp mod/build/libs/outpost-1.0.0.jar pack/mods/
+outpost publish pack --prune
+```
+
+It is pinned to Minecraft 1.20.1 and Fabric Loader 0.15.x (Fabric API 0.92.2 is the
+last for 1.20.1 that accepts 0.15; 0.92.4+ demands loader 0.16.10). The pack needs
+`fabric-api` on the server, which almost every modpack already has.
+
+### Pointing the mod at the daemon
+
+`server.game_endpoint` is the URL the VPS posts to, and it is written into the VPS
+only when it is set:
+
+```yaml
+server:
+  game_endpoint: "http://100.64.0.5:8896"   # the Potato's tailnet IP
+```
+
+One gotcha, learned the hard way: the VPS joins the tailnet with `--accept-dns=false`,
+so **MagicDNS names do not resolve there**. Use the daemon's tailnet IP, and serve it
+over plain HTTP (`tailscale serve --http=8896`) so the address needs no name. Tailnet
+traffic is already WireGuard-encrypted; TLS buys nothing but a cert the IP cannot
+match.
 
 ## Building
 
