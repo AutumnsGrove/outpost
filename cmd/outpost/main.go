@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,6 +75,8 @@ func rootCmd() *cobra.Command {
 		a.startCmd(),
 		a.stopCmd(),
 		a.statusCmd(),
+		a.holdCmd(),
+		a.costCmd(),
 		a.tickCmd(),
 		a.resetCmd(),
 		a.publishCmd(),
@@ -294,10 +297,96 @@ func (a *app) statusCmd() *cobra.Command {
 			if st.TTLSec > 0 {
 				fmt.Printf("shuts down  in %s\n", (time.Duration(st.TTLSec) * time.Second).Round(time.Second))
 			}
+			if hold, err := a.orch.HoldState(); err == nil && hold.Active {
+				fmt.Printf("held until  %s (%s left)\n",
+					hold.Until.UTC().Format("2006-01-02 15:04 UTC"), orchestrator.ShortDuration(hold.Left))
+			}
 			if st.LastError != "" {
 				fmt.Printf("last error  %s\n", st.LastError)
 			}
 			fmt.Printf("lifetime    %.2f h, €%.4f\n", st.TotalHours, st.TotalCost)
+			return nil
+		},
+	}
+}
+
+// holdCmd is `/outpost hold 48h` from a shell. It needs no cloud credentials:
+// it writes one row and logs one event, and the tick that honours it runs
+// wherever the daemon runs.
+func (a *app) holdCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "hold [48h|cancel]",
+		Short: "Keep the server up with nobody on it, or drop the hold",
+		Long: "Holds the server open for a length of time with nobody on it — the one\n" +
+			"deliberate exception to \"stop billing when nobody is playing\". The hold\n" +
+			"runs on the daemon's clock, survives a restart, is capped by server.max_hold,\n" +
+			"and expires into the ordinary idle grace rather than an instant delete.\n\n" +
+			"Anything over 12h quotes the cost and refuses without --yes: a 48h hold is\n" +
+			"about 25× a normal session, which is exactly what a typo should not buy.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			defer a.store.Close()
+			ctx := cmd.Context()
+
+			arg := strings.ToLower(strings.TrimSpace(args[0]))
+			if arg == "cancel" || arg == "off" || arg == "none" {
+				was, err := a.orch.CancelHold(ctx, "cli")
+				if errors.Is(err, orchestrator.ErrNoHold) {
+					fmt.Println("No hold is set.")
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Hold dropped (was until %s).\n", was.UTC().Format("2006-01-02 15:04 UTC"))
+				return nil
+			}
+
+			d, err := time.ParseDuration(arg)
+			if err != nil {
+				return fmt.Errorf("give a length with a unit (90m, 12h, 48h) or `cancel`")
+			}
+			if projected := a.orch.Rate() * d.Hours(); d > orchestrator.ConfirmHoldAbove && !yes {
+				return fmt.Errorf("%s with nobody on is about €%.2f at €%.4f/h; add --yes to do it",
+					orchestrator.ShortDuration(d), projected, a.orch.Rate())
+			}
+
+			res, err := a.orch.Hold(ctx, d, "cli")
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Held until %s — %s with nobody on, about €%.2f at €%.4f/h.\n",
+				res.Until.UTC().Format("2006-01-02 15:04 UTC"), orchestrator.ShortDuration(res.Length),
+				res.CostEUR, res.Rate)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask again above 12h")
+	return cmd
+}
+
+// costCmd answers the question `/outpost cost` answers in game.
+func (a *app) costCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "cost",
+		Short: "What this session and this month have cost",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			defer a.store.Close()
+
+			c, err := a.orch.Cost(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if c.Live {
+				fmt.Printf("session     %.2f h, €%.4f\n", c.SessionHours, c.SessionCost)
+			} else {
+				fmt.Printf("session     nothing running\n")
+			}
+			fmt.Printf("this month  %.2f h, €%.4f over %d session(s) (since %s)\n",
+				c.MonthHours, c.MonthCost, c.MonthSessions, c.MonthStart.Format("2006-01-02"))
+			fmt.Printf("rate        €%.4f/h — two more hours would add €%.4f\n",
+				c.HourlyRate, c.HourlyRate*2)
 			return nil
 		},
 	}

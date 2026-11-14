@@ -241,3 +241,116 @@ func TestOpenAddsTheProfileColumnToAnExistingDatabase(t *testing.T) {
 		t.Fatalf("profile did not round-trip: %+v", got)
 	}
 }
+
+func TestAnOlderDatabaseGainsTheNewColumnsWithoutLosingRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// The schema as it was before hold_until and game_token existed.
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open old: %v", err)
+	}
+	if _, err := old.Exec(`
+		CREATE TABLE server_state (
+			id            INTEGER PRIMARY KEY CHECK (id = 1),
+			state         TEXT NOT NULL DEFAULT 'OFFLINE',
+			vps_id        TEXT NOT NULL DEFAULT '',
+			vps_ip        TEXT NOT NULL DEFAULT '',
+			tailnet_host  TEXT NOT NULL DEFAULT '',
+			region        TEXT NOT NULL DEFAULT '',
+			server_type   TEXT NOT NULL DEFAULT '',
+			rcon_password TEXT NOT NULL DEFAULT '',
+			started_at    TEXT NOT NULL DEFAULT '',
+			idle_since    TEXT NOT NULL DEFAULT '',
+			players       INTEGER NOT NULL DEFAULT 0,
+			dns_value     TEXT NOT NULL DEFAULT '',
+			last_error    TEXT NOT NULL DEFAULT '',
+			updated_at    TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO server_state (id, state, vps_id) VALUES (1, 'OFFLINE', 'kept');
+		CREATE TABLE sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
+			ended_at TEXT NOT NULL DEFAULT '', duration_seconds INTEGER NOT NULL DEFAULT 0,
+			cost_usd REAL NOT NULL DEFAULT 0, max_players INTEGER NOT NULL DEFAULT 0,
+			region TEXT NOT NULL DEFAULT '', server_type TEXT NOT NULL DEFAULT '',
+			vps_id TEXT NOT NULL DEFAULT '');
+		INSERT INTO sessions (started_at, ended_at, duration_seconds, cost_usd)
+		VALUES ('2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z', 3600, 0.5);
+	`); err != nil {
+		t.Fatalf("build old schema: %v", err)
+	}
+	old.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated: %v", err)
+	}
+	defer s.Close()
+
+	st, err := s.GetState()
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if st.VPSID != "kept" {
+		t.Fatal("the old row did not survive the migration")
+	}
+	if !st.HoldUntil.IsZero() || st.GameToken != "" {
+		t.Fatalf("new columns should be empty, got %+v", st)
+	}
+
+	// And they are writable, which is the point of adding them.
+	until := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	st.HoldUntil = until
+	st.GameToken = "tok"
+	if err := s.SetState(st); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	back, err := s.GetState()
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !back.HoldUntil.Equal(until) || back.GameToken != "tok" {
+		t.Fatalf("round trip lost the new columns: %+v", back)
+	}
+
+	// Opening twice is what every CLI invocation does; it must not try to add
+	// the columns again and fail.
+	s.Close()
+	if _, err := Open(path); err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+}
+
+func TestTotalsSinceCountsClosedSessionsFromTheMonthStart(t *testing.T) {
+	s := open(t)
+
+	add := func(started time.Time, dur int64, cost float64, ended bool) {
+		t.Helper()
+		id, err := s.StartSession(started, "eu", "cx23", "1")
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		if ended {
+			if err := s.EndSession(id, dur, cost, 1); err != nil {
+				t.Fatalf("end: %v", err)
+			}
+		}
+	}
+
+	add(time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC), 7200, 0.02, true)
+	add(time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC), 3600, 0.01, true) // last month
+	add(time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC), 0, 0, false)      // still open
+
+	hours, cost, sessions, err := s.TotalsSince(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("totals: %v", err)
+	}
+	if hours != 2 || cost != 0.02 || sessions != 1 {
+		t.Fatalf("totals since Nov 1 = %v h, %v, %d sessions; want 2, 0.02, 1", hours, cost, sessions)
+	}
+
+	// Lifetime is still lifetime.
+	if h, _, n, _ := s.Totals(); h != 3 || n != 2 {
+		t.Fatalf("lifetime = %v h over %d sessions, want 3 and 2", h, n)
+	}
+}

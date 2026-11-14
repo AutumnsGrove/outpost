@@ -52,6 +52,9 @@ type Server struct {
 	// packs drives the modpack panel. Nil when the daemon has no R2 client, which
 	// hides the panel rather than offering buttons that fail.
 	packs *pack.Manager
+
+	// pending holds half of a two-step `/outpost hold`. See game.go.
+	pending pendingStore
 }
 
 // Options is what the API needs that the orchestrator does not provide.
@@ -109,6 +112,10 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 	mux.HandleFunc("POST /api/pack/preview", s.packHandler(s.packPreview))
 	mux.HandleFunc("POST /api/pack/install", s.packHandler(s.packInstall))
 	mux.HandleFunc("POST /api/pack/use", s.packHandler(s.packUse))
+	// The in-game command surface. It carries its own per-session token rather
+	// than the page's or the bearer's: the caller is a mod on a VPS, not a
+	// browser and not Meridian. See game.go.
+	mux.HandleFunc("POST /api/game/command", s.gameCommand)
 	// Machine callers (Meridian's control plane, curl, cron) keep the bearer
 	// token path; the page uses /api/action with a form token instead.
 	mux.HandleFunc("POST /api/start", s.auth(s.start))

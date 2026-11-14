@@ -50,6 +50,17 @@ type totalsDTO struct {
 	Sessions int     `json:"sessions"`
 }
 
+// holdDTO is the deliberate exception to the idle rule, as the page shows it.
+//
+// Seconds is time left, not time held, so the page never does clock maths
+// against a timestamp that crossed the network with a different clock behind it.
+type holdDTO struct {
+	Active     bool   `json:"active"`
+	Until      string `json:"until"`
+	Seconds    int64  `json:"seconds"`
+	MaxSeconds int64  `json:"maxSeconds"`
+}
+
 type buildDTO struct {
 	Commit   string `json:"commit"`
 	Built    string `json:"built"`
@@ -87,10 +98,15 @@ type overviewResponse struct {
 	Events   []eventDTO          `json:"events"`
 	Sessions []sessionDTO        `json:"sessions"`
 	Totals   totalsDTO           `json:"totals"`
-	Backups  []backupDTO         `json:"backups"`
-	DNS      dnsDTO              `json:"dns"`
-	Players  playersDTO          `json:"players"`
-	Build    buildDTO            `json:"build"`
+	// Month is the calendar month to date, live session included. Totals above
+	// is lifetime, which is a different question — and the one nobody asks when
+	// they are looking at the server mid-session.
+	Month   totalsDTO   `json:"month"`
+	Hold    holdDTO     `json:"hold"`
+	Backups []backupDTO `json:"backups"`
+	DNS     dnsDTO      `json:"dns"`
+	Players playersDTO  `json:"players"`
+	Build   buildDTO    `json:"build"`
 	// CanUpdate is whether this binary sits in a git checkout and the page may
 	// offer the Update button at all.
 	CanUpdate bool `json:"canUpdate"`
@@ -231,14 +247,31 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	month, err := s.orch.Cost(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	hold, err := s.orch.HoldState()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 
 	health := s.orch.Health()
 	out := overviewResponse{
-		Status:    statusResponse{Status: status, FormToken: s.formToken},
-		Health:    health,
-		Events:    eventDTOs(events),
-		Sessions:  sessionDTOs(sessions),
-		Totals:    totalsDTO{Hours: hours, Cost: cost, Sessions: count},
+		Status:   statusResponse{Status: status, FormToken: s.formToken},
+		Health:   health,
+		Events:   eventDTOs(events),
+		Sessions: sessionDTOs(sessions),
+		Totals:   totalsDTO{Hours: hours, Cost: cost, Sessions: count},
+		Month:    totalsDTO{Hours: month.MonthHours, Cost: month.MonthCost, Sessions: month.MonthSessions},
+		Hold: holdDTO{
+			Active:     hold.Active,
+			Until:      stamp(hold.Until),
+			Seconds:    int64(hold.Left.Seconds()),
+			MaxSeconds: int64(hold.Max.Seconds()),
+		},
 		Backups:   backupDTOs(backups),
 		DNS:       dnsState(status.DNSName, state, health.LastDNS),
 		Players:   s.playersState(ctx),

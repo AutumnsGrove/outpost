@@ -49,6 +49,16 @@ type ServerState struct {
 	// active profile is switched an hour later.
 	Profile string
 
+	// HoldUntil is the one deliberate exception to the idle rule: while it is in
+	// the future the server stays up with nobody on it. Zero means no hold.
+	HoldUntil time.Time
+
+	// GameToken is this session's credential for the in-game /outpost command
+	// surface. Generated next to the RCON password, written into the VPS by
+	// cloud-init, and dead the moment the VPS is deleted: the jar in R2 never
+	// contains a secret, only the code that reads one.
+	GameToken string
+
 	Players   int
 	DNSValue  string
 	LastError string
@@ -118,6 +128,8 @@ func Open(path string) (*Store, error) {
 // sessions on the Potato. So the two are kept in step here instead: SQLite's
 // ADD COLUMN with a non-null default is instant and rewrites no rows.
 var addedColumns = []struct{ table, column, ddl string }{
+	{"server_state", "hold_until", `ALTER TABLE server_state ADD COLUMN hold_until TEXT NOT NULL DEFAULT ''`},
+	{"server_state", "game_token", `ALTER TABLE server_state ADD COLUMN game_token TEXT NOT NULL DEFAULT ''`},
 	{"server_state", "profile", `ALTER TABLE server_state ADD COLUMN profile TEXT NOT NULL DEFAULT ''`},
 }
 
@@ -233,14 +245,16 @@ func (s *Store) GetState() (ServerState, error) {
 	var st ServerState
 	var started, idle, updated string
 
+	var hold string
+
 	err := s.db.QueryRow(`
 		SELECT state, vps_id, vps_ip, tailnet_host, region, server_type,
 		       rcon_password, started_at, idle_since, players, dns_value,
-		       last_error, updated_at, profile
+		       last_error, updated_at, hold_until, game_token, profile
 		  FROM server_state WHERE id = 1`).
 		Scan(&st.State, &st.VPSID, &st.VPSIP, &st.TailnetHost, &st.Region,
 			&st.ServerType, &st.RCONPassword, &started, &idle, &st.Players,
-			&st.DNSValue, &st.LastError, &updated, &st.Profile)
+			&st.DNSValue, &st.LastError, &updated, &hold, &st.GameToken, &st.Profile)
 	if err != nil {
 		return st, fmt.Errorf("read state: %w", err)
 	}
@@ -250,6 +264,9 @@ func (s *Store) GetState() (ServerState, error) {
 	}
 	if st.IdleSince, err = parseStamp(idle); err != nil {
 		return st, fmt.Errorf("parse idle_since: %w", err)
+	}
+	if st.HoldUntil, err = parseStamp(hold); err != nil {
+		return st, fmt.Errorf("parse hold_until: %w", err)
 	}
 	if st.UpdatedAt, err = parseStamp(updated); err != nil {
 		return st, fmt.Errorf("parse updated_at: %w", err)
@@ -265,11 +282,12 @@ func (s *Store) SetState(st ServerState) error {
 			state = ?, vps_id = ?, vps_ip = ?, tailnet_host = ?, region = ?,
 			server_type = ?, rcon_password = ?, started_at = ?, idle_since = ?,
 			players = ?, dns_value = ?, last_error = ?, updated_at = ?,
-			profile = ?
+			hold_until = ?, game_token = ?, profile = ?
 		 WHERE id = 1`,
 		string(st.State), st.VPSID, st.VPSIP, st.TailnetHost, st.Region,
 		st.ServerType, st.RCONPassword, stamp(st.StartedAt), stamp(st.IdleSince),
-		st.Players, st.DNSValue, st.LastError, stamp(st.UpdatedAt), st.Profile)
+		st.Players, st.DNSValue, st.LastError, stamp(st.UpdatedAt),
+		stamp(st.HoldUntil), st.GameToken, st.Profile)
 	if err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
@@ -414,6 +432,24 @@ func (s *Store) Totals() (hours, cost float64, sessions int, err error) {
 		       COALESCE(SUM(cost_usd), 0),
 		       COUNT(*)
 		  FROM sessions WHERE ended_at != ''`)
+	return hours, cost, sessions, row.Scan(&hours, &cost, &sessions)
+}
+
+// TotalsSince returns hours, cost and session count for sessions that started
+// at or after t, counting only sessions that have ended.
+//
+// Closed-only on purpose: a live session's duration is still moving, and this
+// query has no clock to compare against — the caller has one (the orchestrator
+// takes its clock from Deps.Now so tests can move time). `Orchestrator.Cost`
+// adds the live session on top. For a session that straddles a month boundary
+// the whole thing lands in the month it started, which is a rounding error at
+// Outpost's forty-cent sessions and not worth a proration rule.
+func (s *Store) TotalsSince(t time.Time) (hours, cost float64, sessions int, err error) {
+	row := s.db.QueryRow(`
+		SELECT COALESCE(SUM(duration_seconds), 0) / 3600.0,
+		       COALESCE(SUM(cost_usd), 0),
+		       COUNT(*)
+		  FROM sessions WHERE ended_at != '' AND started_at >= ?`, stamp(t))
 	return hours, cost, sessions, row.Scan(&hours, &cost, &sessions)
 }
 

@@ -126,6 +126,18 @@ runcmd:
         echo "players: no $f in R2"
       fi
     done
+{{- if .GameEndpoint }}
+
+  # --- the in-game /outpost command's way home.
+  #
+  # One file, two values: where the daemon is, and this session's token. It is
+  # written AFTER the config pull above on purpose — a config/outpost.json left
+  # in the asset bucket by a pack must not be able to shadow the real one. The
+  # jar in mods/ carries no secret at all, only the code that reads this file.
+  - |
+    printf '{"url":"%s","token":"%s"}\n' \
+      "{{ .GameEndpoint }}" "{{ .GameToken }}" > /opt/minecraft/config/outpost.json
+{{- end }}
 
   # --- restore the world (a single tarball, laid out by v1)
   #

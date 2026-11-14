@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -54,6 +55,24 @@ type Server struct {
 	WorldBucket string `yaml:"world_bucket"`
 
 	MCPort int `yaml:"mc_port"`
+
+	// MaxHold caps how long `/outpost hold` may keep the server up with nobody
+	// on it. The whole premise of Outpost is a server that stops existing when
+	// nobody plays, and a hold is a deliberate exception to it — so the
+	// exception has a ceiling. Default 72h; a hold longer than that is refused
+	// with the cap named rather than silently shortened.
+	MaxHold Duration `yaml:"max_hold"`
+
+	// GameEndpoint is how the VPS reaches the daemon for the in-game /outpost
+	// command: scheme, address and port of the published API, e.g.
+	// "http://100.64.0.5:8896" or "https://potato.tailnet.ts.net:8896".
+	//
+	// It is written into /opt/minecraft/config/outpost.json by cloud-init. Note
+	// that the VPS joins the tailnet with --accept-dns=false, so a MagicDNS name
+	// does not resolve there: either use the tailnet IP, or serve plain HTTP
+	// (`tailscale serve --http=8896`) so the address works without a name. Empty
+	// means the mod is shipped without a URL and answers "not configured".
+	GameEndpoint string `yaml:"game_endpoint"`
 
 	// IdleGrace is how long the server stays up with nobody on it before the
 	// state flips to IDLE. IdleTimeout is how much longer than that it survives
@@ -201,6 +220,9 @@ func (c *Config) applyDefaults() {
 	if c.Server.RCONFailureLimit == 0 {
 		c.Server.RCONFailureLimit = 15
 	}
+	if c.Server.MaxHold == 0 {
+		c.Server.MaxHold = Duration(72 * time.Hour)
+	}
 	if c.Hetzner.Image == "" {
 		c.Hetzner.Image = "ubuntu-24.04"
 	}
@@ -274,6 +296,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.RCONFailureLimit < 1 {
 		return fmt.Errorf("server.rcon_failure_limit must be at least 1")
+	}
+	if c.Server.MaxHold.Std() <= 0 {
+		return fmt.Errorf("server.max_hold must be positive, got %s", c.Server.MaxHold.Std())
+	}
+	if e := c.Server.GameEndpoint; e != "" {
+		u, err := url.Parse(e)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("server.game_endpoint must look like http://host:port, got %q", e)
+		}
 	}
 	for name, r := range c.Regions {
 		if r.Location == "" || r.ServerType == "" {

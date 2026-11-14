@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS server_state (
     dns_value     TEXT    NOT NULL DEFAULT '',
     last_error    TEXT    NOT NULL DEFAULT '',
     updated_at    TEXT    NOT NULL DEFAULT '',
+    hold_until    TEXT    NOT NULL DEFAULT '',
+    game_token    TEXT    NOT NULL DEFAULT '',
     profile       TEXT    NOT NULL DEFAULT ''
 );
 

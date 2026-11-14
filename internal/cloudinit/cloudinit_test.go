@@ -1,6 +1,7 @@
 package cloudinit
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -464,5 +465,106 @@ func TestValidateRejectsMissingData(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+// --- the in-game command token ---------------------------------------------
+
+// tokenScript returns the runcmd entry that writes config/outpost.json, or "" if
+// the config asked for no endpoint.
+func tokenScript(t *testing.T, d Data) (string, []string) {
+	t.Helper()
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	script := ""
+	for _, c := range doc.Runcmd {
+		cmd, ok := c.(string)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.Contains(cmd, "outpost.json"):
+			script = cmd
+			order = append(order, "token")
+		case strings.Contains(cmd, "rclone copy r2:mc-assets/config/"):
+			order = append(order, "pull")
+		}
+	}
+	return script, order
+}
+
+func TestTheGameTokenIsWrittenForTheModToRead(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "http://100.64.0.5:8896"
+	d.GameToken = "abc123def456"
+
+	script, order := tokenScript(t, d)
+	if script == "" {
+		t.Fatal("no outpost.json step in runcmd")
+	}
+	// A config file pulled from R2 must not be able to shadow this session's
+	// URL and token, so the write has to come after the pull.
+	if len(order) != 2 || order[0] != "pull" || order[1] != "token" {
+		t.Fatalf("outpost.json is written in the wrong order relative to the pull: %v", order)
+	}
+
+	// Run it for real with the path redirected, and parse what comes out: the
+	// mod reads this file, so it has to be JSON, not nearly JSON.
+	dir := t.TempDir()
+	mc := filepath.Join(dir, "minecraft")
+	config := filepath.Join(mc, "config")
+	if err := os.MkdirAll(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script = strings.ReplaceAll(script, "/opt/minecraft", mc)
+	if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("writing the token failed: %v\n%s", err, out)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(config, "outpost.json"))
+	if err != nil {
+		t.Fatalf("no outpost.json: %v", err)
+	}
+	var got struct {
+		URL   string `json:"url"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("outpost.json is not valid JSON (%v): %s", err, raw)
+	}
+	if got.URL != d.GameEndpoint || got.Token != d.GameToken {
+		t.Fatalf("outpost.json = %+v, want url %q token %q", got, d.GameEndpoint, d.GameToken)
+	}
+}
+
+func TestNoEndpointWritesNoTokenFile(t *testing.T) {
+	script, _ := tokenScript(t, sample())
+	if script != "" {
+		t.Fatalf("a config with no game_endpoint should not write a token file, got:\n%s", script)
+	}
+}
+
+func TestValidateRejectsAnEndpointThatCouldBreakTheFile(t *testing.T) {
+	for _, bad := range []string{
+		`http://100.64.0.5:8896/"}`,
+		"http://100.64.0.5:8896/; rm -rf /",
+		"ftp://100.64.0.5",
+		"not a url",
+	} {
+		d := sample()
+		d.GameEndpoint = bad
+		d.GameToken = "abc123"
+		if err := d.Validate(); err == nil {
+			t.Errorf("endpoint %q was accepted", bad)
+		}
 	}
 }
