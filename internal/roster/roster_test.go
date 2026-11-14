@@ -213,3 +213,18 @@ func TestApplyRefusesNamesThatCouldCarryACommand(t *testing.T) {
 		}
 	}
 }
+
+// The page keys its whitelist rows by name, and Svelte throws
+// `each_key_duplicate` instead of rendering two identical rows — which aborts
+// the whole update and leaves the page on its skeleton. A whitelist.json edited
+// by hand can contain the same name twice, so the list is de-duplicated here.
+func TestDuplicateNamesCannotReachThePage(t *testing.T) {
+	got := names([]publish.Player{
+		{UUID: "1", Name: "AutumnsAdventure"},
+		{UUID: "2", Name: "autumnsadventure"},
+		{UUID: "3", Name: "FelixFurr"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("names = %v, want two entries", got)
+	}
+}
