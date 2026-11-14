@@ -141,3 +141,25 @@ func TestRegionLookup(t *testing.T) {
 		t.Fatal("unknown region should be an error")
 	}
 }
+
+func TestValidateRejectsTimingsThatBreakTheLoop(t *testing.T) {
+	for name, mutate := range map[string]func(*Config){
+		"negative tick":      func(c *Config) { c.Server.TickInterval = Duration(-time.Second) },
+		"negative idle":      func(c *Config) { c.Server.IdleTimeout = Duration(-time.Minute) },
+		"negative provision": func(c *Config) { c.Server.ProvisionTimeout = Duration(-time.Minute) },
+		"zero fail limit":    func(c *Config) { c.Server.RCONFailureLimit = -1 },
+		"region no type":     func(c *Config) { c.Regions["eu"] = Region{Location: "nbg1"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			withSecrets(t)
+			cfg, err := Load(write(t, minimal))
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected Validate to reject it")
+			}
+		})
+	}
+}

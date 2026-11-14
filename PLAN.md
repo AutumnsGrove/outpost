@@ -262,3 +262,50 @@ Rejected: reviving `legacy/v1/r2-manage.sh`. It would have been the third langua
 Go project, and the one piece of the system that decides what a server boots from. `outpost
 publish` (R2 over the S3 API, Fabric launcher fetched from Fabric Meta, whitelist UUIDs from
 Mojang) is the same code path on the Mac and the Potato, and it can be tested.
+
+## Decisions from the review pass (2026-11-13)
+
+### 18. The daemon writes the player list to R2
+
+Issue #14 left this open: a runtime `op` over RCON is lost on the next boot, because
+cloud-init restores `whitelist.json` and `ops.json` from `mc-assets/`. The bucket stays
+the source of truth, and `internal/roster` is the one writer besides `publish`. Every
+change goes to R2 first and is then applied to the running server over RCON, so a failed
+write can never leave a change that dies with the VPS. A corrupt file is refused rather
+than read as empty. Names are validated against Minecraft's own rules before they reach
+a URL or an RCON command.
+
+### 19. A world that exists must be restored, or the server must not start
+
+The restore step used to treat any failed download as "no world in R2" and let Minecraft
+generate a new one. Shutdown uploads whatever is in `/opt/minecraft/world` over
+`current/world.tar.gz`, so a network blip at boot became a wiped world at shutdown. The
+step now lists the bucket (which fails only for real reasons) and refuses to start
+Minecraft when a world exists but cannot be restored. The orchestrator then times out and
+deletes the server without a save, which leaves R2 untouched.
+
+### 20. Stop and Reset wait for the lock; Reset will not destroy an unsaved world
+
+Every tick writes back the whole state row it read at the start of its pass, so an
+unlocked `Stop` that landed mid-tick was overwritten and the button did nothing. Stop and
+Reset now wait for the tick. Reset also refuses to delete a server whose world was never
+uploaded, or servers this database is not tracking, without `--force`.
+
+### 21. The console cannot end the session, and the page cannot be driven cross-site
+
+`stop` and `save-off` are refused anywhere in a console line (so `execute run stop` does
+not get round it): the orchestrator would read a dead server and correctly save and delete
+it. All POSTs refuse browsers' `Sec-Fetch-Site` values other than same-origin; without
+that, `/api/start` was open to any web page visited from the tailnet when no bearer token
+is set.
+
+### 22. Not done, on purpose
+
+- SSH uses `StrictHostKeyChecking=accept-new` with the default known_hosts. A recycled
+  tailnet address with a new host key would fail the world save. Loosening host-key
+  checking is a security decision, so it is left for a human to make.
+- Secrets still travel in cloud-init user-data, which any local user on the VPS can read
+  from the metadata service. Scope the R2 token to the two buckets (the handoff already
+  assumes this) and treat the VPS as trusted with it.
+- If the Potato itself is down, nothing deletes the VPS. A Hetzner spending alert is the
+  backstop.

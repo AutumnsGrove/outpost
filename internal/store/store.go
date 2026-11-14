@@ -5,6 +5,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	_ "embed"
 	"fmt"
@@ -73,6 +74,7 @@ type Backup struct {
 
 // Event is one line of the audit trail.
 type Event struct {
+	ID      int64
 	At      time.Time
 	Kind    string
 	Message string
@@ -123,6 +125,30 @@ func (s *Store) TryLock() (release func(), ok bool, err error) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	}, true, nil
+}
+
+// Lock is TryLock that waits, for the callers that must not be dropped.
+//
+// A skipped tick is harmless — the next one is twenty seconds away — but a
+// skipped Stop is a button press that did nothing, and a Stop that runs
+// unlocked can be overwritten by a tick that read the row before it landed
+// (every tick writes back the whole row from its own snapshot). Those callers
+// wait their turn instead, bounded by ctx so a wedged holder cannot hang a CLI.
+func (s *Store) Lock(ctx context.Context) (release func(), err error) {
+	for {
+		release, ok, err := s.TryLock()
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return release, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("another outpost process is busy: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // Close closes the database.
@@ -339,7 +365,7 @@ func (s *Store) Log(kind, format string, args ...any) error {
 
 // RecentEvents returns the newest n events, newest first.
 func (s *Store) RecentEvents(n int) ([]Event, error) {
-	rows, err := s.db.Query(`SELECT at, kind, message FROM events ORDER BY id DESC LIMIT ?`, n)
+	rows, err := s.db.Query(`SELECT id, at, kind, message FROM events ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}
@@ -349,7 +375,7 @@ func (s *Store) RecentEvents(n int) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var at string
-		if err := rows.Scan(&at, &e.Kind, &e.Message); err != nil {
+		if err := rows.Scan(&e.ID, &at, &e.Kind, &e.Message); err != nil {
 			return nil, err
 		}
 		if e.At, err = parseStamp(at); err != nil {

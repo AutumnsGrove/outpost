@@ -7,14 +7,18 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"outpost/internal/orchestrator"
+	"outpost/internal/roster"
 	"outpost/internal/store"
 	"outpost/internal/updater"
 )
@@ -35,6 +39,14 @@ type Server struct {
 	// in /tmp, say), which hides the Update button rather than offering a
 	// button that fails.
 	update *updater.Update
+	// restart replaces the process after an update. See Options.Restart.
+	restart func()
+	// updating makes the update single-flight: a double tap on the button must
+	// not run two `git pull`s and two builds over the same outpost.new.
+	updating sync.Mutex
+
+	roster *roster.Roster
+	cache  rosterCache
 }
 
 // Options is what the API needs that the orchestrator does not provide.
@@ -44,6 +56,13 @@ type Options struct {
 	Token string
 	// Update enables the page's Update button.
 	Update *updater.Update
+	// Restart, when set, is how the daemon replaces itself after a page-driven
+	// update. Under systemd this should simply end the process and let
+	// Restart=always bring the new binary up: the unit runs with NoNewPrivileges,
+	// which makes `sudo systemctl restart` from inside it fail.
+	Restart func()
+	// Roster enables the player list and its controls. Nil hides them.
+	Roster *roster.Roster
 	Log    *slog.Logger
 }
 
@@ -60,6 +79,8 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 		log:       log,
 		formToken: newFormToken(),
 		update:    opts.Update,
+		restart:   opts.Restart,
+		roster:    opts.Roster,
 	}
 
 	mux := http.NewServeMux()
@@ -71,27 +92,103 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /api/status", s.auth(s.status))
-	mux.HandleFunc("POST /api/action", s.action)
+	mux.HandleFunc("GET /api/overview", s.auth(s.overview))
+	mux.HandleFunc("POST /api/action", s.page(s.action))
+	mux.HandleFunc("POST /api/console", s.page(s.console))
+	mux.HandleFunc("POST /api/players", s.page(s.players))
 	// Machine callers (Meridian's control plane, curl, cron) keep the bearer
 	// token path; the page uses /api/action with a form token instead.
 	mux.HandleFunc("POST /api/start", s.auth(s.start))
 	mux.HandleFunc("POST /api/stop", s.auth(s.stop))
 	mux.HandleFunc("GET /api/sessions", s.auth(s.sessions))
 	mux.HandleFunc("GET /api/events", s.auth(s.events))
-	return mux
+	// An unknown /api path is a JSON 404, not the page's HTML with a 200: a
+	// client talking to an older daemon should see "not found", not a parse error.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})
+	})
+	return s.crossSiteGuard(mux)
+}
+
+// crossSiteGuard refuses state-changing requests that a browser says came from
+// another origin.
+//
+// The form token protects the page's own endpoints, but /api/start and
+// /api/stop are the machine path and are open when no bearer token is
+// configured — so without this, any web page the user visits while on the
+// tailnet could `fetch('/api/start', {method: 'POST', mode: 'no-cors'})` and
+// rent a server. Browsers attach Sec-Fetch-Site to every request and pages
+// cannot forge it; curl and Meridian send none and are unaffected.
+//
+// Only same-origin (and "none", a user-typed navigation) pass. same-site is
+// refused too: another service on this box shares the registrable domain, and
+// it has no business spending money here.
+func (s *Server) crossSiteGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+				if site != "same-origin" && site != "none" {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request refused"})
+					return
+				}
+			} else if origin := r.Header.Get("Origin"); origin != "" && !originMatches(origin, r) {
+				// Older browsers: fall back to comparing Origin with the host the
+				// request was addressed to (or the one a proxy says it was).
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-site request refused"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func originMatches(origin string, r *http.Request) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return u.Host == r.Host || u.Host == r.Header.Get("X-Forwarded-Host")
+}
+
+// bearerOK reports whether the request carries the configured bearer token. The
+// comparison is constant-time: it costs nothing and removes a question.
+func (s *Server) bearerOK(r *http.Request) bool {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return ok && s.token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.token != "" {
-			header := r.Header.Get("Authorization")
-			got, ok := strings.CutPrefix(header, "Bearer ")
-			if !ok || got != s.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
-			}
+		if s.token != "" && !s.bearerOK(r) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
 		}
 		next(w, r)
+	}
+}
+
+// pageBody is what every page-driven POST carries besides its own fields.
+type pageBody struct {
+	Token string `json:"token"`
+}
+
+// page wraps the handlers behind the form token. The body is decoded once, here,
+// so each handler sees the same struct it asked for. A caller holding the bearer
+// token (curl, Meridian) may skip the form token.
+func (s *Server) page(next func(w http.ResponseWriter, r *http.Request, raw []byte)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var raw json.RawMessage
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&raw); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
+			return
+		}
+		var pb pageBody
+		_ = json.Unmarshal(raw, &pb)
+		if !s.bearerOK(r) && !checkToken(pb.Token, s.formToken) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "stale page: reload and try again"})
+			return
+		}
+		next(w, r, raw)
 	}
 }
 
@@ -101,7 +198,8 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 // statusResponse is Status plus the button token. Embedding keeps every field
-// at the top level, which is what the Meridian tile's vitals read.
+// at the top level, which is what the Meridian tile's vitals read. The shape of
+// /api/status is a contract: add new things to /api/overview instead.
 type statusResponse struct {
 	orchestrator.Status
 	FormToken string `json:"formToken"`
@@ -117,19 +215,11 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 }
 
 // action is the page's buttons: start, stop, update.
-func (s *Server) action(w http.ResponseWriter, r *http.Request) {
+func (s *Server) action(w http.ResponseWriter, r *http.Request, raw []byte) {
 	var body struct {
 		Action string `json:"action"`
-		Token  string `json:"token"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
-		return
-	}
-	if !checkToken(body.Token, s.formToken) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "stale page: reload and try again"})
-		return
-	}
+	_ = json.Unmarshal(raw, &body)
 
 	ctx := r.Context()
 	switch body.Action {
@@ -153,20 +243,25 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "update":
-		s.updateFromPage(ctx, w, r)
+		s.updateFromPage(ctx, w)
 
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown action"})
 	}
 }
 
-func (s *Server) updateFromPage(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+func (s *Server) updateFromPage(ctx context.Context, w http.ResponseWriter) {
 	if s.update == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "this binary cannot find its own git checkout, so it cannot update itself",
 		})
 		return
 	}
+	if !s.updating.TryLock() {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "an update is already running"})
+		return
+	}
+	defer s.updating.Unlock()
 
 	st, err := s.orch.Status(ctx)
 	if err != nil {
@@ -196,15 +291,78 @@ func (s *Server) updateFromPage(ctx context.Context, w http.ResponseWriter, r *h
 		"message": "updated " + res.Before + " → " + res.After + ", restarting",
 	})
 
-	// Answer the browser before systemd kills this process, or the page shows a
-	// failed request for an update that actually worked.
+	// Answer the browser before the process goes away, or the page shows a failed
+	// request for an update that actually worked.
 	u := *s.update
 	go func() {
 		time.Sleep(300 * time.Millisecond)
+		if s.restart != nil {
+			s.restart()
+			return
+		}
 		if err := u.Restart(context.WithoutCancel(ctx)); err != nil && !errors.Is(err, context.Canceled) {
 			s.log.Error("restart after update failed", "err", err)
 		}
 	}()
+}
+
+// console sends one command to the running server.
+func (s *Server) console(w http.ResponseWriter, r *http.Request, raw []byte) {
+	var body struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(raw, &body)
+
+	who := "page"
+	if s.bearerOK(r) {
+		who = "api"
+	}
+	res, err := s.orch.Console(r.Context(), who, body.Command)
+	if err != nil {
+		code := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, orchestrator.ErrRefused):
+			code = http.StatusBadRequest
+		case errors.Is(err, orchestrator.ErrNotRunning):
+			code = http.StatusConflict
+		case strings.Contains(err.Error(), "rcon unreachable"):
+			code = http.StatusBadGateway
+		}
+		writeJSON(w, code, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// players adds, removes and ops players, persistently.
+func (s *Server) players(w http.ResponseWriter, r *http.Request, raw []byte) {
+	if s.roster == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "the player list needs R2 credentials, which this daemon was started without"})
+		return
+	}
+	var body struct {
+		Action string `json:"action"`
+		Name   string `json:"name"`
+	}
+	_ = json.Unmarshal(raw, &body)
+
+	who := "page"
+	if s.bearerOK(r) {
+		who = "api"
+	}
+	live := s.orch.Live()
+	res, err := s.roster.Apply(r.Context(), roster.Action(body.Action), body.Name, live,
+		func(ctx context.Context, cmd string) error {
+			_, err := s.orch.Console(ctx, who, cmd)
+			return err
+		})
+	s.cache.invalidate()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.store.Log("player", "%s %s (by %s)", body.Action, res.Name, who)
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
@@ -252,12 +410,8 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sessions": sessions,
-		"totals": map[string]any{
-			"hours":    hours,
-			"costUsd":  cost,
-			"sessions": count,
-		},
+		"sessions": sessionDTOs(sessions),
+		"totals":   totalsDTO{Hours: hours, Cost: cost, Sessions: count},
 	})
 }
 
@@ -267,7 +421,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	writeJSON(w, http.StatusOK, map[string]any{"events": eventDTOs(events)})
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
