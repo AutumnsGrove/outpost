@@ -210,8 +210,7 @@ func (c *Config) applyDefaults() {
 		// never the actual bill. Check the console for the real rate and for
 		// stock before trusting the defaults.
 		c.Regions = map[string]Region{
-			"eu": {Location: "nbg1", ServerType: "cx22", HourlyRate: 0.0063},
-			"us": {Location: "ash", ServerType: "cx22", HourlyRate: 0.0063},
+			"eu": {Location: "nbg1", ServerType: "cx23", HourlyRate: 0.0104},
 		}
 	}
 	// No default tags on purpose. `tailscale up --advertise-tags=tag:outpost`
@@ -250,6 +249,27 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Regions) == 0 {
 		return fmt.Errorf("at least one region is required")
+	}
+	for name, d := range map[string]Duration{
+		"server.idle_grace":        c.Server.IdleGrace,
+		"server.idle_timeout":      c.Server.IdleTimeout,
+		"server.provision_timeout": c.Server.ProvisionTimeout,
+		"server.tick_interval":     c.Server.TickInterval,
+	} {
+		// Defaults fill zero, so only a negative value gets here. A negative
+		// tick interval panics time.NewTicker; a negative timeout deletes servers
+		// the moment they are rented.
+		if d.Std() <= 0 {
+			return fmt.Errorf("%s must be positive, got %s", name, d.Std())
+		}
+	}
+	if c.Server.RCONFailureLimit < 1 {
+		return fmt.Errorf("server.rcon_failure_limit must be at least 1")
+	}
+	for name, r := range c.Regions {
+		if r.Location == "" || r.ServerType == "" {
+			return fmt.Errorf("regions.%s needs a location and a server_type", name)
+		}
 	}
 	return nil
 }

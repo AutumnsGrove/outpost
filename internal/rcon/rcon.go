@@ -49,12 +49,16 @@ func Dial(ctx context.Context, addr, password string) (*Client, error) {
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	id, typ, _, err := c.read()
+	id, _, _, err := c.read()
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("read auth response: %w", err)
 	}
-	if typ == typeAuth && id == -1 {
+	// The reply to a login is its own packet type (2, the same number as a
+	// command) carrying the request id on success and -1 on failure. Checking
+	// for type 3 here, as this once did, never matched, so a wrong password
+	// "connected" and then failed every command with a bare timeout.
+	if id == -1 {
 		conn.Close()
 		return nil, fmt.Errorf("rcon: authentication failed (wrong password)")
 	}
@@ -130,12 +134,16 @@ func (c *Client) Command(ctx context.Context, cmd string) (string, error) {
 
 	var out strings.Builder
 	deadline := time.Now().Add(5 * time.Second)
+	answered := false
 
 	for {
 		_ = c.conn.SetReadDeadline(deadline)
 		id, typ, payload, err := c.read()
 		if err != nil {
-			if out.Len() > 0 && isTimeout(err) {
+			// Silence after an answer is the end of the reply. It is the answer
+			// that counts, not whether it had any text: `say` and a few others
+			// reply with an empty packet, which is success.
+			if answered && isTimeout(err) {
 				break
 			}
 			return out.String(), fmt.Errorf("read %q: %w", cmd, err)
@@ -143,6 +151,7 @@ func (c *Client) Command(ctx context.Context, cmd string) (string, error) {
 		if typ != typeResponseValue || id != want {
 			continue
 		}
+		answered = true
 		out.WriteString(payload)
 		deadline = time.Now().Add(300 * time.Millisecond)
 	}

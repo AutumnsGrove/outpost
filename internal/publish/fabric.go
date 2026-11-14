@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -46,9 +48,9 @@ func FabricServer(ctx context.Context, mcVersion, loaderVersion string) (string,
 		return "", nil, err
 	}
 
-	url := fmt.Sprintf("%s/v2/versions/loader/%s/%s/%s/server/jar",
+	jarURL := fmt.Sprintf("%s/v2/versions/loader/%s/%s/%s/server/jar",
 		fabricMetaBase, mcVersion, loaderVersion, installer)
-	jar, err := get(ctx, url)
+	jar, err := get(ctx, jarURL)
 	if err != nil {
 		return "", nil, fmt.Errorf("fabric launcher for %s/%s: %w", mcVersion, loaderVersion, err)
 	}
@@ -172,9 +174,22 @@ func PlayerFiles(ctx context.Context, whitelistNames, opNames []string) ([]byte,
 	return whitelistJSON, opsJSON, nil
 }
 
+var nameRe = regexp.MustCompile(`^[A-Za-z0-9_]{3,16}$`)
+
+// ValidName reports whether name can be a Minecraft account name. It guards the
+// lookup URL: the name comes from a CLI flag or a web form and is put in a path.
+func ValidName(name string) bool { return nameRe.MatchString(name) }
+
+// ResolvePlayer is the one Mojang client: publish uses it at publish time and
+// the roster uses it when the page or CLI adds a player.
+func ResolvePlayer(ctx context.Context, name string) (Player, error) { return resolve(ctx, name) }
+
 // resolve asks Mojang for the canonical spelling and UUID of a name.
 func resolve(ctx context.Context, name string) (Player, error) {
-	raw, err := get(ctx, fmt.Sprintf("%s/users/profiles/minecraft/%s", mojangBase, name))
+	if !ValidName(name) {
+		return Player{}, fmt.Errorf("%q is not a Minecraft name (3-16 letters, digits or underscores)", name)
+	}
+	raw, err := get(ctx, fmt.Sprintf("%s/users/profiles/minecraft/%s", mojangBase, url.PathEscape(name)))
 	if err != nil {
 		return Player{}, fmt.Errorf("mojang lookup for %q: %w", name, err)
 	}
@@ -219,8 +234,8 @@ func marshal(v any) ([]byte, error) {
 // get is a GET with a short error path: the interesting part of a failure here
 // is the status code and the first bytes of the body, not a wrapped transport
 // error.
-func get(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func get(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -237,10 +252,10 @@ func get(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
-		return nil, fmt.Errorf("%s: no such player or version", url)
+		return nil, fmt.Errorf("%s: no such player or version", rawURL)
 	}
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s: %s: %.120s", url, resp.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("%s: %s: %.120s", rawURL, resp.Status, strings.TrimSpace(string(body)))
 	}
 	return body, nil
 }

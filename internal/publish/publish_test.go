@@ -204,13 +204,16 @@ func TestBuildSkipsWorldDirectories(t *testing.T) {
 
 type fakeStore struct {
 	objects map[string][]byte
+	sums    map[string]string
 	puts    int
 	removes int
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{objects: map[string][]byte{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{objects: map[string][]byte{}, sums: map[string]string{}}
+}
 
-func (f *fakeStore) Put(_ context.Context, _ string, key string, r io.Reader, size int64) error {
+func (f *fakeStore) Put(_ context.Context, _ string, key string, r io.Reader, size int64, sum string) error {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return err
@@ -219,16 +222,17 @@ func (f *fakeStore) Put(_ context.Context, _ string, key string, r io.Reader, si
 		return io.ErrUnexpectedEOF
 	}
 	f.objects[key] = b
+	f.sums[key] = sum
 	f.puts++
 	return nil
 }
 
-func (f *fakeStore) Stat(_ context.Context, _, key string) (int64, error) {
+func (f *fakeStore) Stat(_ context.Context, _, key string) (r2.Info, error) {
 	b, ok := f.objects[key]
 	if !ok {
-		return 0, r2.ErrNotFound
+		return r2.Info{}, r2.ErrNotFound
 	}
-	return int64(len(b)), nil
+	return r2.Info{Size: int64(len(b)), SHA256: f.sums[key]}, nil
 }
 
 func (f *fakeStore) List(_ context.Context, _, prefix string) ([]r2.Object, error) {
@@ -469,4 +473,53 @@ func warningsContain(warnings []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// Same size, different content: the case a length comparison cannot see.
+func TestRunUploadsAFileThatChangedWithoutChangingSize(t *testing.T) {
+	pack := writePack(t)
+	st := newFakeStore()
+	ctx := context.Background()
+	props := filepath.Join(pack, "server", "server.properties")
+
+	if err := os.WriteFile(props, []byte("max-players=20\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(props, []byte("max-players=30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(st.objects["server/server.properties"]) != "max-players=30\n" {
+		t.Fatalf("the edit never reached R2: %q (uploaded %v)", st.objects["server/server.properties"], res.Uploaded)
+	}
+}
+
+// An object an older publish wrote has no checksum; it is re-uploaded once so it
+// gets one rather than trusted forever on its length.
+func TestRunBackfillsObjectsWithoutAChecksum(t *testing.T) {
+	pack := writePack(t)
+	st := newFakeStore()
+	ctx := context.Background()
+
+	if _, err := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets"}); err != nil {
+		t.Fatal(err)
+	}
+	for k := range st.sums {
+		st.sums[k] = ""
+	}
+	res, err := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets"})
+	if err != nil || len(res.Uploaded) == 0 {
+		t.Fatalf("uploaded=%v err=%v: objects with no checksum should be re-uploaded", res.Uploaded, err)
+	}
+	again, _ := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets"})
+	if len(again.Uploaded) != 0 {
+		t.Fatalf("a third run re-uploaded %v", again.Uploaded)
+	}
 }

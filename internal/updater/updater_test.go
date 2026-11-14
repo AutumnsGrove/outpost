@@ -153,3 +153,37 @@ func TestRestartUsesTheUnit(t *testing.T) {
 		t.Fatalf("restart commands = %v", r.restart)
 	}
 }
+
+// A pull that succeeds followed by a build that fails leaves HEAD ahead of the
+// binary. The next update has to notice and build, not report "up to date".
+func TestAFailedBuildIsRetriedNotForgotten(t *testing.T) {
+	dir, binary, r := checkout(t, "aaaaaaa", "bbbbbbb")
+	u := Update{Dir: dir, Binary: binary, Service: "outpost.service", Runner: r}
+
+	r.buildErr = errors.New("no space left on device")
+	if _, err := u.PullAndBuild(context.Background()); err == nil {
+		t.Fatal("expected the build failure")
+	}
+
+	// Same checkout, nothing new upstream: HEAD is still bbbbbbb.
+	r.buildErr = nil
+	r.commits = []string{"bbbbbbb", "bbbbbbb"}
+	res, err := u.PullAndBuild(context.Background())
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if !res.Changed || !res.Built {
+		t.Fatalf("retry result = %+v: the pending commit was never built", res)
+	}
+	got, _ := os.ReadFile(binary)
+	if string(got) != "new binary" {
+		t.Fatalf("binary = %q after the retry", got)
+	}
+
+	// And once built, an update with nothing new really is a no-op.
+	r.commits = []string{"bbbbbbb", "bbbbbbb"}
+	res, err = u.PullAndBuild(context.Background())
+	if err != nil || res.Changed {
+		t.Fatalf("third update = %+v, %v; want no change", res, err)
+	}
+}
