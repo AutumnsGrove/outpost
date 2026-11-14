@@ -91,7 +91,7 @@
 		/>
 		<button class="btn primary small" disabled={!live || busy || !input.trim()} aria-busy={busy}>
 			<Send aria-hidden="true" />
-			Send
+			{busy ? '…' : 'Send'}
 		</button>
 	</form>
 
