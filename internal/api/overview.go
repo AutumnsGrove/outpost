@@ -185,6 +185,19 @@ func (c *rosterCache) get(ctx context.Context, r *roster.Roster) (roster.Snapsho
 	return c.snap, c.err
 }
 
+// How much of each list the overview carries. These are sized to what the page
+// draws rather than to what the database has: seven events, five finished
+// sessions, one current backup and three older ones. The multiple is slack for a
+// shutdown in progress (the hero reads the event log to tell whether the save
+// landed) so a poll every five seconds stays a small, bounded response instead of
+// a history dump — it is a phone on a tailnet that may be relayed, not a dashboard
+// on a LAN.
+const (
+	overviewEvents   = 20
+	overviewSessions = 6
+	overviewBackups  = 4
+)
+
 // overview is everything the page shows, in one request.
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -198,17 +211,17 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	events, err := s.store.RecentEvents(40)
+	events, err := s.store.RecentEvents(overviewEvents)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	sessions, err := s.store.RecentSessions(8)
+	sessions, err := s.store.RecentSessions(overviewSessions)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	backups, err := s.store.RecentBackups(5)
+	backups, err := s.store.RecentBackups(overviewBackups)
 	if err != nil {
 		s.fail(w, err)
 		return

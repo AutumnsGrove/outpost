@@ -107,7 +107,22 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such endpoint"})
 	})
-	return s.crossSiteGuard(mux)
+	return s.crossSiteGuard(noStore(mux))
+}
+
+// noStore marks every API response uncacheable.
+//
+// This is a live view of a machine that bills by the hour: a browser serving a
+// back-navigation out of its cache, or an intermediary replaying this morning's
+// "RUNNING" onto a screen where the server is gone, is worse than a slow page.
+// The SPA handler sets its own cache headers, so only /api/ is touched.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // crossSiteGuard refuses state-changing requests that a browser says came from

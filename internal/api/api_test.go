@@ -367,3 +367,48 @@ func TestPlayersEndpointRefusesAnInjectedName(t *testing.T) {
 		t.Fatalf("code=%d sent=%v", rec.Code, f.sent)
 	}
 }
+
+// The page polls this every five seconds from a phone on a tailnet that may be
+// relayed, so the response is bounded to what it draws rather than to how much
+// history the database holds.
+func TestOverviewIsBoundedAndNotCached(t *testing.T) {
+	f := newFixture(t, "")
+	f.setLive(t)
+	for i := 0; i < 40; i++ {
+		_ = f.store.Log("console", "command %d", i)
+	}
+	for i := 0; i < 10; i++ {
+		id, _ := f.store.StartSession(time.Now().UTC(), "eu", "cx23", "7")
+		_ = f.store.EndSession(id, 60, 0.001, 1)
+	}
+	for i := 0; i < 8; i++ {
+		_ = f.store.RecordBackup(5994477, 1, "shutdown")
+	}
+
+	rec := f.do("GET", "/api/overview", "", nil)
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("cache-control = %q; a cached overview can show a server that is gone", cc)
+	}
+
+	got := decode(t, rec)
+	for name, limit := range map[string]int{
+		"events":   overviewEvents,
+		"sessions": overviewSessions,
+		"backups":  overviewBackups,
+	} {
+		if n := len(got[name].([]any)); n > limit {
+			t.Errorf("%s = %d entries, want at most %d", name, n, limit)
+		}
+	}
+}
+
+// /api/status is the contract Meridian's tile reads; it must not be cacheable
+// either, or the tile keeps showing yesterday's state.
+func TestAPIResponsesAreNotCached(t *testing.T) {
+	f := newFixture(t, "")
+	for _, path := range []string{"/api/status", "/api/overview", "/api/events", "/api/sessions"} {
+		if cc := f.do("GET", path, "", nil).Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+			t.Errorf("%s cache-control = %q", path, cc)
+		}
+	}
+}

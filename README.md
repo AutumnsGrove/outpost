@@ -238,7 +238,6 @@ internal/dns/         Cloudflare A record
 internal/store/       SQLite: state, sessions, backups, events
 internal/roster/      the player list: whitelist.json and ops.json in R2
 legacy/v1/            the 2025 Worker + watchdog build, kept for reference
-HANDOFF.md            where this stands and what is left
 PLAN.md               why it looks like this
 ```
 
