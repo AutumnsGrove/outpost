@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import Check from '@lucide/svelte/icons/check';
+	import Copy from '@lucide/svelte/icons/copy';
+	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import { act, getOverview, type ActionKind, type Overview, type ServerState } from '$lib/api';
 	import Hero from '$lib/Hero.svelte';
 	import Players from '$lib/Players.svelte';
@@ -131,6 +134,7 @@
 		<div class="right">
 			{#if o && dns}
 				<button class="addr mono" onclick={copyAddress} aria-label="Copy the server address {dns}">
+					{#if copied}<Check aria-hidden="true" />{:else}<Copy aria-hidden="true" />{/if}
 					{copied ? 'copied' : dns}
 				</button>
 			{/if}
@@ -181,7 +185,7 @@
 						disabled={pending !== null || !['OFFLINE', 'ERROR'].includes(o.status.state)}
 						title="git pull, rebuild, restart — only while offline"
 					>
-						{pending === 'update' ? 'updating…' : 'update code'}
+						<RefreshCw aria-hidden="true" />{pending === 'update' ? 'updating…' : 'update code'}
 					</button>
 				{/if}
 			</p>
@@ -237,6 +241,9 @@
 		margin: 0;
 	}
 	.addr {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
 		min-height: 44px;
 		background: transparent;
 		border: 1px dashed var(--line);
@@ -329,6 +336,9 @@
 		align-items: center;
 	}
 	.linkbtn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
 		min-height: 44px;
 		padding: 0 0.3rem;
 		background: none;

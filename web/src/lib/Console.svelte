@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
+	import Send from '@lucide/svelte/icons/send';
+	import Terminal from '@lucide/svelte/icons/terminal';
 	import { sendConsole } from './api';
 
 	let { live, token }: { live: boolean; token: string } = $props();
@@ -48,7 +50,7 @@
 </script>
 
 <section class="card" aria-labelledby="console-h">
-	<h2 id="console-h">Console</h2>
+	<h2 id="console-h"><Terminal aria-hidden="true" />Console</h2>
 
 	<div class="log mono" class:idle={!live} bind:this={log} role="log" aria-live="polite" aria-label="Console output">
 		{#if entries.length === 0}
@@ -88,7 +90,8 @@
 			enterkeyhint="send"
 		/>
 		<button class="btn primary small" disabled={!live || busy || !input.trim()} aria-busy={busy}>
-			{busy ? '…' : 'Send'}
+			<Send aria-hidden="true" />
+			Send
 		</button>
 	</form>
 

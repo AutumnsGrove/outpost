@@ -1,4 +1,7 @@
 <script lang="ts">
+	import Crown from '@lucide/svelte/icons/crown';
+	import UserX from '@lucide/svelte/icons/user-x';
+	import Users from '@lucide/svelte/icons/users';
 	import { playerAction, type PlayerAction, type Players } from './api';
 
 	let {
@@ -45,7 +48,7 @@
 </script>
 
 <section class="card" aria-labelledby="players-h">
-	<h2 id="players-h">Players</h2>
+	<h2 id="players-h"><Users aria-hidden="true" />Players</h2>
 
 	{#if !players.roster}
 		<p class="muted">
@@ -63,7 +66,12 @@
 						<span class="who">
 							<span class="dot" class:on={online.has(who.toLowerCase())} title={online.has(who.toLowerCase()) ? 'online' : 'offline'}></span>
 							<span class="nm">{who}</span>
-							{#if ops.has(who.toLowerCase())}<span class="badge">op</span>{/if}
+							{#if ops.has(who.toLowerCase())}
+								<span class="badge" title="operator">
+									<Crown aria-hidden="true" />
+									<span class="sr">operator</span>
+								</span>
+							{/if}
 						</span>
 						<span class="btns">
 							<button
@@ -81,7 +89,8 @@
 								onclick={() => remove(who)}
 								aria-label="Remove {who} from the whitelist"
 							>
-								{armed === who ? 'Sure?' : 'Remove'}
+								<UserX aria-hidden="true" />
+								<span class="lbl">{armed === who ? 'Sure?' : 'Remove'}</span>
 							</button>
 						</span>
 					</li>
@@ -178,5 +187,13 @@
 	}
 	.note {
 		font-size: 0.78rem;
+	}
+	/* On a phone the two buttons would leave no room for a 16-character name, so
+	   Remove drops to the glyph alone (it already has an aria-label) until it is
+	   armed, when "Sure?" has to be readable. */
+	@media (max-width: 30rem) {
+		.btns .btn:not(.armed) .lbl {
+			display: none;
+		}
 	}
 </style>

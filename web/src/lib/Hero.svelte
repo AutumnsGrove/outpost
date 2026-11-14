@@ -1,4 +1,15 @@
 <script lang="ts">
+	import Check from '@lucide/svelte/icons/check';
+	import Circle from '@lucide/svelte/icons/circle';
+	import CircleDot from '@lucide/svelte/icons/circle-dot';
+	import Loader from '@lucide/svelte/icons/loader';
+	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+	import Moon from '@lucide/svelte/icons/moon';
+	import Play from '@lucide/svelte/icons/play';
+	import Power from '@lucide/svelte/icons/power';
+	import Save from '@lucide/svelte/icons/save';
+	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+	import X from '@lucide/svelte/icons/x';
 	import { bytes, ago, duration, euros, mmss, type Overview } from './api';
 
 	let {
@@ -53,7 +64,7 @@
 <section class="hero {s.state.toLowerCase()}" aria-labelledby="hero-title">
 	{#if s.state === 'OFFLINE'}
 		<div class="copy">
-			<p class="eyebrow">Offline · nothing is billing</p>
+			<p class="eyebrow"><CircleDot aria-hidden="true" />Offline · nothing is billing</p>
 			<h2 id="hero-title">Ready when you are</h2>
 			<p class="sub">
 				Starting rents a server and restores the world. It takes about four minutes, then it is at
@@ -69,7 +80,7 @@
 		</div>
 	{:else if s.state === 'PROVISIONING'}
 		<div class="copy">
-			<p class="eyebrow">Building</p>
+			<p class="eyebrow"><Loader aria-hidden="true" />Building</p>
 			<h2 id="hero-title">
 				<span class="clock num">{mmss(provElapsed)}</span> since renting
 			</h2>
@@ -94,7 +105,7 @@
 		</div>
 	{:else if s.state === 'RUNNING'}
 		<div class="copy">
-			<p class="eyebrow">Running · {s.region} · {s.serverType}</p>
+			<p class="eyebrow"><Play aria-hidden="true" />Running · {s.region} · {s.serverType}</p>
 			<h2 id="hero-title" class="big-count">
 				{#if s.players > 0}
 					<span class="n num">{s.players}</span> playing
@@ -120,7 +131,7 @@
 		</div>
 	{:else if s.state === 'IDLE'}
 		<div class="copy">
-			<p class="eyebrow">Idle · nobody playing</p>
+			<p class="eyebrow"><Moon aria-hidden="true" />Idle · nobody playing</p>
 			<h2 id="hero-title">
 				Shutting down in <span class="clock num">{mmss(ttl)}</span>
 			</h2>
@@ -140,20 +151,26 @@
 		</div>
 	{:else if s.state === 'TERMINATING'}
 		<div class="copy">
-			<p class="eyebrow">Shutting down</p>
+			<p class="eyebrow"><Power aria-hidden="true" />Shutting down</p>
 			<h2 id="hero-title">Saving the world</h2>
 			<ol class="steps" aria-label="Shutdown steps, read from the event log">
-				<li class="done"><span class="mark">✓</span>Stop Minecraft</li>
+				<li class="done"><span class="mark"><Check aria-hidden="true" /></span>Stop Minecraft</li>
 				<li class={saved ? 'done' : 'active'}>
-					<span class="mark">{saved ? '✓' : '…'}</span>Upload the world to R2
+					<span class="mark">
+						{#if saved}<Check aria-hidden="true" />{:else}<LoaderCircle aria-hidden="true" />{/if}
+					</span>Upload the world to R2
 				</li>
-				<li class={saved ? 'active' : ''}><span class="mark">{saved ? '…' : '·'}</span>Delete the server</li>
+				<li class={saved ? 'active' : ''}>
+					<span class="mark">
+						{#if saved}<LoaderCircle aria-hidden="true" />{:else}<Circle aria-hidden="true" />{/if}
+					</span>Delete the server
+				</li>
 			</ol>
 			<p class="sub">Nothing is deleted until the world is confirmed in R2.</p>
 		</div>
 	{:else if s.state === 'ERROR'}
 		<div class="copy">
-			<p class="eyebrow">Needs a human</p>
+			<p class="eyebrow"><TriangleAlert aria-hidden="true" />Needs a human</p>
 			<h2 id="hero-title">{hasServer ? 'The world has not been saved' : 'Something went wrong'}</h2>
 			<p class="what" role="alert">{s.lastError || 'No error was recorded.'}</p>
 			{#if hasServer}
@@ -169,6 +186,7 @@
 	<div class="actions">
 		{#if canStart}
 			<button class="btn primary big" onclick={onstart} disabled={pending !== null} aria-busy={pending === 'start'}>
+				<Play aria-hidden="true" />
 				{pending === 'start' ? 'Renting…' : 'Start server'}
 			</button>
 		{/if}
@@ -180,6 +198,11 @@
 				disabled={pending !== null}
 				aria-busy={pending === 'stop'}
 			>
+				{#if s.state === 'PROVISIONING'}
+					<X aria-hidden="true" />
+				{:else}
+					<Save aria-hidden="true" />
+				{/if}
 				{#if pending === 'stop'}
 					Saving…
 				{:else if confirmStop}
@@ -228,6 +251,9 @@
 			linear-gradient(180deg, var(--panel-2), var(--panel));
 	}
 	.eyebrow {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
 		margin: 0 0 0.35rem;
 		font-size: 0.74rem;
 		letter-spacing: 0.09em;
@@ -345,8 +371,9 @@
 		font-weight: 600;
 	}
 	.mark {
+		display: inline-flex;
+		justify-content: center;
 		width: 1.4rem;
-		text-align: center;
 		font-family: var(--mono);
 		color: var(--moss);
 	}
