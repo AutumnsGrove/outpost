@@ -63,7 +63,8 @@ One-time, none of it in this repo:
    mc-worlds/current/world.tar.gz        optional
    ```
 
-   Fill those keys with `outpost publish` (below) — nothing else writes to R2.
+   Fill those keys with `outpost publish` (below). It and the player list are the
+   only two things that write to R2.
 
 Secrets are environment variables, never the config file:
 
@@ -99,8 +100,15 @@ outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
 outpost update           # git pull, rebuild, restart — see "Updating"
 outpost tick             # one reconcile pass, for cron
-outpost reset            # delete every outpost server, back to OFFLINE
+outpost reset [--force]  # delete every outpost server, back to OFFLINE
+outpost console [cmd]    # one command on the live server (-i for a prompt)
+outpost player list      # who may join, and who is an operator
+outpost player add|remove|op|deop <name>
 ```
+
+`outpost reset` refuses to delete a world that was never saved to R2, or servers
+this database is not tracking; `--force` overrides it. `outpost stop` is the
+command that retries the save.
 
 ## Publishing a server
 
@@ -134,12 +142,57 @@ with jars in `mods/` and a `start.sh` sized for the instance you rent.
 `outpost serve` is the only long-running piece:
 `tailscale serve --https=8896` in front of it gives you a page at
 `https://<host>.ts.net:8896/` — state, who is playing, the address to hand out,
-what the session has cost, and **Start / Save and stop / Update** buttons.
+what the session has cost, **Start / Save and stop / Update** buttons, a console,
+and the player list. It polls `GET /api/overview` once every five seconds;
+`GET /api/status` is a separate, narrower contract kept for Meridian's tile, so
+add new things to `/api/overview` rather than to `status`.
 
 The page is a SvelteKit app built to static files and embedded with `go:embed`
 (the same shape as bwmon and Polaris), so the box needs no Node at runtime and
 `git pull && go build` is the whole deploy. The built output in `web/build` is
 committed on purpose; `make web` rebuilds it.
+
+## Console and players
+
+The page and the CLI reach the same two places: RCON for the running game, and
+`mc-assets` for anything that has to outlive the VPS.
+
+```bash
+outpost console list                  # one command, prints the reply
+outpost console -i                    # a prompt; one command per line, `exit` to leave
+
+outpost player list
+outpost player add AutumnsAdventure
+outpost player op AutumnsAdventure
+outpost player remove AutumnsAdventure
+```
+
+`outpost player` writes `whitelist.json` and `ops.json` to R2 **first**, then tells
+the running server over RCON, because the bucket is what cloud-init restores on the
+next boot. The other way round, a successful `op` with a failed upload is a change
+that dies with the VPS. Names are resolved through Mojang, so what gets stored is
+the canonical spelling and UUID. One person editing is assumed; two writers racing
+each other is last-write-wins.
+
+Two things the console will not do, on purpose:
+
+- **`stop` and `save-off` are refused**, anywhere in the line, so `execute run stop`
+  does not get round it. The orchestrator reads a dead server as "everybody left":
+  the probes fail, and it saves the world and deletes the VPS underneath you. Use
+  Save and stop.
+- **Nothing shells out.** RCON only ever reaches Minecraft, never the host.
+
+Every command lands in `events` with where it came from — `page`, `api` or `cli` —
+so "who opped the griefer" has an answer, and refusals are logged too.
+
+Both commands need the credentials: the console does not (it reads the address and
+password out of the database the daemon writes), but the player list does, because
+it writes to R2. On the Potato the secrets are in `/etc/outpost.env`, which the
+service gets from systemd and an interactive shell does not:
+
+```bash
+set -a; . /etc/outpost.env; set +a
+```
 
 ## Building
 
@@ -183,6 +236,7 @@ internal/rcon/        Minecraft RCON client
 internal/hetzner/     Hetzner Cloud API
 internal/dns/         Cloudflare A record
 internal/store/       SQLite: state, sessions, backups, events
+internal/roster/      the player list: whitelist.json and ops.json in R2
 legacy/v1/            the 2025 Worker + watchdog build, kept for reference
 HANDOFF.md            where this stands and what is left
 PLAN.md               why it looks like this
