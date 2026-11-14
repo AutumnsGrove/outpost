@@ -23,7 +23,7 @@
 			<strong>{ago(o.backups[0].at, now)}</strong>
 		</p>
 		<ul class="list">
-			{#each o.backups.slice(1, 4) as b (b.at)}
+			{#each o.backups.slice(1, 4) as b (b.id)}
 				<li><span class="muted">{clock(b.at)}</span><span class="num">{bytes(b.sizeBytes)}</span></li>
 			{/each}
 		</ul>

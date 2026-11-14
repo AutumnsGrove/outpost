@@ -57,6 +57,7 @@ export interface Session {
 }
 
 export interface Backup {
+	id: number;
 	at: string;
 	sizeBytes: number;
 	kind: string;

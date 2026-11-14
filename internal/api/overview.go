@@ -38,6 +38,7 @@ type sessionDTO struct {
 }
 
 type backupDTO struct {
+	ID        int64  `json:"id"`
 	At        string `json:"at"`
 	SizeBytes int64  `json:"sizeBytes"`
 	Kind      string `json:"kind"`
@@ -125,7 +126,7 @@ func sessionDTOs(in []store.Session) []sessionDTO {
 func backupDTOs(in []store.Backup) []backupDTO {
 	out := make([]backupDTO, 0, len(in))
 	for _, b := range in {
-		out = append(out, backupDTO{At: stamp(b.At), SizeBytes: b.SizeBytes, Kind: b.Kind})
+		out = append(out, backupDTO{ID: b.ID, At: stamp(b.At), SizeBytes: b.SizeBytes, Kind: b.Kind})
 	}
 	return out
 }

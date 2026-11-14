@@ -96,9 +96,21 @@ func (r *Roster) save(ctx context.Context, key string, players []publish.Player)
 	return r.blobs.Put(ctx, r.bucket, key, bytes.NewReader(body), int64(len(body)), "")
 }
 
+// names returns the stored names, sorted, without duplicates.
+//
+// The de-duplication is not cosmetic: the page keys its list by name, and Svelte
+// throws `each_key_duplicate` rather than rendering two identical rows — which
+// aborts the whole update and leaves the page on its skeleton. A hand-edited
+// whitelist.json should not be able to do that.
 func names(players []publish.Player) []string {
 	out := make([]string, 0, len(players))
+	seen := make(map[string]bool, len(players))
 	for _, p := range players {
+		key := strings.ToLower(p.Name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		out = append(out, p.Name)
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
