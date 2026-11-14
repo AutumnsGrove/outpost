@@ -208,6 +208,12 @@ type Status struct {
 	IdleLimitSec int64   `json:"idleLimitSeconds"`
 }
 
+// The hold and the month-to-date cost are deliberately NOT fields on Status.
+// /api/status is a contract with Meridian's tile and a test pins its field count
+// (see api_test.go, TestStatusKeepsTheShapeMeridianReads); everything new goes
+// to /api/overview. HoldState and Cost are the readouts both the page and
+// /outpost use.
+
 // Status reads the current state and decorates it with costs and timers.
 //
 // Money is euros, because that is the only currency Hetzner bills in. The
@@ -417,6 +423,13 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	if err != nil {
 		return st, err
 	}
+	// The in-game command token is per session, handed to this one VPS and dead
+	// when it is deleted. The jar that reads it ships in the public mods/ prefix,
+	// so a long-lived secret baked into the jar would be a secret published.
+	gameToken, err := randomHex(24)
+	if err != nil {
+		return st, err
+	}
 	suffix, err := randomHex(3)
 	if err != nil {
 		return st, err
@@ -428,6 +441,8 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		Profile:          profile,
 		MCPort:           o.cfg.Server.MCPort,
 		RCONPassword:     password,
+		GameToken:        gameToken,
+		GameEndpoint:     o.cfg.Server.GameEndpoint,
 		TailscaleAuthKey: o.cfg.Secrets.TailscaleAuthKey,
 		TailscaleTags:    o.cfg.Tailscale.Tags,
 		R2AccountID:      o.cfg.R2.AccountID,
@@ -455,6 +470,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		Region:       region,
 		ServerType:   serverType,
 		RCONPassword: password,
+		GameToken:    gameToken,
 		Profile:      profile,
 		StartedAt:    o.now(),
 	}
@@ -768,6 +784,31 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 
 	if sess, err := o.store.CurrentSession(); err == nil && sess != nil {
 		_ = o.store.UpdateSessionPlayers(sess.ID, players.Online)
+	}
+
+	// A hold suspends the idle rule, and this is where that happens.
+	//
+	// The clock is paused rather than reset: while held, IdleSince stays zero,
+	// so the moment the hold runs out the ordinary "nobody on, start the clock"
+	// branch below gives the full grace period. Someone who asked for 12h and
+	// got it should not be terminated on the tick it expires.
+	if !st.HoldUntil.IsZero() {
+		if st.HoldUntil.After(o.now()) {
+			next.State = store.Running
+			next.IdleSince = time.Time{}
+			return o.store.SetState(next)
+		}
+		next.HoldUntil = time.Time{}
+		st.HoldUntil = time.Time{}
+		// The clock starts from zero, never from where it was when the hold
+		// began. A hold that ran its full length is not thirty minutes of nobody
+		// playing, and inheriting that clock would terminate on the next tick —
+		// which is exactly what this does if the daemon was down for the whole
+		// hold and no pass got to pause the clock in between.
+		st.IdleSince = time.Time{}
+		next.IdleSince = time.Time{}
+		o.log.Info("hold expired", "players", players.Online)
+		_ = o.store.Log("hold-expired", "the hold ran out; the normal idle clock starts now")
 	}
 
 	grace := o.cfg.Server.IdleGrace.Std()

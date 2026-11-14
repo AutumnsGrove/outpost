@@ -23,3 +23,9 @@ node_modules/
 .wrangler/
 web/node_modules/
 web/.svelte-kit/
+# The Fabric mod: Gradle's cache, its output, and a dev server's run directory.
+# The built jar does not live in git — it goes to mc-assets/mods/ via `outpost
+# publish`, which is the same path every other mod in the pack takes.
+mod/.gradle/
+mod/build/
+mod/run/
