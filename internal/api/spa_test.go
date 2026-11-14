@@ -89,3 +89,24 @@ func TestFormTokenIsUnpredictableAndComparedStrictly(t *testing.T) {
 		t.Fatal("mismatched or empty tokens must be refused")
 	}
 }
+
+// A stale tab asks for the chunk hashes its index.html was built with. Those
+// files are gone after an update, and answering with the HTML shell under a 200
+// is what turns that into a permanently blank page instead of a reload.
+func TestSPA404sAMissingAssetInsteadOfServingTheShell(t *testing.T) {
+	for _, path := range []string{
+		"/_app/immutable/entry/start.DeletedByAnUpdate.js",
+		"/_app/immutable/chunks/gone.js",
+	} {
+		rr := get(t, spaHandler(), path)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("%s = %d, want 404", path, rr.Code)
+		}
+		if body := rr.Body.String(); strings.Contains(body, "<div style=\"display: contents\">") {
+			t.Errorf("%s returned the SvelteKit shell; a stale tab would parse HTML as a module", path)
+		}
+		if cc := rr.Header().Get("Cache-Control"); strings.Contains(cc, "immutable") {
+			t.Errorf("%s is cached forever, so the browser will never ask again", path)
+		}
+	}
+}

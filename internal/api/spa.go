@@ -11,7 +11,7 @@ import (
 // spaHandler serves the embedded SvelteKit build, falling back to index.html
 // for anything that is not a real static asset.
 //
-// Two things here are load-bearing and were learned the hard way in bwmon:
+// Three things here are load-bearing:
 //
 //   - The fallback serves index.html's bytes directly instead of delegating to
 //     http.FileServer with a rewritten path, because FileServer 301-redirects
@@ -22,6 +22,12 @@ import (
 //     cached at all. An "outpost update" swaps the embedded build mid-flight;
 //     a browser holding a stale index.html would ask for asset hashes that no
 //     longer exist and the page would be blank — which reads as "it broke".
+//   - A missing file under /_app/ is a 404, never the shell. Handing back
+//     index.html with a 200 for a .js request is what makes a stale cached page
+//     silently blank: the module loader parses HTML, throws, and the page stops
+//     at whatever it had rendered. A 404 at least says "reload" in the network
+//     tab. Only /_app/ gets this, because every other path may be a client-side
+//     route.
 func spaHandler() http.Handler {
 	static, err := fs.Sub(web.Assets, "build")
 	if err != nil {
@@ -38,6 +44,11 @@ func spaHandler() http.Handler {
 
 		if r.URL.Path != "/" {
 			if _, err := fs.Stat(static, strings.TrimPrefix(r.URL.Path, "/")); err != nil {
+				if strings.HasPrefix(r.URL.Path, "/_app/") {
+					w.Header().Set("Cache-Control", "no-store")
+					http.NotFound(w, r)
+					return
+				}
 				serveIndex(w, static)
 				return
 			}
