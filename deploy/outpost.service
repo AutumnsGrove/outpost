@@ -18,7 +18,7 @@
 
 [Unit]
 Description=Outpost — on-demand Minecraft server orchestrator
-Documentation=https://github.com/AutumnsGrove/outpost/blob/main/HANDOFF.md
+Documentation=https://github.com/AutumnsGrove/outpost/blob/main/README.md
 After=network-online.target tailscaled.service
 Wants=network-online.target
 

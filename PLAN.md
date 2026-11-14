@@ -114,8 +114,9 @@ and the 38.8 MB world in R2 are disposable.
 Missing assets are a first-class state, not an error: the template already handles
 an absent world ("Minecraft will generate one") and an empty `mods/` prefix.
 
-**Consequence:** there is no way to *populate* R2 from this repo yet. See the
-first item under "Open" in `HANDOFF.md`.
+**Consequence:** R2 is populated by `outpost publish`, which fills both buckets
+from the Mac over the S3 API (see README). The daemon writes exactly two things
+there: the world, by rclone from the VPS at shutdown, and the player list.
 
 ### 7. The DNS record is an A record, updated on start
 
