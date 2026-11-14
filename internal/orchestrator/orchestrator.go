@@ -103,6 +103,7 @@ func New(cfg *config.Config, st *store.Store, log *slog.Logger) *Orchestrator {
 			DNS:     dns.New(cfg.Secrets.CloudflareToken, cfg.Cloudflare.ZoneID, cfg.Cloudflare.RecordName),
 			Remote:  remote.New(cfg.Hetzner.SSHUser, cfg.Hetzner.SSHPrivateKey),
 			Probe:   probe,
+			Exec:    execRCON,
 			Now:     func() time.Time { return time.Now().UTC() },
 			Resolve: tailnet.Resolve,
 		},

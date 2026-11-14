@@ -955,3 +955,32 @@ func TestAServerThatWillNotStopIsNotArchived(t *testing.T) {
 		t.Fatal("once the server stopped, the save and delete should go through")
 	}
 }
+
+// Every Deps field a production path calls has to be filled by New().
+//
+// The console, the roster and the CLI all go through deps.Exec, and the tests
+// replace it with a fake, so a missing default is a nil call in the one build
+// nobody tests: `outpost console`, `outpost player` and the page's console
+// panel all panicked while `go test ./...` stayed green.
+func TestNewWiresEveryDependency(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/outpost.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	o := New(&config.Config{}, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for name, missing := range map[string]bool{
+		"Servers": o.deps.Servers == nil,
+		"DNS":     o.deps.DNS == nil,
+		"Remote":  o.deps.Remote == nil,
+		"Probe":   o.deps.Probe == nil,
+		"Exec":    o.deps.Exec == nil,
+		"Now":     o.deps.Now == nil,
+		"Resolve": o.deps.Resolve == nil,
+	} {
+		if missing {
+			t.Errorf("New() left Deps.%s nil; the production path that calls it will panic", name)
+		}
+	}
+}
