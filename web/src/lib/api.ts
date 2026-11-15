@@ -140,6 +140,36 @@ export interface PackJob {
 	result?: PackJobResult;
 }
 
+/** One published version of a pack, as the picker shows it. */
+export interface PackVersion {
+	id: string;
+	number: string;
+	name: string;
+	type: 'release' | 'beta' | 'alpha';
+	gameVersions: string[];
+	loaders: string[];
+	publishedAt: string;
+	size: number;
+	/** This server can run it: a Fabric build for the Minecraft version we boot. */
+	bootable: boolean;
+	/** The version the profile already holds. */
+	installed: boolean;
+	reason?: string;
+}
+
+export interface PackVersions {
+	slug: string;
+	name: string;
+	profile: string;
+	installed?: string;
+	choices: PackVersion[];
+	total: number;
+	/** Versions the list leaves out (all runnable ones are always included). */
+	skipped: number;
+	/** Newest runnable version that is not the installed one. */
+	newer?: string;
+}
+
 export interface PackProfile {
 	id: string;
 	active: boolean;
@@ -204,12 +234,16 @@ export const playerAction = (action: PlayerAction, name: string, token: string) 
 export const getPack = async (): Promise<PackOverview> =>
 	json<PackOverview>(await fetch('/api/pack', { headers: { accept: 'application/json' } }));
 
-export const packPreview = (source: string, token: string, memoryGB: number) =>
-	post<PackJob>('/api/pack/preview', { source, token, memoryGB });
+export const packVersions = (source: string, token: string) =>
+	post<PackVersions>('/api/pack/versions', { source, token });
+
+export const packPreview = (source: string, token: string, memoryGB: number, version = '') =>
+	post<PackJob>('/api/pack/preview', { source, version, token, memoryGB });
 
 export const packInstall = (
 	req: {
 		source: string;
+		version?: string;
 		profile: string;
 		memoryGB: number;
 		newWorld: boolean;
