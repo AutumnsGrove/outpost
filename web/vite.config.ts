@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import adapter from '@sveltejs/adapter-static';
@@ -17,39 +17,57 @@ import { defineConfig } from 'vite';
 // the committed build in sync with the source?" could only be answered by eye —
 // by reading the bundle and checking which chunk it referenced.
 //
-// A hash of everything the bundle is built from — `src/`, `static/`, the
-// lockfile, the configs, anything else that is not output — is stable for a given
-// tree and still changes when the bundle would, and only then: a backend commit
-// no longer dirties `web/build`, and `make web-check` becomes a check that can
-// fail.
+// The token is a hash of the bundle's *inputs*, which is not the same thing as
+// everything in this directory. Two failure modes pull in opposite directions
+// and both have to be avoided:
 //
-// The inputs have to be a superset of what the output depends on, not just
-// `src/`. Hashing only the sources was wrong: a dependency bump or a new file in
-// `static/` produces different chunks under an identical token, and then an open
-// tab holding the old `app.js` imports a chunk the deploy deleted, gets a 404,
-// and `updated.check()` — comparing against the token that never moved — decides
-// there is nothing to reload.
+//   Too narrow, and a dependency bump or a new file in `static/` ships different
+//   chunks under an identical token. An open tab then holds the old `app.js`,
+//   imports a chunk the deploy deleted, gets a 404, and `updated.check()` —
+//   comparing against the token that never moved — decides there is nothing to
+//   reload. That is the one job the token has.
+//
+//   Too wide, and a change that has nothing to do with the bundle moves it:
+//   `web/embed.go` is a Go file that happens to live here, and a commit touching
+//   it would force a `make web` plus a bundle-only diff for no reason.
+//
+// So the list is explicit. A new build input has to be added here, which is the
+// cost of the token meaning something.
+const INPUTS = [
+	'src',
+	'static',
+	'package.json',
+	'pnpm-lock.yaml',
+	'tsconfig.json',
+	'vite.config.ts',
+	// Optional, and absent today: corepack/pnpm do read them if they appear.
+	'svelte.config.js',
+	'.npmrc'
+];
+
 function buildVersion(): string {
 	const root = fileURLToPath(new URL('./', import.meta.url));
-	const skip = new Set(['build', 'node_modules', '.svelte-kit', '.DS_Store']);
 	const hash = createHash('sha256');
 
-	const walk = (dir: string) => {
-		// Sorted, so the hash depends on the files rather than on the order the
-		// filesystem hands them back.
-		for (const name of readdirSync(dir).sort()) {
-			if (skip.has(name)) continue;
-			const path = join(dir, name);
-			if (statSync(path).isDirectory()) {
-				walk(path);
-				continue;
+	// Paths are built from '/', never from the platform separator: a Windows
+	// build has to agree with the Linux one about what a tree's token is.
+	const add = (path: string, rel: string) => {
+		if (statSync(path).isDirectory()) {
+			// Sorted, so the hash depends on the files rather than on the order the
+			// filesystem hands them back.
+			for (const name of readdirSync(path).sort()) {
+				add(join(path, name), `${rel}/${name}`);
 			}
-			// Slashes, never the platform separator: a Windows build has to agree with
-			// the Linux one about what a tree's token is.
-			hash.update(path.slice(root.length).split(sep).join('/')).update(readFileSync(path));
+			return;
 		}
+		hash.update(rel).update(readFileSync(path));
 	};
-	walk(root);
+
+	for (const name of INPUTS) {
+		const path = join(root, name);
+		if (!existsSync(path)) continue;
+		add(path, name);
+	}
 
 	return hash.digest('hex').slice(0, 12);
 }
