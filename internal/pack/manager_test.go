@@ -255,3 +255,69 @@ func TestAStaleInstallMarkerDoesNotBlockAStart(t *testing.T) {
 		t.Fatal("a stale marker blocked a start")
 	}
 }
+
+func TestProgressRefreshesTheInstallMarker(t *testing.T) {
+	m, _ := newManager(t)
+	job, err := m.begin("install", "cobblemon", "cobblemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both halves of an install report progress, and each report has to keep the
+	// marker fresh: that is what stops a slow install from dropping the guard that
+	// keeps a rental from landing mid-rewrite. The assertions run inside the job
+	// goroutine, so failures come back through a channel rather than t.Fatal.
+	done := make(chan error, 1)
+	m.run(context.Background(), job, func(context.Context) (*JobResult, error) {
+		path := filepath.Join(m.Dir, installMarker)
+		backdate := func() error {
+			old := time.Now().Add(-2 * staleInstall)
+			if err := os.Chtimes(path, old, old); err != nil {
+				return err
+			}
+			if _, _, busy := InstallingNow(m.Dir); busy {
+				return errors.New("a two-hour-old marker was trusted")
+			}
+			return nil
+		}
+
+		if err := backdate(); err != nil {
+			return nil, err
+		}
+		m.progress(job)("files", 1, 2) // the fetch callback
+		if _, _, busy := InstallingNow(m.Dir); !busy {
+			return nil, errors.New("the fetch progress callback did not refresh the marker")
+		}
+
+		if err := backdate(); err != nil {
+			return nil, err
+		}
+		m.uploadProgress(job)(1, 2) // the publish callback
+		if _, _, busy := InstallingNow(m.Dir); !busy {
+			return nil, errors.New("the upload progress callback did not refresh the marker")
+		}
+		return &JobResult{}, nil
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got := m.Job()
+		if !got.running {
+			if got.Error != "" {
+				done <- errors.New(got.Error)
+			} else {
+				done <- nil
+			}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the job never finished")
+	}
+}
