@@ -194,7 +194,7 @@ func (a *app) packDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := m.DeleteProfile(cmd.Context(), profile, nil)
+			res, err := m.DeleteProfile(cmd.Context(), profile, active, nil)
 			if err != nil {
 				return err
 			}

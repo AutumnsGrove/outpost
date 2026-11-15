@@ -266,3 +266,26 @@ func TestPackDeleteRemovesAnInactiveProfile(t *testing.T) {
 		}
 	}
 }
+
+func TestDestructivePackEndpointsRefuseWhileAServerIsRented(t *testing.T) {
+	// The only thing between a running session's world and a delete. A live server
+	// uploads over its own profile's world when it shuts down, so a delete
+	// underneath it is a delete that undoes itself.
+	for _, route := range []string{"/api/pack/world/delete", "/api/pack/delete"} {
+		f, _, blobs := newPackFixture(t)
+		f.setLive(t)
+
+		rec := f.do("POST", route, `{"token":"`+f.formToken(t)+`","profile":"cobblemon-fabric"}`, nil)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s while running = %d: %s", route, rec.Code, rec.Body.String())
+		}
+		if _, ok := blobs.objects["profiles/cobblemon-fabric/world.tar.gz"]; !ok {
+			t.Fatalf("%s deleted the world under a live server", route)
+		}
+		for key := range blobs.objects {
+			if strings.HasPrefix(key, "trash/") {
+				t.Fatalf("%s put a world in the trash under a live server: %s", route, key)
+			}
+		}
+	}
+}

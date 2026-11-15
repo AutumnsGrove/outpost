@@ -597,7 +597,7 @@ func TestDeleteProfileTrashesTheWorldAndRemovesTheRest(t *testing.T) {
 	// Another profile's things must survive untouched.
 	store.objects["profiles/keep/mods/a.jar"] = []byte("jar")
 
-	res, err := m.DeleteProfile(context.Background(), "typo", func() time.Time {
+	res, err := m.DeleteProfile(context.Background(), "typo", "default", func() time.Time {
 		return time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	})
 	if err != nil {
@@ -628,7 +628,7 @@ func TestDeleteProfileWithNoWorldStillRemovesTheFiles(t *testing.T) {
 	m, store := newManager(t)
 	store.objects["profiles/half/mods/a.jar"] = []byte("jar")
 
-	res, err := m.DeleteProfile(context.Background(), "half", nil)
+	res, err := m.DeleteProfile(context.Background(), "half", "default", nil)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestDeleteProfileWithNoWorldStillRemovesTheFiles(t *testing.T) {
 
 func TestDeleteProfileRefusesANameThatCouldNotBeAKey(t *testing.T) {
 	m, _ := newManager(t)
-	if _, err := m.DeleteProfile(context.Background(), "Two Words", nil); err == nil {
+	if _, err := m.DeleteProfile(context.Background(), "Two Words", "default", nil); err == nil {
 		t.Fatal("want a bad-profile refusal")
 	}
 }
@@ -663,7 +663,7 @@ func TestDeleteProfileRefusesWhileAJobIsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.DeleteProfile(context.Background(), "typo", nil); !errors.Is(err, ErrBusy) {
+	if _, err := m.DeleteProfile(context.Background(), "typo", "default", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("delete during an install = %v, want ErrBusy", err)
 	}
 	if _, ok := store.objects["profiles/typo/mods/a.jar"]; !ok {
@@ -674,7 +674,21 @@ func TestDeleteProfileRefusesWhileAJobIsRunning(t *testing.T) {
 	m.mu.Lock()
 	job.running = false
 	m.mu.Unlock()
-	if _, err := m.DeleteProfile(context.Background(), "typo", nil); err != nil {
+	if _, err := m.DeleteProfile(context.Background(), "typo", "default", nil); err != nil {
 		t.Fatalf("delete after the job: %v", err)
+	}
+}
+
+func TestDeleteProfileRefusesTheActiveProfileItself(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["profiles/current/mods/a.jar"] = []byte("jar")
+
+	// The caller passes the active profile, so a switch between reading it and
+	// deleting cannot delete the one Start boots.
+	if _, err := m.DeleteProfile(context.Background(), "current", "current", nil); err == nil {
+		t.Fatal("the active profile was deleted")
+	}
+	if _, ok := store.objects["profiles/current/mods/a.jar"]; !ok {
+		t.Fatal("the refusal still removed files")
 	}
 }
