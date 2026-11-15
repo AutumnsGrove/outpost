@@ -7,6 +7,7 @@
 	import Hero from '$lib/Hero.svelte';
 	import Players from '$lib/Players.svelte';
 	import Console from '$lib/Console.svelte';
+	import Modpack from '$lib/Modpack.svelte';
 	import Side from '$lib/Side.svelte';
 
 	let o = $state<Overview | null>(null);
@@ -162,6 +163,7 @@
 				<Hero {o} {elapsed} {pending} {confirmStop} onstart={() => run('start')} onstop={askStop} />
 				<Console {live} token={o.status.formToken} />
 				<Players players={o.players} token={o.status.formToken} onchanged={refresh} />
+				<Modpack token={o.status.formToken} serverState={o.status.state} />
 			</div>
 			<aside class="side">
 				<Side {o} {now} />
