@@ -130,7 +130,7 @@ func (a *app) publishCmd() *cobra.Command {
 	f.BoolVar(&open, "open", false, "publish with white-list=false (anyone who finds the address can join)")
 	f.StringVar(&profile, "profile", "", "profile to publish into: a pack and its world (default: the pack's slug, or \"default\" for a hand-rolled pack)")
 	f.BoolVar(&prune, "prune", false, "delete mods/ and config/ keys that are not in the pack (always on when the pack has a pack.json)")
-	f.BoolVar(&newWorld, "new-world", false, "discard the saved world when it was made by another pack")
+	f.BoolVar(&newWorld, "new-world", false, "discard the saved world when it was made by another pack (it goes to trash/ first)")
 	f.BoolVar(&keepWorld, "keep-world", false, "load a world saved by another pack anyway")
 	f.BoolVar(&dryRun, "dry-run", false, "show what would change without touching R2")
 

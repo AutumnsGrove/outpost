@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"outpost/internal/config"
 	"outpost/internal/hetzner"
+	"outpost/internal/trash"
 )
 
 // worldKeys are one profile's world and its pack marker. publish reads both and
@@ -183,12 +185,45 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 // upload.
 func recordPack(ctx context.Context, st Store, opts Options, p Pack, discard bool) error {
 	if discard {
-		worldKey, _ := worldKeys(opts.ProfileOf())
-		if err := st.Remove(ctx, opts.WorldBucket, worldKey); err != nil {
-			return fmt.Errorf("discard world: %w", err)
+		if err := discardWorld(ctx, st, opts.WorldBucket, opts.ProfileOf(), time.Now()); err != nil {
+			return err
 		}
 	}
 	return WriteMarker(ctx, st, opts.WorldBucket, opts.ProfileOf(), p)
+}
+
+// discardWorld throws away a world that is being replaced, through the trash.
+//
+// `--new-world` and the page's "replace the world" checkbox are the casually
+// reached way to destroy a world, and they used to be the only path that did it
+// in one step. The copy comes first and the removal second, exactly as
+// `outpost world delete` does it, so a discard that could not be preserved
+// aborts the publish with the old world still where it was.
+//
+// The sweep runs first for the same reason it does on a delete: the trash grows
+// when something is thrown away, which is exactly when it needs emptying.
+func discardWorld(ctx context.Context, st Store, bucket, profile string, now time.Time) error {
+	if bucket == "" {
+		return nil
+	}
+	if _, err := trash.Sweep(ctx, st, bucket, now); err != nil {
+		return fmt.Errorf("sweep the trash: %w", err)
+	}
+	worldKey, _ := worldKeys(profile)
+	if _, err := st.Stat(ctx, bucket, worldKey); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil // nothing saved: a discard has nothing to preserve
+		}
+		return err
+	}
+	trashKey := trash.Key(worldKey, now)
+	if _, err := st.Copy(ctx, bucket, worldKey, trashKey); err != nil {
+		return fmt.Errorf("nothing was discarded: could not put a copy in %s (%w)", trashKey, err)
+	}
+	if err := st.Remove(ctx, bucket, worldKey); err != nil {
+		return fmt.Errorf("the copy is safe in %s but the old world is still there: %w", trashKey, err)
+	}
+	return nil
 }
 
 // WriteMarker writes the pack marker that sits beside a world: what made the
