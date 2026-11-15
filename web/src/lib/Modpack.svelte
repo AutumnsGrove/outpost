@@ -118,15 +118,18 @@
 	}
 
 	async function install(newWorld: boolean) {
-		if (!preview || busy || running) return;
+		if (!preview?.result || busy || running) return;
 		busy = true;
 		message = '';
 		failed = false;
+		const result = preview.result;
 		try {
 			job = await packInstall(
 				{
 					source: preview.source,
-					version: chosen?.id ?? '',
+					// The version the preview resolved, not the picker: a newer release
+					// landing between preview and install must not silently change it.
+					version: result.pack.versionId,
 					profile: preview.profile,
 					memoryGB: memory,
 					// The world question is answered by the checkbox the preview shows,
@@ -294,8 +297,8 @@
 		<div class="versionbox">
 			<p class="muted vhead">
 				{versions.name} · {versions.total} version{versions.total === 1 ? '' : 's'}
-				{#if versions.choices.length < versions.total}
-					· newest {versions.choices.length} shown
+				{#if versions.skipped > 0}
+					· showing {versions.choices.length}, {versions.skipped} hidden
 				{/if}
 				→ <span class="mono">{versions.profile}</span>
 				<button class="linkbtn" onclick={() => (showVersions = false)}>hide</button>
