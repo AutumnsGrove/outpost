@@ -534,3 +534,46 @@ func TestInstallRefusesAnEmptyRosterBeforeDownloading(t *testing.T) {
 	}
 	t.Fatal("the job never reported a failure")
 }
+
+func TestInstallVanillaCanAnswerTheWorldQuestion(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["server/whitelist.json"] = []byte(`[{"uuid":"x","name":"Notch"}]`)
+	// The vanilla profile holds a world somebody else's pack made.
+	store.objects["profiles/vanilla/world.tar.gz"] = []byte("world")
+	store.objects["profiles/vanilla/pack.json"] = []byte(`{"source":"modrinth","slug":"cobblemon","versionId":"v1"}`)
+
+	// Without an answer the job refuses, and the panel turns that into a button.
+	if _, err := m.InstallVanilla(context.Background(), VanillaRequest{}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := m.Job(); got.Phase == "failed" {
+			if !strings.Contains(got.Error, "--new-world") {
+				t.Fatalf("error = %q, want the world question", got.Error)
+			}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// With NewWorld it is answerable from the page, which has no CLI flag to pass.
+	if _, err := m.InstallVanilla(context.Background(), VanillaRequest{NewWorld: true}); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job := m.Job()
+		// The Fabric fetch is real, so a network failure is not this test's business;
+		// what matters is that the world question no longer stops it.
+		if strings.Contains(job.Error, "--new-world") {
+			t.Fatalf("NewWorld did not answer the question: %s", job.Error)
+		}
+		if job.Phase == "failed" || (job.Phase == "done" && job.Kind == "install") {
+			if !strings.Contains(job.Error, "--new-world") {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
