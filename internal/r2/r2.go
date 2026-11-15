@@ -125,6 +125,42 @@ func (c *Client) List(ctx context.Context, bucket, prefix string) ([]Object, err
 	return out, nil
 }
 
+// Copy duplicates one object inside one bucket, server-side: the bytes never
+// travel through this process and there is no size ceiling. That matters
+// because Get stops at 8 MiB, so a "copy" written as a read and a write
+// silently produces a truncated world and calls it a success.
+//
+// The destination is measured against the source before this returns. A copy
+// that half-worked must not be reported as one that did, and R2 will happily
+// accept a multipart copy that then fails a part.
+func (c *Client) Copy(ctx context.Context, bucket, srcKey, dstKey string) (int64, error) {
+	src, err := c.Stat(ctx, bucket, srcKey)
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = c.mc.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: bucket, Object: dstKey},
+		minio.CopySrcOptions{Bucket: bucket, Object: srcKey},
+	)
+	if err != nil {
+		if isMissing(err) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("copy %s/%s to %s: %w", bucket, srcKey, dstKey, err)
+	}
+
+	dst, err := c.Stat(ctx, bucket, dstKey)
+	if err != nil {
+		return 0, fmt.Errorf("verify copy of %s/%s: %w", bucket, srcKey, err)
+	}
+	if dst.Size != src.Size {
+		return 0, fmt.Errorf("copy %s/%s to %s://%s is %d bytes, source is %d: the world is not whole",
+			bucket, srcKey, bucket, dstKey, dst.Size, src.Size)
+	}
+	return dst.Size, nil
+}
+
 // Remove deletes one key. A key that is already gone is not an error.
 func (c *Client) Remove(ctx context.Context, bucket, key string) error {
 	err := c.mc.RemoveObject(ctx, bucket, key, minio.RemoveObjectOptions{})
