@@ -18,6 +18,7 @@
 		pending,
 		confirmStop,
 		installing,
+		plan = $bindable(''),
 		onstart,
 		onstop
 	}: {
@@ -27,6 +28,8 @@
 		confirmStop: boolean;
 		/** A pack is being installed: a start would pull a half-written profile. */
 		installing: boolean;
+		/** The plan Start rents; empty lets the daemon choose. */
+		plan: string;
 		onstart: () => void;
 		onstop: () => void;
 	} = $props();
@@ -58,6 +61,26 @@
 		}
 		return false;
 	});
+
+	const plans = $derived(o.plans ?? []);
+	const chosen = $derived(plans.find((p) => p.type === plan));
+	// A plan the package would not fit is greyed out with the reason, rather than
+	// being offered and refused after the button is pressed.
+	const planNote = $derived(
+		chosen && !chosen.fits
+			? `The active pack asks for ${o.packMemoryGb} GB, and ${chosen.type} has ${chosen.ramGb}.`
+			: ''
+	);
+	const planLabel = (p: (typeof plans)[number]) =>
+		[
+			p.type,
+			`${p.vcpu} vCPU`,
+			`${p.ramGb} GB`,
+			p.arm ? 'ARM' : '',
+			p.known ? `${euros(p.hourlyRate, 4)}/h` : 'price unknown'
+		]
+			.filter(Boolean)
+			.join(' · ');
 
 	const typical = 240;
 	const timeout = $derived(o.health.provisionTimeoutSeconds || 900);
@@ -188,6 +211,21 @@
 
 	<div class="actions">
 		{#if canStart}
+			{#if plans.length}
+				<label class="plan">
+					<span class="sr">Server size</span>
+					<select
+						class="field"
+						bind:value={plan}
+						disabled={pending !== null || installing}
+						title="What Start rents. The choice is remembered for next time; the price is Hetzner's list price including the IPv4 address."
+					>
+						{#each plans as p (p.type)}
+							<option value={p.type} disabled={!p.fits}>{planLabel(p)}</option>
+						{/each}
+					</select>
+				</label>
+			{/if}
 			<button
 				class="btn primary big"
 				onclick={onstart}
@@ -226,6 +264,10 @@
 			</button>
 		{/if}
 	</div>
+
+	{#if planNote}
+		<p class="plannote" role="status">{planNote}</p>
+	{/if}
 
 	{#if ['RUNNING', 'IDLE', 'PROVISIONING'].includes(s.state)}
 		<dl class="facts">
@@ -395,6 +437,23 @@
 		font-size: 1.05rem;
 		padding-inline: 1.8rem;
 		min-height: 52px;
+	}
+	/* The picker sits beside the button it prices, not off to one side. */
+	.plan {
+		display: flex;
+		flex: 1 1 16rem;
+		min-width: 0;
+	}
+	.plan select {
+		width: 100%;
+		min-height: 52px;
+		font-size: 0.9rem;
+		font-family: var(--mono);
+	}
+	.plannote {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--clay);
 	}
 	.facts {
 		display: flex;

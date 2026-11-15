@@ -79,12 +79,24 @@ func checkPackMemory(p Pack, regions map[string]config.Region) (warnings []strin
 		return nil, nil
 	}
 
-	// Refuse only when every region was checked and none of them fits. A plan the
-	// table does not know leaves a region unproven, and an unproven region is
-	// rented, not blocked.
+	// A configured region that is too small is no longer the ceiling: the page's
+	// picker rents any plan in the table, so the honest question is whether any
+	// rentable plan holds the pack. The region's own list is what will be tried
+	// first, which is worth saying out loud rather than refusing over.
 	if !fits && len(unchecked) == 0 {
-		return nil, fmt.Errorf("publish: %s asks for %d GB and no configured region has a plan that big (%s); "+
-			"raise server_type, add a region that has one, or pass a lower --memory to `outpost pack fetch` if that figure is wrong",
+		if best, ok := hetzner.SmallestFit(p.MemoryGB); ok {
+			tooSmall = append(tooSmall, fmt.Sprintf("%s can hold it (%d GB, EUR %.4f/h) — pick it from the page before starting",
+				best.Type, best.RAMGB, best.HourlyEUR))
+			fits = true
+		}
+	}
+
+	// Refuse only when every region was checked and no plan this table has fits.
+	// A plan the table does not know leaves a region unproven, and an unproven
+	// region is rented, not blocked.
+	if !fits && len(unchecked) == 0 {
+		return nil, fmt.Errorf("publish: %s asks for %d GB and no rentable plan has that much RAM (%s); "+
+			"pass a lower --memory to `outpost pack fetch` if that figure is wrong",
 			p.Describe(), p.MemoryGB, strings.Join(tooSmall, "; "))
 	}
 

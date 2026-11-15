@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"outpost/internal/hetzner"
 	"outpost/internal/orchestrator"
 	"outpost/internal/roster"
 	"outpost/internal/store"
@@ -81,6 +82,21 @@ type playersDTO struct {
 	RosterError string `json:"rosterError,omitempty"`
 }
 
+// planDTO is one rentable size, with the price the page shows beside it.
+type planDTO struct {
+	Type  string `json:"type"`
+	VCPU  int    `json:"vcpu"`
+	RAMGB int    `json:"ramGb"`
+	// HourlyRate is EUR per hour, list price including the IPv4 a server needs.
+	HourlyRate float64 `json:"hourlyRate"`
+	ARM        bool    `json:"arm"`
+	// Fits is false when the active pack asks for more RAM than this plan has:
+	// the page greys it out with the reason rather than letting Start refuse it.
+	Fits bool `json:"fits"`
+	// Known is false for a configured plan this build's table does not price.
+	Known bool `json:"known"`
+}
+
 type overviewResponse struct {
 	Status   statusResponse      `json:"status"`
 	Health   orchestrator.Health `json:"health"`
@@ -94,6 +110,13 @@ type overviewResponse struct {
 	// CanUpdate is whether this binary sits in a git checkout and the page may
 	// offer the Update button at all.
 	CanUpdate bool `json:"canUpdate"`
+	// Plans is what Start can rent, smallest first, and SelectedType is the one
+	// the picker opens on.
+	Plans        []planDTO `json:"plans"`
+	SelectedType string    `json:"selectedType"`
+	// PackMemoryGB is what the active pack asks for, so the page can say why a
+	// plan is greyed out.
+	PackMemoryGB int `json:"packMemoryGb"`
 }
 
 func stamp(t time.Time) string {
@@ -245,6 +268,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		Build:     buildInfo(),
 		CanUpdate: s.update != nil,
 	}
+	out.Plans, out.SelectedType, out.PackMemoryGB = planChoices(ctx, s.orch)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -283,4 +307,36 @@ func (s *Server) playersState(ctx context.Context) playersDTO {
 	p.Roster = true
 	p.Whitelist, p.Ops = snap.Whitelist, snap.Ops
 	return p
+}
+
+// planChoices answers the picker: every plan this build can price, plus the
+// selected one when the table does not know it, each marked with whether the
+// active pack fits.
+//
+// The selected plan falls back to the cheapest one that holds the pack, because a
+// picker that opens on a plan Start would refuse is a trap: someone presses the
+// big button, and the refusal reads like a bug rather than like a choice.
+func planChoices(ctx context.Context, orch *orchestrator.Orchestrator) ([]planDTO, string, int) {
+	want, _ := orch.PackMemoryGB(ctx)
+	fits := func(gb int) bool { return want == 0 || gb >= want }
+
+	var out []planDTO
+	for _, p := range hetzner.Plans() {
+		out = append(out, planDTO{
+			Type: p.Type, VCPU: p.VCPU, RAMGB: p.RAMGB, HourlyRate: p.HourlyEUR,
+			ARM: p.ARM, Fits: fits(p.RAMGB), Known: true,
+		})
+	}
+
+	selected := orch.SelectedServerType()
+	if sel, known := hetzner.Lookup(selected); !known {
+		// A configured plan the table cannot price is still rentable. Offering it
+		// with the price left out beats making the picker disagree with config.
+		out = append(out, planDTO{Type: selected, Fits: true})
+	} else if !fits(sel.RAMGB) {
+		if best, ok := hetzner.SmallestFit(want); ok {
+			selected = best.Type
+		}
+	}
+	return out, selected, want
 }

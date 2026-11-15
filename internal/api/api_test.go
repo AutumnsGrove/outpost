@@ -79,7 +79,7 @@ func newFixture(t *testing.T, token string) *fixture {
 			IdleGrace: config.Duration(10 * time.Minute), IdleTimeout: config.Duration(20 * time.Minute),
 			ProvisionTimeout: config.Duration(15 * time.Minute), TickInterval: config.Duration(time.Second),
 		},
-		Regions:    map[string]config.Region{"eu": {Location: "nbg1", ServerType: "cx23", HourlyRate: 0.0104}},
+		Regions:    map[string]config.Region{"eu": {Location: "nbg1", ServerType: "cx23"}},
 		Cloudflare: config.Cloudflare{RecordName: "mc.test"},
 		Secrets: config.Secrets{
 			TailscaleAuthKey: "tskey-test", R2AccessKey: "k", R2SecretKey: "s",
@@ -266,7 +266,7 @@ func TestOverviewCarriesTheWholePage(t *testing.T) {
 	_ = f.store.MetaSet("online_names", "Autumn,Felix")
 	f.blobs.data["server/whitelist.json"] = []byte(`[{"uuid":"u1","name":"Autumn"},{"uuid":"u2","name":"Felix"}]`)
 	f.blobs.data["server/ops.json"] = []byte(`[{"uuid":"u1","name":"Autumn","level":4}]`)
-	_, _ = f.store.StartSession(time.Now().UTC(), "eu", "cx23", "7")
+	_, _ = f.store.StartSession(time.Now().UTC(), "eu", "cx23", 0.0096, "7")
 	_ = f.store.RecordBackup(5994477, 1, "shutdown")
 
 	got := decode(t, f.do("GET", "/api/overview", "", nil))
@@ -380,7 +380,7 @@ func TestOverviewIsBoundedAndNotCached(t *testing.T) {
 		_ = f.store.Log("console", "command %d", i)
 	}
 	for i := 0; i < 10; i++ {
-		id, _ := f.store.StartSession(time.Now().UTC(), "eu", "cx23", "7")
+		id, _ := f.store.StartSession(time.Now().UTC(), "eu", "cx23", 0.0096, "7")
 		_ = f.store.EndSession(id, 60, 0.001, 1)
 	}
 	for i := 0; i < 8; i++ {

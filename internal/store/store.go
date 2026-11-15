@@ -65,7 +65,10 @@ type Session struct {
 	MaxPlayers      int
 	Region          string
 	ServerType      string
-	VPSID           string
+	// HourlyRate is what this session was billed at, in EUR per hour, captured at
+	// rent time. Zero for a row written before the column existed.
+	HourlyRate float64
+	VPSID      string
 }
 
 // Backup is one recorded world upload.
@@ -119,6 +122,7 @@ func Open(path string) (*Store, error) {
 // ADD COLUMN with a non-null default is instant and rewrites no rows.
 var addedColumns = []struct{ table, column, ddl string }{
 	{"server_state", "profile", `ALTER TABLE server_state ADD COLUMN profile TEXT NOT NULL DEFAULT ''`},
+	{"sessions", "hourly_rate", `ALTER TABLE sessions ADD COLUMN hourly_rate REAL NOT NULL DEFAULT 0`},
 }
 
 func migrate(db *sql.DB) error {
@@ -282,11 +286,11 @@ func (s *Store) Reset() error {
 }
 
 // StartSession opens a session ledger row and returns its id.
-func (s *Store) StartSession(startedAt time.Time, region, serverType, vpsID string) (int64, error) {
+func (s *Store) StartSession(startedAt time.Time, region, serverType string, hourlyRate float64, vpsID string) (int64, error) {
 	res, err := s.db.Exec(`
-		INSERT INTO sessions (started_at, region, server_type, vps_id)
-		VALUES (?, ?, ?, ?)`,
-		stamp(startedAt), region, serverType, vpsID)
+		INSERT INTO sessions (started_at, region, server_type, hourly_rate, vps_id)
+		VALUES (?, ?, ?, ?, ?)`,
+		stamp(startedAt), region, serverType, hourlyRate, vpsID)
 	if err != nil {
 		return 0, fmt.Errorf("start session: %w", err)
 	}
@@ -313,10 +317,10 @@ func (s *Store) CurrentSession() (*Session, error) {
 
 	err := s.db.QueryRow(`
 		SELECT id, started_at, ended_at, duration_seconds, cost_usd, max_players,
-		       region, server_type, vps_id
+		       region, server_type, hourly_rate, vps_id
 		  FROM sessions ORDER BY id DESC LIMIT 1`).
 		Scan(&sess.ID, &started, &ended, &sess.DurationSeconds, &sess.CostUSD,
-			&sess.MaxPlayers, &sess.Region, &sess.ServerType, &sess.VPSID)
+			&sess.MaxPlayers, &sess.Region, &sess.ServerType, &sess.HourlyRate, &sess.VPSID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -336,7 +340,7 @@ func (s *Store) CurrentSession() (*Session, error) {
 func (s *Store) RecentSessions(n int) ([]Session, error) {
 	rows, err := s.db.Query(`
 		SELECT id, started_at, ended_at, duration_seconds, cost_usd, max_players,
-		       region, server_type, vps_id
+		       region, server_type, hourly_rate, vps_id
 		  FROM sessions ORDER BY id DESC LIMIT ?`, n)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
@@ -348,7 +352,7 @@ func (s *Store) RecentSessions(n int) ([]Session, error) {
 		var sess Session
 		var started, ended string
 		if err := rows.Scan(&sess.ID, &started, &ended, &sess.DurationSeconds, &sess.CostUSD,
-			&sess.MaxPlayers, &sess.Region, &sess.ServerType, &sess.VPSID); err != nil {
+			&sess.MaxPlayers, &sess.Region, &sess.ServerType, &sess.HourlyRate, &sess.VPSID); err != nil {
 			return nil, err
 		}
 		if sess.StartedAt, err = parseStamp(started); err != nil {
