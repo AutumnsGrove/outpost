@@ -376,11 +376,13 @@ func (m *Manager) InstallVanilla(ctx context.Context, req VanillaRequest) (*Job,
 		// Same as a fetched install: the roster owns the whitelist, and resolving
 		// names again through Mojang is slower and rate-limited.
 		players, err := publish.ReadPlayers(ctx, m.Store, m.AssetBucket)
-		if err != nil {
-			if errors.Is(err, publish.ErrNotFound) {
-				return nil, fmt.Errorf("the server-wide player list is empty; add someone on the page first, or the server would refuse everybody")
-			}
+		if err != nil && !errors.Is(err, publish.ErrNotFound) {
 			return nil, err
+		}
+		// Missing and empty are the same answer: a server nobody can join is not an
+		// install worth making, and `[]` is what removing the last player leaves.
+		if err != nil || players.AllowsNobody() {
+			return nil, fmt.Errorf("the server-wide player list is empty; add someone on the page first, or the server would refuse everybody")
 		}
 
 		pub := m.publishOptions(profile)
