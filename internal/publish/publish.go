@@ -238,9 +238,18 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// Everything is up and verified: only now is it true that this bucket holds
 	// this pack, which is what the marker claims. Discarding the old world happens
 	// here too, never before the upload.
-	if packed {
+	switch {
+	case packed:
 		if err := recordPack(ctx, st, opts.WorldBucket, pk, discardWorld); err != nil {
 			return res, err
+		}
+	case opts.WorldBucket != "":
+		// A hand-rolled pack has no identity to record, and the marker from an
+		// earlier fetched pack would still claim assets that are no longer there.
+		// Removing it means the next packed publish has to be told what to do with
+		// a world this publish cannot describe, instead of trusting a stale label.
+		if err := st.Remove(ctx, opts.WorldBucket, packMarkerKey); err != nil {
+			return res, fmt.Errorf("clear the pack marker: %w", err)
 		}
 	}
 	return res, nil

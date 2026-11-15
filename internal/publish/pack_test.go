@@ -280,3 +280,82 @@ func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
 		t.Fatalf("the marker was not rewritten: %v", err)
 	}
 }
+
+func TestRunNewWorldDiscardsEvenAWorldOfTheSameBuild(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("a world I no longer want")
+	same, _ := json.Marshal(testPack())
+	st.objects["current/pack.json"] = same
+
+	// --new-world is the only way out of a world that is simply unwanted, and it
+	// has to work when the pack has not changed: a corrupted chunk in a world of
+	// the current pack is exactly that case.
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		WorldBucket: "mc-worlds",
+		NewWorld:    true,
+	}); err != nil {
+		t.Fatalf("new-world on the same build: %v", err)
+	}
+	if _, ok := st.objects["current/world.tar.gz"]; ok {
+		t.Fatal("--new-world was a no-op because the pack had not changed")
+	}
+}
+
+func TestRunClearsTheMarkerWhenPublishingAHandRolledPack(t *testing.T) {
+	// No pack.json: an ordinary directory of jars, after a fetched pack was
+	// published. The marker still names Cobblemon, so it has to go.
+	dir := writePack(t)
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("world")
+	marker, _ := json.Marshal(testPack())
+	st.objects["current/pack.json"] = marker
+
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		WorldBucket: "mc-worlds",
+	}); err != nil {
+		t.Fatalf("hand-rolled publish: %v", err)
+	}
+	if _, ok := st.objects["current/pack.json"]; ok {
+		t.Fatal("a stale pack marker survived a hand-rolled publish")
+	}
+	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+		t.Fatal("a hand-rolled publish removed the world")
+	}
+
+	// And the next fetched publish cannot trust a marker that is gone.
+	pack := writeModpack(t, testPack())
+	_, err := Run(context.Background(), st, Options{Dir: pack, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
+	if err == nil || !strings.Contains(err.Error(), "--new-world") {
+		t.Fatalf("want the guard to ask, got %v", err)
+	}
+}
+
+func TestRunDoesNotRefuseOverAPlanTheTableDoesNotKnow(t *testing.T) {
+	p := testPack()
+	p.MemoryGB = 8
+	dir := writeModpack(t, p)
+	st := newFakeStore()
+
+	// cx24 does not exist in the table. An unknown plan means "unproven", not
+	// "too small": the table is a snapshot and Hetzner renames plans, so the
+	// region has to be rented rather than refused.
+	res, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		Regions: map[string]config.Region{
+			"eu": {ServerType: "cx23"},
+			"us": {ServerType: "cx24"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("an unknown plan was treated as a refusal: %v", err)
+	}
+	if !warningsContain(res.Warnings, "cx24") {
+		t.Fatalf("the unchecked region should be named: %v", res.Warnings)
+	}
+}
