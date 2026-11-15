@@ -9,6 +9,8 @@ outpost.db.lock
 # also matched cmd/outpost/ and silently ignored new files there.
 /outpost
 /outpost-arm64
+# A fetched modpack (`outpost pack fetch` writes here by default).
+/pack/
 node_modules/
 .wrangler/
 web/node_modules/

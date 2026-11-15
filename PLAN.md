@@ -310,3 +310,114 @@ is set.
   assumes this) and treat the VPS as trusted with it.
 - If the Potato itself is down, nothing deletes the VPS. A Hetzner spending alert is the
   backstop.
+
+## Decisions from the modpack branch (2026-11-15)
+
+Issue #12. Phase 1: Modrinth packs on Fabric, done at publish time. The first branch
+taken off `main` after the in-game commands work was parked, because `/outpost` needs
+mods installed to be reachable and a pack is what installs them.
+
+### 27. `pack fetch` produces a directory, and `publish` stays dumb
+
+`outpost pack fetch <slug|url>` downloads the pack's server files into an ordinary pack
+directory and `outpost publish` uploads it. That is the whole seam: `internal/pack` is
+the only package that knows Modrinth exists, `publish` still uploads a directory and
+verifies key sizes, and neither imports the other's network clients.
+
+What the pack directory gains is one file, `pack.json`: source, slug, pack version,
+Minecraft version, loader version, file count, and the RAM figure. Its absence is not
+an error — a directory of hand-picked jars is still a pack — which is what keeps
+`publish` usable for a one-off server.
+
+`outpost pack fetch` needs no config.yaml, no database and no credentials. It carries
+the `noConfig` annotation, so it works on a fresh clone before anything has been set
+up, which is the state a person is in when they have just decided what to play.
+
+### 28. `env.server` replaces client-only-mods.txt, for packs only
+
+A `.mrpack` marks every indexed file with `env.client` and `env.server`, where
+`unsupported` means "this side must not load it". That is the pack author saying it,
+which beats 118 filenames carried over from the December 2025 pack. For a directory
+with a `pack.json`, the hand-maintained list is not consulted at all: applying it to a
+pack would silently drop a mod the pack marked server-required because an old filename
+happened to match.
+
+It stays for hand-rolled packs, because inventing a second mechanism for them is worse
+than the one that already exists.
+
+The corollary is stated rather than papered over: a pack that marks *nothing*, like
+Fabulously Optimized, gets every file installed on the server. `pack fetch` warns about
+that instead of guessing from filenames.
+
+### 29. A pack's non-mod files live in `root/`, and it is pulled before `server/`
+
+Overrides put `config/`, `kubejs/`, `defaultconfigs/` and friends at the *server root*,
+which the v1 key layout had no prefix for. Rather than teach cloud-init a list of
+directory names, `mc-assets/root/` is rclone-copied to `/opt/minecraft/` and everything
+in the pack that is not a `mods/` file goes there.
+
+Order matters and is deliberate: `root/`, then `server/`, then `mods/`, `config/`,
+`scripts/`. Our generated `server.properties` is in `server/`, so it lands after a
+pack's own copy and wins on port, RCON and whitelist enforcement. cloud-init's `sed`
+lines then force the session's RCON password over the top. A pack's other
+`server.properties` settings are therefore lost, and `pack fetch` says so in its
+warnings — a merge is a follow-up, not a guess to make here.
+
+### 30. RAM is a person's judgement, and the fallback list does not cover it
+
+The `.mrpack` manifest has no memory figure, so `pack fetch --memory` (default 4 GB,
+the `cx23`) writes one into `pack.json` and sizes `start.sh` from it: two GB stay with
+the OS, the JVM and the save, and the rest is `-Xmx`. A fetched pack therefore always
+lands with a `start.sh` sized for the box, instead of publish's 2 GB vanilla default.
+
+`publish` refuses a pack no configured region can hold, and warns about the regions
+that cannot while others can. It does **not** trust `fallback_types` here, and the
+message says why: Hetzner answers `resource_unavailable` when a plan is *sold out*,
+not when it is too small, so a 4 GB `cx23` with an 8 GB pack is a rental that runs out
+of memory on its first save.
+
+Plan memory is a table in `internal/hetzner/plans.go` rather than an API call, so
+`--dry-run` works with no network and `publish` keeps needing only R2 credentials. A
+plan the table does not know skips the check: a stale table must not refuse a rental.
+
+### 31. The saved world is tagged with the pack that made it
+
+`publish` writes `mc-worlds/current/pack.json` next to `current/world.tar.gz`. The
+world itself is pushed up by rclone from the VPS and knows nothing about packs, but the
+marker survives because shutdown only overwrites `world.tar.gz`.
+
+A world from another pack is refused, not loaded: block ids and registry entries differ
+between packs, so a missing mod reads as corrupted chunks. `--new-world` discards it,
+`--keep-world` loads it anyway, and neither is the default. A world with no marker at
+all — the vanilla world from the first session, or one from a hand-rolled pack — is
+also refused, because "probably fine" is not a thing to decide on someone's world.
+
+The marker is written, and the old world removed, only *after* every asset is uploaded
+and verified. A failed publish must not leave a bucket that claims a pack it does not
+have, and must not leave no world to boot.
+
+### 32. Modrinth only, in phase 1. CurseForge and Forge are deliberate nos
+
+Modrinth's API needs no key, its packs are open files with checksums, and the same
+`.mrpack` is what Prism installs — so "hand over a link" is the entire workflow.
+CurseForge needs an API key, some packs forbid third-party distribution, and its
+manifests carry project ids rather than URLs. Forge and NeoForge ship an *installer*
+that has to run with a JDK before the server can boot, which is a decision about where
+that JDK lives (the Mac at publish time, or the VPS at boot) and not something to
+smuggle into this branch. FTB stays out: no clean public API for server files.
+
+`pack fetch` says which of those it hit rather than downloading something surprising.
+
+### 33. Not done, on purpose, on this branch
+
+- A pack's `start.sh` flags (Aikar, `-XX:+UseZGC`) are ignored; the script is generated
+  from the memory figure. Packs that need specific flags will need a way to pass them.
+- A pack's `server.properties` is replaced wholesale by ours (see 29).
+- Client-only detection is entirely the pack's word (see 28), and packs do get it
+  wrong: Cobblemon's official pack marks FancyMenu, CraftPresence and InvMove as
+  server-required, which drags 122 MB of FancyMenu UI assets into `config/` and onto
+  R2. Following the pack is still the right default — the alternative is a filename
+  list that guesses — but a pack that lies about sides is a pack whose server build
+  is heavier than it needs to be, not a broken one.
+- No live session yet. A real Fabric pack booting on a real VPS with a Prism client on
+  the same pack version is the test that counts, and it is the next thing to run.

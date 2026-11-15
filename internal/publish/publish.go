@@ -8,10 +8,14 @@
 //	mc-assets/mods/*.jar
 //	mc-assets/config/
 //	mc-assets/scripts/{start.sh,stop.sh}
+//	mc-assets/root/            a fetched modpack's non-mod files: config/, kubejs/, defaultconfigs/
 //
 // A missing world is not this package's problem: mc-worlds/current/world.tar.gz
 // is written by the VPS on shutdown, and its absence just means Minecraft
-// generates a fresh one.
+// generates a fresh one. What publish does write there is
+// mc-worlds/current/pack.json, the identity of the pack the assets belong to,
+// which is how the next publish knows whether the saved world can be loaded with
+// the pack it is about to upload.
 package publish
 
 import (
@@ -32,6 +36,7 @@ import (
 	"sort"
 	"strings"
 
+	"outpost/internal/config"
 	"outpost/internal/r2"
 )
 
@@ -46,6 +51,7 @@ var defaultClientOnlyList string
 // tests use a map.
 type Store interface {
 	Put(ctx context.Context, bucket, key string, r io.Reader, size int64, sha256 string) error
+	Get(ctx context.Context, bucket, key string) ([]byte, error)
 	Stat(ctx context.Context, bucket, key string) (r2.Info, error)
 	List(ctx context.Context, bucket, prefix string) ([]r2.Object, error)
 	Remove(ctx context.Context, bucket, key string) error
@@ -53,9 +59,10 @@ type Store interface {
 
 // Options is one publish run.
 type Options struct {
-	// Dir is the pack directory: server/, mods/, config/, scripts/.
+	// Dir is the pack directory: server/, mods/, config/, scripts/, root/.
 	Dir         string
 	AssetBucket string
+	WorldBucket string
 
 	// FabricMC, when set (e.g. "1.20.1"), fetches a Fabric server launcher for
 	// that Minecraft version and uploads it as server/fabric-server-launch.jar.
@@ -76,8 +83,21 @@ type Options struct {
 	DryRun bool
 
 	// Prune deletes mods/ and config/ keys that are not in the pack. Without it
-	// renaming a jar leaves the old one for the server to load.
+	// renaming a jar leaves the old one for the server to load. A pack with a
+	// pack.json turns this on by itself: two versions of the same mod in mods/ is
+	// a discovered-then-crashed server, not a warning.
 	Prune bool
+
+	// Regions are the plans a session can be rented on, used only to refuse a
+	// pack none of them has the RAM for. Empty skips that check.
+	Regions map[string]config.Region
+
+	// NewWorld discards the saved world when it belongs to another pack, and
+	// KeepWorld loads it anyway. Neither is set: publish refuses instead of
+	// guessing, because a world from a different pack is a world with missing
+	// mods and renumbered blocks.
+	NewWorld  bool
+	KeepWorld bool
 
 	Log *slog.Logger
 }
@@ -111,12 +131,53 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
-	objects, warnings, err := Build(ctx, opts)
+	var res Result
+	var discardWorld bool
+
+	// A pack knows things a flag list cannot: which Minecraft version it is for,
+	// which loader it wants, and how much RAM the person who fetched it said it
+	// needs. Read that before anything is uploaded, so the refusals happen before
+	// the bytes and before the rental.
+	pk, packed, err := LoadPack(opts.Dir)
 	if err != nil {
-		return Result{}, err
+		return res, err
+	}
+	if packed {
+		if err := CheckPack(pk); err != nil {
+			return res, err
+		}
+		if memWarnings, err := checkPackMemory(pk, opts.Regions); err != nil {
+			return res, err
+		} else {
+			res.Warnings = append(res.Warnings, memWarnings...)
+		}
+		// Pruning is not optional for a pack: the previous version's jars have to
+		// go, or the server loads two of everything.
+		opts.Prune = true
+		if pk.MC != "" {
+			if opts.FabricMC != "" && opts.FabricMC != pk.MC {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("--fabric %s ignored: %s is for Minecraft %s", opts.FabricMC, pk.Describe(), pk.MC))
+			}
+			opts.FabricMC = pk.MC
+			opts.FabricLoader = pk.LoaderVersion
+		}
+
+		var warnings []string
+		discardWorld, warnings, err = worldGuard(ctx, st, opts, pk)
+		if err != nil {
+			return res, err
+		}
+		res.Warnings = append(res.Warnings, warnings...)
+		if discardWorld && opts.DryRun {
+			res.Warnings = append(res.Warnings, "dry run: would discard the saved world and start a fresh one")
+		}
 	}
 
-	var res Result
+	objects, warnings, err := Build(ctx, opts)
+	if err != nil {
+		return res, err
+	}
+
 	res.Warnings = append(res.Warnings, warnings...)
 	res.Players = whitelistNames(objects)
 
@@ -171,6 +232,25 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 
 	if opts.DryRun {
 		log.Info("dry run: nothing written", "upload", len(res.Uploaded), "prune", len(res.Removed))
+		return res, nil
+	}
+
+	// Everything is up and verified: only now is it true that this bucket holds
+	// this pack, which is what the marker claims. Discarding the old world happens
+	// here too, never before the upload.
+	switch {
+	case packed:
+		if err := recordPack(ctx, st, opts.WorldBucket, pk, discardWorld); err != nil {
+			return res, err
+		}
+	case opts.WorldBucket != "":
+		// A hand-rolled pack has no identity to record, and the marker from an
+		// earlier fetched pack would still claim assets that are no longer there.
+		// Removing it means the next packed publish has to be told what to do with
+		// a world this publish cannot describe, instead of trusting a stale label.
+		if err := st.Remove(ctx, opts.WorldBucket, packMarkerKey); err != nil {
+			return res, fmt.Errorf("clear the pack marker: %w", err)
+		}
 	}
 	return res, nil
 }
@@ -193,13 +273,37 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 
 	add := func(key string, o Object) { objects = append(objects, o) }
 
-	// server/, config/ and scripts/ are copied as-is; any of them may be absent,
-	// because the defaults below can fill a bare pack. world/ is excluded: the
-	// world comes from the mc-worlds bucket, never from the asset pack.
+	pk, packed, err := LoadPack(opts.Dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if packed {
+		if err := CheckPack(pk); err != nil {
+			return nil, nil, err
+		}
+		warnings = append(warnings, fmt.Sprintf("%s: minecraft %s, loader %s %s, %d server-side file(s) from the pack",
+			pk.Describe(), pk.MC, pk.Loader, pk.LoaderVersion, pk.FileCount))
+
+		// The pack decides the launcher: a loader version that disagrees with the
+		// pack is a server that fails on a mixin, which reads like a broken mod.
+		if pk.MC != "" {
+			opts.FabricMC = pk.MC
+			opts.FabricLoader = pk.LoaderVersion
+		}
+	}
+
+	// server/, config/, scripts/ and root/ are copied as-is; any of them may be
+	// absent, because the defaults below can fill a bare pack. world/ is excluded:
+	// the world comes from the mc-worlds bucket, never from the asset pack.
+	//
+	// root/ is where a fetched modpack's non-mod files go (config/, kubejs/,
+	// defaultconfigs/) and cloud-init copies it to /opt/minecraft before the other
+	// prefixes, so our server.properties still wins over a pack's.
 	dirs := map[string]string{
 		"server":  "server/",
 		"config":  "config/",
 		"scripts": "scripts/",
+		"root":    "root/",
 	}
 	for dirName, prefix := range dirs {
 		base := filepath.Join(opts.Dir, dirName)
@@ -237,7 +341,16 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 
 	// mods/ is the one directory with a filter: client-only mods crash or
 	// confuse a dedicated server, and a modpack export ships them anyway.
-	skip := clientOnly(opts.Dir)
+	//
+	// A fetched pack needs no list here — its .mrpack said `env.server:
+	// unsupported` for those files and `outpost pack fetch` left them out — so the
+	// hand-maintained list only applies to hand-rolled packs. Applying it to a
+	// pack would silently drop a mod the pack author marked server-required
+	// because an old filename happened to match.
+	skip := map[string]bool{}
+	if !packed {
+		skip = clientOnly(opts.Dir)
+	}
 	modsDir := filepath.Join(opts.Dir, "mods")
 	entries, err := os.ReadDir(modsDir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -316,8 +429,10 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	return objects, warnings, nil
 }
 
-// prune removes stale mods and config files. It never touches server/ (that is
-// where a person's own files live) or the world bucket.
+// prune removes stale mods, config and root files. It never touches server/ (that
+// is where a person's own files live) or the world bucket. root/ is pruned
+// because a fetched pack owns every file in it: a config the new pack version
+// dropped would otherwise stay in R2 and load with the next boot.
 func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]string, error) {
 	want := map[string]bool{}
 	for _, o := range objects {
@@ -325,7 +440,7 @@ func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]str
 	}
 
 	var removed []string
-	for _, prefix := range []string{"mods/", "config/"} {
+	for _, prefix := range []string{"mods/", "config/", "root/"} {
 		existing, err := st.List(ctx, opts.AssetBucket, prefix)
 		if err != nil {
 			return nil, err

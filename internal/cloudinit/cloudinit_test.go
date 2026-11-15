@@ -284,6 +284,27 @@ func TestRenderHandsMinecraftOwnershipBeforeThePull(t *testing.T) {
 	}
 }
 
+func TestRenderPullsThePackRootBeforeOurServerProperties(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	// root/ is where a fetched modpack keeps config/, kubejs/ and the rest. It has
+	// to land at the server root, and it has to land before server/ — otherwise a
+	// pack's server.properties would overwrite the one with this session's RCON
+	// password in it.
+	root := strings.Index(out, "rclone copy r2:mc-assets/root/ /opt/minecraft/")
+	server := strings.Index(out, "rclone copy r2:mc-assets/server/ /opt/minecraft/")
+	scripts := strings.Index(out, "rclone copy r2:mc-assets/scripts/ /opt/minecraft/")
+	if root < 0 || server < 0 || scripts < 0 {
+		t.Fatalf("root=%d server=%d scripts=%d; a pull is missing from the template", root, server, scripts)
+	}
+	if root > server {
+		t.Fatal("root/ is pulled after server/: a pack's server.properties would win over ours")
+	}
+}
+
 // tailscaleJoin returns the rendered `tailscale up` command, so assertions do
 // not trip over the comments that explain it.
 func tailscaleJoin(t *testing.T, out string) string {

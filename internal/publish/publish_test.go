@@ -227,6 +227,14 @@ func (f *fakeStore) Put(_ context.Context, _ string, key string, r io.Reader, si
 	return nil
 }
 
+func (f *fakeStore) Get(_ context.Context, _, key string) ([]byte, error) {
+	b, ok := f.objects[key]
+	if !ok {
+		return nil, r2.ErrNotFound
+	}
+	return b, nil
+}
+
 func (f *fakeStore) Stat(_ context.Context, _, key string) (r2.Info, error) {
 	b, ok := f.objects[key]
 	if !ok {
@@ -286,6 +294,7 @@ func TestRunPrunesStaleModsOnly(t *testing.T) {
 
 	st.objects["mods/removed-mod-1.0.jar"] = []byte("old")
 	st.objects["config/old.toml"] = []byte("old")
+	st.objects["root/kubejs/old.js"] = []byte("old")
 	st.objects["server/somebody-elses-file.txt"] = []byte("mine")
 
 	res, err := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets", Prune: true})
@@ -299,11 +308,14 @@ func TestRunPrunesStaleModsOnly(t *testing.T) {
 	if _, ok := st.objects["config/old.toml"]; ok {
 		t.Fatal("a stale config survived --prune")
 	}
+	if _, ok := st.objects["root/kubejs/old.js"]; ok {
+		t.Fatal("a stale file in root/ survived --prune")
+	}
 	// server/ is never pruned: it is where a person's own files live.
 	if _, ok := st.objects["server/somebody-elses-file.txt"]; !ok {
 		t.Fatal("--prune deleted a file from server/")
 	}
-	if len(res.Removed) != 2 {
+	if len(res.Removed) != 3 {
 		t.Fatalf("removed = %v", res.Removed)
 	}
 }
