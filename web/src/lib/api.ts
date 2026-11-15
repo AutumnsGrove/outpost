@@ -186,6 +186,8 @@ export interface PackOverview {
 	job?: PackJob;
 	editable: boolean;
 	state: ServerState;
+	/** The Minecraft version this image can boot; the vanilla button names it. */
+	supportedMc: string;
 	detail?: string;
 }
 
@@ -239,6 +241,10 @@ export const getPack = async (): Promise<PackOverview> =>
  *  different profile. Empty derives. */
 export const packVersions = (source: string, token: string, profile = '') =>
 	post<PackVersions>('/api/pack/versions', { source, token, profile });
+
+/** A server with no mods: Fabric and nothing loaded. No project, no preview. */
+export const packVanilla = (token: string, profile = '', newWorld = false) =>
+	post<PackJob>('/api/pack/vanilla', { token, profile, activate: true, newWorld });
 
 export const packPreview = (
 	source: string,

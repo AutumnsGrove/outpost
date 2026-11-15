@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"outpost/internal/pack"
+	"outpost/internal/publish"
 	"outpost/internal/store"
 )
 
@@ -25,6 +26,9 @@ type packOverview struct {
 	// profiles underneath a live server would file its world in the wrong drawer.
 	Editable bool   `json:"editable"`
 	State    string `json:"state"`
+	// SupportedMC is the Minecraft version this image can boot, so the panel can
+	// offer a vanilla profile without hardcoding a version number in the page.
+	SupportedMC string `json:"supportedMc"`
 	// Detail explains why the panel is read-only, when it is.
 	Detail string `json:"detail,omitempty"`
 }
@@ -58,6 +62,7 @@ func (s *Server) packGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.State = string(st.State)
+	out.SupportedMC = publish.SupportedMC
 	out.Editable = st.State == store.Offline
 	if !out.Editable {
 		out.Detail = "the server is " + string(st.State) + ": installing or switching a pack now would file its world in the wrong profile"
@@ -137,6 +142,40 @@ func (s *Server) packInstall(w http.ResponseWriter, r *http.Request, raw []byte)
 		return
 	}
 	_ = s.store.Log("pack", "installing %s into profile %s", body.Source, job.Profile)
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+// packVanilla publishes a server with no mods: a pack.json that says source
+// "outpost", an empty mods/, and the launcher fetched for 1.20.1. The panel's
+// "Vanilla 1.20.1" button is the only caller, and it is a job because the
+// launcher download and the upload take as long as any other install.
+func (s *Server) packVanilla(w http.ResponseWriter, r *http.Request, raw []byte) {
+	var body pack.VanillaRequest
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
+			return
+		}
+	}
+
+	st, err := s.store.GetState()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if st.State != store.Offline {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "the server is " + string(st.State) + "; save and stop it before installing a pack",
+		})
+		return
+	}
+
+	job, err := s.packs.InstallVanilla(r.Context(), body)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.store.Log("pack", "installing vanilla into profile %s", job.Profile)
 	writeJSON(w, http.StatusAccepted, job)
 }
 
