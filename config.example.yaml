@@ -14,6 +14,11 @@ server:
   world_bucket: "mc-worlds"   # current/world.tar.gz + timestamped backups
   mc_port: 25565
 
+  # Where pack directories are kept while they are being fetched or installed,
+  # one per profile plus a .mrpack cache. `outpost pack fetch` and the Modpack
+  # panel both write here; relative to the daemon's working directory.
+  pack_dir: "packs"
+
   # Total time billed after the last player logs off is idle_grace + idle_timeout.
   idle_grace: "10m"           # empty -> IDLE
   idle_timeout: "20m"         # IDLE -> TERMINATING

@@ -136,10 +136,15 @@ func (a *app) serveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			packs, err := a.packManager(rost)
+			if err != nil {
+				return err
+			}
 			opts := api.Options{
 				Token:  a.cfg.Secrets.APIToken,
 				Update: a.selfUpdater(),
 				Roster: rost,
+				Packs:  packs,
 				Log:    a.log,
 			}
 			// Under systemd the way to restart is to leave: Restart=always brings

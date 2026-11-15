@@ -128,7 +128,7 @@ func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
 	st.objects[key("world.tar.gz")] = []byte("world")
-	marker, _ := json.Marshal(Pack{Source: "modrinth", Slug: "test-pack", VersionID: "older", VersionNumber: "0.9.0"})
+	marker, _ := json.Marshal(Pack{Source: "modrinth", Slug: "homestead", VersionID: "other", VersionNumber: "0.9.0"})
 	st.objects[key("pack.json")] = marker
 
 	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
@@ -148,6 +148,28 @@ func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
 	}
 	if !warningsContain(res.Warnings, "--keep-world") {
 		t.Fatalf("the warning should mention what was overridden: %v", res.Warnings)
+	}
+}
+
+func TestRunKeepsTheWorldAcrossAPackUpdate(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects[key("world.tar.gz")] = []byte("world")
+	// The same pack, one version older: that is an update, not a different game.
+	older, _ := json.Marshal(Pack{Source: "modrinth", Slug: "test-pack", VersionID: "older", VersionNumber: "0.9.0"})
+	st.objects[key("pack.json")] = older
+
+	res, err := Run(context.Background(), st, Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
+	if err != nil {
+		t.Fatalf("a pack update was refused: %v", err)
+	}
+	if _, ok := st.objects[key("world.tar.gz")]; !ok {
+		t.Fatal("a pack update discarded the world it should have kept")
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "world") {
+			t.Fatalf("a pack update complained about the world: %v", res.Warnings)
+		}
 	}
 }
 
