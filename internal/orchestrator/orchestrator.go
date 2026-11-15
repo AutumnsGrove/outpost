@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,6 +67,9 @@ type Records interface {
 // times out fifteen minutes later.
 type Assets interface {
 	Stat(ctx context.Context, bucket, key string) (r2.Info, error)
+	// Get reads the profile's pack.json, which is where the pack says how much RAM
+	// it wants: the number the plan picker defaults to and a start refuses below.
+	Get(ctx context.Context, bucket, key string) ([]byte, error)
 }
 
 // Remote is the SSH surface Outpost needs.
@@ -210,9 +214,9 @@ type Status struct {
 
 // Status reads the current state and decorates it with costs and timers.
 //
-// Money is euros, because that is the only currency Hetzner bills in. The
-// numbers come from config's hourly_rate, so they are an estimate for the
-// readout and never the bill.
+// Money is euros, because that is the only currency Hetzner bills in. A running
+// session is priced at the rate recorded on its row; with nothing rented it is
+// priced at the plan the next start would choose. It is a readout, never a bill.
 func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 	st, err := o.store.GetState()
 	if err != nil {
@@ -237,10 +241,11 @@ func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 		out.StartedAt = st.StartedAt.Format(time.RFC3339)
 		out.UptimeSec = int64(o.now().Sub(st.StartedAt).Seconds())
 	}
-	if reg, ok := o.cfg.Regions[st.Region]; ok {
-		out.HourlyRate = reg.HourlyRate
-		out.SessionCost = reg.HourlyRate * float64(out.UptimeSec) / 3600
-	}
+	// The rate the session was rented at, not the rate of whatever config says
+	// today: Hetzner keeps a server on its original price, and a plan repricing
+	// must not rewrite what a running session is costing.
+	out.HourlyRate = o.hourlyRate(st)
+	out.SessionCost = out.HourlyRate * float64(out.UptimeSec) / 3600
 	if !st.IdleSince.IsZero() {
 		out.IdleSec = int64(o.now().Sub(st.IdleSince).Seconds())
 		limit := int64(o.cfg.Server.IdleGrace.Std().Seconds() + o.cfg.Server.IdleTimeout.Std().Seconds())
@@ -284,6 +289,11 @@ func (o *Orchestrator) Health() Health {
 // than in config.yaml because the page switches it, and because it is state
 // ("what am I playing") rather than configuration.
 const metaProfile = "profile"
+
+// metaServerType is the plan the last start rented. It is remembered rather than
+// written back into config.yaml: the page picks, the choice sticks, and the file
+// stays the source of defaults (PLAN 36).
+const metaServerType = "server_type"
 
 // ActiveProfile is the pack+world pair the next session boots.
 func (o *Orchestrator) ActiveProfile() (string, error) {
@@ -342,7 +352,7 @@ func (o *Orchestrator) requireAssets(ctx context.Context, profile string) error 
 // Start rents a VPS. Provisioning itself is Tick's job, so a crash between "we
 // asked Hetzner" and "Hetzner answered" cannot lose the server: the vps_id is
 // committed as soon as it exists.
-func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerState, error) {
+func (o *Orchestrator) Start(ctx context.Context, region, serverType string) (store.ServerState, error) {
 	// Renting is the one action that costs money the instant it succeeds, so it
 	// is serialised across processes before anything else is read: `outpost
 	// serve` and an `outpost start` shell must not both pass the state check.
@@ -394,6 +404,14 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		return st, err
 	}
 
+	// Which plan this session rents. The chosen one wins, then the one remembered
+	// from last time, then the region's default — and the choice is remembered
+	// here, so a page pick and a CLI start mean the same thing next time.
+	plan, err := o.planFor(reg, serverType)
+	if err != nil {
+		return st, err
+	}
+
 	// A start that lands in the middle of an install would pull a profile whose
 	// keys are half old and half new — the same failure as a missing profile, only
 	// harder to see, so it is refused the same way.
@@ -409,6 +427,11 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		return st, err
 	}
 	if err := o.requireAssets(ctx, profile); err != nil {
+		return st, err
+	}
+	// A plan too small for the pack is a server that dies on its first save, so it
+	// is refused here rather than discovered in a crash log.
+	if err := o.requirePlanFit(ctx, profile, plan); err != nil {
 		return st, err
 	}
 	st.Profile = profile
@@ -440,9 +463,9 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		return st, err
 	}
 
-	o.log.Info("renting server", "region", region, "type", reg.ServerType, "hostname", hostname)
+	o.log.Info("renting server", "region", region, "type", plan.Type, "hostname", hostname)
 
-	srv, serverType, err := o.rent(ctx, hostname, reg, userData)
+	srv, rentedType, err := o.rent(ctx, hostname, reg, plan.Type, userData)
 	if err != nil {
 		return st, err
 	}
@@ -453,7 +476,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		VPSIP:        srv.PublicNet.IPv4.IP,
 		TailnetHost:  hostname,
 		Region:       region,
-		ServerType:   serverType,
+		ServerType:   rentedType,
 		RCONPassword: password,
 		Profile:      profile,
 		StartedAt:    o.now(),
@@ -468,10 +491,14 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	_ = o.store.MetaSet("rcon_failures", "0")
 	_ = o.store.MetaSet("ever_running", "")
 
-	if _, err := o.store.StartSession(st.StartedAt, region, serverType, fmt.Sprint(srv.ID)); err != nil {
+	// The rate of the plan that was actually rented, which is not always the one
+	// asked for: a sold-out plan falls back, and a fallback size has its own price.
+	rate, _ := hetzner.Rate(rentedType)
+	if _, err := o.store.StartSession(st.StartedAt, region, rentedType, rate, fmt.Sprint(srv.ID)); err != nil {
 		return st, err
 	}
-	_ = o.store.Log("start", "rented %s in %s (%s)", hostname, reg.Location, serverType)
+	_ = o.store.MetaSet(metaServerType, rentedType)
+	_ = o.store.Log("start", "rented %s in %s (%s, %.4f EUR/h)", hostname, reg.Location, rentedType, rate)
 
 	return st, nil
 }
@@ -479,8 +506,8 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 // rent creates the server, walking through the configured fallback sizes when
 // Hetzner has no capacity for the preferred one. Thin stock is the normal state
 // of the world Outpost lives in, not an exceptional condition.
-func (o *Orchestrator) rent(ctx context.Context, hostname string, reg config.Region, userData string) (*hetzner.Server, string, error) {
-	types := append([]string{reg.ServerType}, reg.FallbackTypes...)
+func (o *Orchestrator) rent(ctx context.Context, hostname string, reg config.Region, plan string, userData string) (*hetzner.Server, string, error) {
+	types := append([]string{plan}, reg.FallbackTypes...)
 
 	var lastErr error
 	for _, serverType := range types {
@@ -1025,9 +1052,12 @@ func (o *Orchestrator) finalize(st store.ServerState, reason string) error {
 		if duration < 0 {
 			duration = 0
 		}
-		rate := 0.0
-		if reg, ok := o.cfg.Regions[sess.Region]; ok {
-			rate = reg.HourlyRate
+		rate := sess.HourlyRate
+		if rate == 0 {
+			// A row written before the rate was stored, or one whose plan this
+			// build does not know. Better an estimate from the table than a
+			// session recorded as free.
+			rate, _ = hetzner.Rate(sess.ServerType)
 		}
 		cost := rate * float64(duration) / 3600
 		if err := o.store.EndSession(sess.ID, duration, cost, sess.MaxPlayers); err != nil {
@@ -1121,4 +1151,130 @@ func randomHex(n int) (string, error) {
 		return "", fmt.Errorf("generate password: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// planFor answers which plan a start rents: the one asked for, else the one
+// remembered from last time, else the region's default.
+//
+// A plan this build does not know is allowed. A stale table must never refuse a
+// rental over a name Hetzner invented afterwards; the cost readout says it has
+// no price for that plan rather than inventing one.
+func (o *Orchestrator) planFor(reg config.Region, asked string) (hetzner.Plan, error) {
+	chosen := strings.TrimSpace(asked)
+	if chosen == "" {
+		if remembered, err := o.store.MetaGet(metaServerType); err == nil && strings.TrimSpace(remembered) != "" {
+			chosen = strings.TrimSpace(remembered)
+		}
+	}
+	if chosen == "" {
+		chosen = reg.ServerType
+	}
+	if chosen == "" {
+		return hetzner.Plan{}, fmt.Errorf("region %q has no server_type and none was chosen", reg.Location)
+	}
+	if p, ok := hetzner.Lookup(chosen); ok {
+		return p, nil
+	}
+	// Unknown, but rentable: carry the name and leave the rate at zero.
+	return hetzner.Plan{Type: chosen}, nil
+}
+
+// requirePlanFit refuses a plan too small for the active pack, before anything is
+// rented. It is the same rule the picker uses to choose a default, asked at the
+// only moment it cannot be got wrong: the pack's own memory figure against the
+// plan's RAM.
+func (o *Orchestrator) requirePlanFit(ctx context.Context, profile string, plan hetzner.Plan) error {
+	if plan.RAMGB == 0 {
+		return nil // unknown plan: the table has no opinion, so neither does this
+	}
+	want, err := o.packMemoryGB(ctx, profile)
+	if err != nil {
+		return err
+	}
+	if want == 0 || plan.RAMGB >= want {
+		return nil
+	}
+	bigger := ""
+	if best, ok := hetzner.SmallestFit(want); ok {
+		bigger = fmt.Sprintf("; %s has %d GB for EUR %.4f/h", best.Type, best.RAMGB, best.HourlyEUR)
+	}
+	return fmt.Errorf("%s has %d GB and the active pack asks for %d GB%s — choose a bigger plan before starting",
+		plan.Type, plan.RAMGB, want, bigger)
+}
+
+// PackMemoryGB is the RAM the active profile's pack asks for, and zero when there
+// is no manifest or no figure in it.
+func (o *Orchestrator) PackMemoryGB(ctx context.Context) (int, error) {
+	profile, err := o.ActiveProfile()
+	if err != nil {
+		return 0, err
+	}
+	return o.packMemoryGB(ctx, profile)
+}
+
+// packMemoryGB reads the pack's own memory figure out of its manifest.
+func (o *Orchestrator) packMemoryGB(ctx context.Context, profile string) (int, error) {
+	assets := o.deps.Assets
+	if assets == nil {
+		c, err := r2.New(o.cfg.R2.AccountID, o.cfg.Secrets.R2AccessKey, o.cfg.Secrets.R2SecretKey)
+		if err != nil {
+			return 0, err
+		}
+		assets = c
+	}
+	raw, err := assets.Get(ctx, o.cfg.Server.AssetBucket, "profiles/"+profile+"/pack.json")
+	if err != nil {
+		if errors.Is(err, r2.ErrNotFound) {
+			return 0, nil // no manifest: no figure to check
+		}
+		return 0, err
+	}
+	var pk publish.Pack
+	if err := json.Unmarshal(raw, &pk); err != nil || pk.MemoryGB <= 0 {
+		return 0, nil
+	}
+	return pk.MemoryGB, nil
+}
+
+// hourlyRate is what the current session costs per hour. With no session live it
+// is what the next start would cost, so the page can price the button it shows.
+func (o *Orchestrator) hourlyRate(st store.ServerState) float64 {
+	if sess, err := o.store.CurrentSession(); err == nil && sess != nil && sess.EndedAt.IsZero() {
+		if sess.HourlyRate > 0 {
+			return sess.HourlyRate
+		}
+		if rate, ok := hetzner.Rate(sess.ServerType); ok {
+			return rate
+		}
+	}
+	if st.ServerType != "" {
+		if rate, ok := hetzner.Rate(st.ServerType); ok {
+			return rate
+		}
+	}
+	// Nothing rented: the plan a start would pick right now.
+	reg, err := o.cfg.Region(o.DefaultRegion())
+	if err != nil {
+		return 0
+	}
+	plan, err := o.planFor(reg, "")
+	if err != nil {
+		return 0
+	}
+	rate, _ := hetzner.Rate(plan.Type)
+	return rate
+}
+
+// SelectedServerType is the plan the next start rents: the remembered choice, or
+// the region's default. The page shows it as the picker's current value.
+func (o *Orchestrator) SelectedServerType() string {
+	reg, err := o.cfg.Region(o.DefaultRegion())
+	if err != nil {
+		return ""
+	}
+	plan, err := o.planFor(reg, "")
+	if err != nil {
+		return reg.ServerType
+	}
+	return plan.Type
 }

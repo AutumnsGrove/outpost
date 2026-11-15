@@ -197,9 +197,15 @@ func (a *app) serveCmd() *cobra.Command {
 }
 
 func (a *app) startCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:         "start [region]",
-		Short:       "Rent a server and start provisioning it",
+	var plan string
+
+	cmd := &cobra.Command{
+		Use:   "start [region]",
+		Short: "Rent a server and start provisioning it",
+		Long: "Rents a server and starts provisioning it. The plan is the one --type\n" +
+			"names, else the one last chosen (from here or the page), else the region's\n" +
+			"configured default. A plan too small for the active pack is refused before\n" +
+			"anything is rented.",
 		Args:        cobra.MaximumNArgs(1),
 		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -210,7 +216,7 @@ func (a *app) startCmd() *cobra.Command {
 				region = args[0]
 			}
 
-			st, err := a.orch.Start(cmd.Context(), region)
+			st, err := a.orch.Start(cmd.Context(), region, plan)
 			if err != nil {
 				return err
 			}
@@ -219,6 +225,9 @@ func (a *app) startCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&plan, "type", "", "the Hetzner plan to rent (e.g. cx33); empty uses the last choice")
+	return cmd
 }
 
 func (a *app) stopCmd() *cobra.Command {

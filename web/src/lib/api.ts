@@ -78,6 +78,20 @@ export interface Players {
 	rosterError?: string;
 }
 
+/** One rentable size, priced the way the picker shows it. */
+export interface Plan {
+	type: string;
+	vcpu: number;
+	ramGb: number;
+	/** EUR per hour, list price including the IPv4 a server needs. */
+	hourlyRate: number;
+	arm: boolean;
+	/** Enough RAM for the active pack. */
+	fits: boolean;
+	/** False for a configured plan this build cannot price. */
+	known: boolean;
+}
+
 export interface Overview {
 	status: Status;
 	health: Health;
@@ -89,6 +103,11 @@ export interface Overview {
 	players: Players;
 	build: { commit: string; built: string; modified: boolean };
 	canUpdate: boolean;
+	/** What Start can rent, smallest first, and the plan it opens on. */
+	plans: Plan[];
+	selectedType: string;
+	/** What the active pack asks for; 0 when it has no manifest figure. */
+	packMemoryGb: number;
 }
 
 /** A pack as R2 records it: what was installed, and what it needs to run. */
@@ -222,8 +241,8 @@ export async function getOverview(): Promise<Overview> {
 	return json<Overview>(await fetch('/api/overview', { headers: { accept: 'application/json' } }));
 }
 
-export const act = (action: ActionKind, token: string) =>
-	post<{ message?: string }>('/api/action', { action, token });
+export const act = (action: ActionKind, token: string, type = '') =>
+	post<{ message?: string }>('/api/action', { action, token, type });
 
 export const sendConsole = (command: string, token: string) =>
 	post<{ output: string; truncated: boolean }>('/api/console', { command, token });
