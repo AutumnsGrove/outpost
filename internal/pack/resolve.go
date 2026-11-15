@@ -42,6 +42,7 @@ type Version struct {
 	VersionType   string        `json:"version_type"` // release, beta, alpha
 	GameVersions  []string      `json:"game_versions"`
 	Loaders       []string      `json:"loaders"`
+	PublishedAt   string        `json:"date_published"`
 	Files         []VersionFile `json:"files"`
 }
 

@@ -5,12 +5,15 @@
 	import { onMount } from 'svelte';
 	import {
 		bytes,
+		clock,
 		getPack,
 		packInstall,
 		packPreview,
 		packUse,
+		packVersions,
 		type PackJob,
-		type PackOverview
+		type PackOverview,
+		type PackVersions
 	} from './api';
 
 	// `state` would shadow the $state rune, so the prop is named for what it is.
@@ -31,6 +34,12 @@
 	let job = $state<PackJob | null>(null);
 	// The world question, answered by the checkbox the preview shows.
 	let replaceWorld = $state(false);
+	// Version picking. `versions` is the list for the link in the field, `chosen`
+	// is the one Resolve and Install will use: empty means "the newest runnable".
+	let versions = $state<PackVersions | null>(null);
+	let chosen = $state<{ id: string; number: string } | null>(null);
+	let showVersions = $state(false);
+	let loadingVersions = $state(false);
 
 	// A pack can only be installed or swapped while nothing is rented: a running
 	// server already pulled one profile's assets and will upload its world to that
@@ -52,11 +61,42 @@
 			if (job?.kind === 'install' && job.phase === 'done') {
 				preview = null;
 				source = '';
+				versions = null;
+				chosen = null;
+				showVersions = false;
 			}
 		} catch (err) {
 			message = err instanceof Error ? err.message : String(err);
 			failed = true;
 		}
+	}
+
+	async function loadVersions() {
+		if (!source.trim() || busy || running) return;
+		busy = true;
+		message = '';
+		failed = false;
+		try {
+			versions = await packVersions(source.trim(), token);
+			chosen = null;
+			// Default to the version this profile already holds when it holds one:
+			// resolving "what I have" is what someone checking versions wants most.
+			const held = versions.choices.find((c) => c.installed);
+			showVersions = true;
+			if (!held && versions.choices.some((c) => c.bootable)) {
+				// nothing installed: keep it on "newest runnable" by leaving chosen empty
+			}
+		} catch (err) {
+			message = err instanceof Error ? err.message : String(err);
+			failed = true;
+			versions = null;
+		} finally {
+			busy = false;
+		}
+	}
+
+	function pick(c: { id: string; number: string }) {
+		chosen = chosen?.id === c.id ? null : c;
 	}
 
 	async function resolve() {
@@ -67,7 +107,7 @@
 		preview = null;
 		replaceWorld = false;
 		try {
-			job = await packPreview(source.trim(), token, memory);
+			job = await packPreview(source.trim(), token, memory, chosen?.id ?? '');
 			await refresh();
 		} catch (err) {
 			message = err instanceof Error ? err.message : String(err);
@@ -86,6 +126,7 @@
 			job = await packInstall(
 				{
 					source: preview.source,
+					version: chosen?.id ?? '',
 					profile: preview.profile,
 					memoryGB: memory,
 					// The world question is answered by the checkbox the preview shows,
@@ -132,6 +173,17 @@
 		if (w.source === p.source && w.slug === p.slug) return null;
 		return w;
 	});
+
+	// "Install" into a profile that already holds this pack is an update, and
+	// saying so is the difference between a button someone presses and a button
+	// they are afraid of.
+	function label(profile: string, slug: string): string {
+		const existing = pack?.profiles.find((p) => p.id === profile);
+		if (!existing?.pack) return `Install into ${profile}`;
+		const samePack = !existing.pack.slug || existing.pack.slug === slug;
+		if (!samePack) return `Replace ${profile}`;
+		return `Update ${profile}`;
+	}
 
 	const phaseLabel = $derived.by(() => {
 		if (!job) return '';
@@ -224,11 +276,59 @@
 			disabled={!editable || running}
 			title="RAM of the box you will rent. Sizes start.sh and is checked against the plan."
 		/>
+		<button
+			class="btn quiet small"
+			disabled={!editable || running || busy || !source.trim()}
+			onclick={loadVersions}
+			title="See every published version, which ones this server can run, and which one you have"
+		>
+			Versions
+		</button>
 		<button class="btn primary small" disabled={!editable || running || busy || !source.trim()}>
 			<Download aria-hidden="true" />
-			{busy && !job ? 'asking…' : 'Resolve'}
+			{busy && !job ? 'asking…' : chosen ? `Resolve ${chosen.number}` : 'Resolve'}
 		</button>
 	</form>
+
+	{#if versions && showVersions}
+		<div class="versionbox">
+			<p class="muted vhead">
+				{versions.name} · {versions.total} version{versions.total === 1 ? '' : 's'}
+				{#if versions.choices.length < versions.total}
+					· newest {versions.choices.length} shown
+				{/if}
+				→ <span class="mono">{versions.profile}</span>
+				<button class="linkbtn" onclick={() => (showVersions = false)}>hide</button>
+			</p>
+			<ul class="versions">
+				{#each versions.choices as c (c.id)}
+					<li class:off={!c.bootable} class:picked={chosen?.id === c.id}>
+						<button
+							class="vrow"
+							disabled={!c.bootable || !editable || running}
+							title={c.bootable ? 'Resolve this version' : c.reason}
+							onclick={() => pick(c)}
+						>
+							<span class="vnum mono">{c.number}</span>
+							<span class="vtag">{c.type}</span>
+							{#if c.installed}<span class="badge">installed</span>{/if}
+							<span class="vmc mono">{c.gameVersions.join(', ')}</span>
+							<span class="vwhen muted">{clock(c.publishedAt)}</span>
+							{#if !c.bootable}
+								<span class="vwhy">{c.reason}</span>
+							{/if}
+						</button>
+					</li>
+				{/each}
+			</ul>
+			{#if chosen}
+				<p class="pickedline">
+					Resolve will use <strong>{chosen.number}</strong>.
+					<button class="linkbtn" onclick={() => (chosen = null)}>use the newest runnable instead</button>
+				</p>
+			{/if}
+		</div>
+	{/if}
 
 	{#if job}
 		<p class="phase" class:bad={job.phase === 'failed'} role="status" aria-live="polite">
@@ -294,7 +394,7 @@
 				disabled={!editable || running || busy}
 				onclick={() => install(mismatch ? replaceWorld : false)}
 			>
-				{running ? 'installing…' : `Install into ${preview.result.profile}`}
+				{running ? 'installing…' : label(preview.result.profile, preview.result.pack.slug)}
 			</button>
 		</div>
 	{:else if job?.kind === 'install' && job.phase === 'done' && job.result}
@@ -470,6 +570,86 @@
 	}
 	.replace input {
 		margin-top: 0.2rem;
+	}
+	.versionbox {
+		margin-top: 0.6rem;
+		border: 1px solid var(--line-soft);
+		border-radius: 10px;
+		background: var(--panel-2);
+		padding: 0.6rem 0.7rem;
+	}
+	.vhead {
+		margin: 0 0 0.4rem;
+		font-size: 0.8rem;
+	}
+	.versions {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		max-height: 17rem;
+		overflow-y: auto;
+		display: grid;
+		gap: 0.1rem;
+	}
+	.vrow {
+		display: grid;
+		grid-template-columns: 6.5rem 3.5rem auto 1fr auto;
+		gap: 0.45rem;
+		align-items: baseline;
+		width: 100%;
+		text-align: left;
+		background: none;
+		border: 0;
+		border-bottom: 1px solid var(--line-soft);
+		padding: 0.3rem 0.2rem;
+		color: var(--text);
+		font: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.vrow:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--moss) 8%, transparent);
+	}
+	li.off .vrow {
+		color: var(--faint);
+		cursor: not-allowed;
+	}
+	li.picked .vrow {
+		background: color-mix(in srgb, var(--moss) 14%, transparent);
+		color: var(--moss);
+	}
+	.vnum {
+		font-size: 0.8rem;
+	}
+	.vtag {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--faint);
+	}
+	.vwhen {
+		font-size: 0.72rem;
+		white-space: nowrap;
+	}
+	.vwhy {
+		grid-column: 4 / -1;
+		font-size: 0.74rem;
+		color: var(--amber);
+		text-align: right;
+	}
+	.pickedline {
+		margin: 0.45rem 0 0;
+		font-size: 0.8rem;
+	}
+	.linkbtn {
+		background: none;
+		border: 0;
+		color: var(--moss);
+		font: inherit;
+		font-size: inherit;
+		padding: 0 0.2rem;
+		cursor: pointer;
+		text-decoration: underline;
 	}
 	.status {
 		min-height: 1.4em;

@@ -180,3 +180,23 @@ func TestPackPanelSaysSoWhenTheDaemonHasNoR2(t *testing.T) {
 		t.Fatalf("the refusal should name the reason: %s", rec.Body.String())
 	}
 }
+
+func TestPackVersionsNeedsTheFormTokenAndReportsBadSources(t *testing.T) {
+	f, _, _ := newPackFixture(t)
+
+	rec := f.do("POST", "/api/pack/versions", `{"source":"cobblemon-fabric"}`, nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("versions without a token = %d", rec.Code)
+	}
+
+	// A .mrpack URL names one version; the API says so rather than pretending the
+	// list is empty.
+	rec = f.do("POST", "/api/pack/versions",
+		`{"token":"`+f.formToken(t)+`","source":"https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack"}`, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a .mrpack source = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "nothing to choose") {
+		t.Fatalf("the refusal should explain itself: %s", rec.Body.String())
+	}
+}
