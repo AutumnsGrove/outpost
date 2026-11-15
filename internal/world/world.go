@@ -88,8 +88,18 @@ func List(ctx context.Context, st Store, bucket string) ([]World, error) {
 			worlds = append(worlds, w)
 		case !inside && strings.HasSuffix(o.Key, ".tar.gz"):
 			// Not under profiles/: the pre-profile world, or something an older
-			// build left behind. Worth naming, because nothing else will.
-			worlds = append(worlds, World{Key: o.Key, Size: o.Size})
+			// build left behind. Worth naming, because nothing else will. Its marker
+			// sits beside it — `current/pack.json` next to `current/world.tar.gz` is
+			// what publish wrote before profiles — so say what made it when that key
+			// is still there.
+			w := World{Key: o.Key, Size: o.Size}
+			if raw, err := st.Get(ctx, bucket, markerBeside(o.Key)); err == nil {
+				var p publish.Pack
+				if json.Unmarshal(raw, &p) == nil {
+					w.Pack = &p
+				}
+			}
+			worlds = append(worlds, w)
 		}
 	}
 
@@ -171,18 +181,19 @@ func Import(ctx context.Context, st Store, opts ImportOptions) (ImportResult, er
 		To:      publish.ProfilePrefix(opts.Profile) + ArchiveName,
 	}
 
-	src, err := st.Stat(ctx, opts.WorldBucket, from)
-	if err != nil {
+	if _, err := st.Stat(ctx, opts.WorldBucket, from); err != nil {
 		if errors.Is(err, r2.ErrNotFound) {
 			return res, fmt.Errorf("no world at %s/%s to import", opts.WorldBucket, from)
 		}
 		return res, err
 	}
 
-	switch _, err := st.Stat(ctx, opts.WorldBucket, res.To); {
+	switch here, err := st.Stat(ctx, opts.WorldBucket, res.To); {
 	case err == nil:
 		res.AlreadyThere = true
-		res.Bytes = src.Size
+		// The size of the copy that is actually in the profile, not the source's:
+		// "profile X already has a world (84 MB)" is about the one being kept.
+		res.Bytes = here.Size
 		return res, nil
 	case !errors.Is(err, r2.ErrNotFound):
 		return res, err
@@ -190,6 +201,13 @@ func Import(ctx context.Context, st Store, opts ImportOptions) (ImportResult, er
 
 	n, err := st.Copy(ctx, opts.WorldBucket, from, res.To)
 	if err != nil {
+		// A copy that failed the size check — or died mid-multipart — can still
+		// leave an object at the destination, and the idempotency check above would
+		// then adopt that partial world for ever. A retry has to retry.
+		if rmErr := st.Remove(ctx, opts.WorldBucket, res.To); rmErr != nil && !errors.Is(rmErr, r2.ErrNotFound) {
+			return res, fmt.Errorf("copy %s into profile %s failed (%w) and the partial copy at %s could not be removed (%v); delete it before retrying",
+				from, opts.Profile, err, res.To, rmErr)
+		}
 		return res, fmt.Errorf("copy %s into profile %s: %w", from, opts.Profile, err)
 	}
 	res.Bytes = n
@@ -229,4 +247,11 @@ func writeMarker(ctx context.Context, st Store, opts ImportOptions) (publish.Pac
 		}
 	}
 	return marker, publish.WriteMarker(ctx, st, opts.WorldBucket, opts.Profile, marker)
+}
+
+// markerBeside is where the marker for a world key lives: the same path with
+// pack.json in place of the archive. That is the profile layout and the
+// pre-profile one alike, because both put the two files side by side.
+func markerBeside(key string) string {
+	return strings.TrimSuffix(key, ArchiveName) + publish.PackFile
 }
