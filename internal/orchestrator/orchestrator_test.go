@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,12 +129,25 @@ func (d *fakeDNS) SetA(_ context.Context, ip string) error {
 // "default" profile is installed unless a test says otherwise.
 type fakeAssets struct {
 	objects map[string]bool
+	// files holds the contents of the small objects Get is used for, which is the
+	// profile's pack.json.
+	files map[string]string
 }
 
 func newFakeAssets() *fakeAssets {
-	return &fakeAssets{objects: map[string]bool{
-		"mc-assets/profiles/default/server/fabric-server-launch.jar": true,
-	}}
+	return &fakeAssets{
+		objects: map[string]bool{
+			"mc-assets/profiles/default/server/fabric-server-launch.jar": true,
+		},
+		files: map[string]string{},
+	}
+}
+
+func (f *fakeAssets) Get(_ context.Context, bucket, key string) ([]byte, error) {
+	if body, ok := f.files[bucket+"/"+key]; ok {
+		return []byte(body), nil
+	}
+	return nil, r2.ErrNotFound
 }
 
 func (f *fakeAssets) Stat(_ context.Context, bucket, key string) (r2.Info, error) {
@@ -189,7 +203,7 @@ func testConfig() *config.Config {
 		},
 		Regions: map[string]config.Region{
 			// 10 an hour keeps the cost arithmetic easy to read in assertions.
-			"eu": {Location: "nbg1", ServerType: "cx32", HourlyRate: 10},
+			"eu": {Location: "nbg1", ServerType: "cx23"},
 		},
 		Cloudflare: config.Cloudflare{ZoneID: "zone", RecordName: "mc.test"},
 		Hetzner: config.Hetzner{
@@ -295,7 +309,7 @@ func TestFullLifecycleStartsIdlesAndCleansUp(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if got := h.mustState(t); got != store.Provisioning {
@@ -381,8 +395,14 @@ func TestFullLifecycleStartsIdlesAndCleansUp(t *testing.T) {
 	if got, want := sess.DurationSeconds, int64(42*60); got != want {
 		t.Fatalf("billed seconds = %d, want %d", got, want)
 	}
-	if got, want := sess.CostUSD, 7.0; got < want-0.01 || got > want+0.01 {
-		t.Fatalf("session cost = %.4f, want ~%.2f", got, want)
+	// The cost is the rate the box was rented at, times the time it existed. The
+	// rate comes from the plan table, so this stays true when a price changes.
+	rate, ok := hetzner.Rate("cx23")
+	if !ok {
+		t.Fatal("cx23 is not in the plan table")
+	}
+	if want := rate * 42 * 60 / 3600; math.Abs(sess.CostUSD-want) > 1e-9 {
+		t.Fatalf("session cost = %.6f, want %.6f from the plan's rate", sess.CostUSD, want)
 	}
 	if len(sess.VPSID) == 0 {
 		t.Fatal("session lost its server id")
@@ -401,7 +421,7 @@ func TestWorldSaveFailureKeepsTheServerAlive(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	h.probeErr = nil
@@ -434,7 +454,7 @@ func TestRetrySucceedsAfterOneFailure(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	h.tick(t) // running
@@ -462,7 +482,7 @@ func TestProvisioningTimeoutTearsTheServerDown(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
@@ -487,7 +507,7 @@ func TestVanishedServerReturnsToOffline(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	st, _ := h.store.GetState()
@@ -509,10 +529,10 @@ func TestStartRefusesWhenAlreadyRunning(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if _, err := h.o.Start(ctx, "eu"); err == nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err == nil {
 		t.Fatal("second start should be refused")
 	}
 }
@@ -536,7 +556,7 @@ func TestStartRefusesWhenTheVPSNeverCameUpHardlyMatters(t *testing.T) {
 	// generated: v1's failure mode was backing up on every death, this is the
 	// mirror of it.
 	h := newHarness(t)
-	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
@@ -560,7 +580,7 @@ func TestStartRefusesFromErrorWithALiveVPS(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	h.tick(t) // RUNNING
@@ -577,7 +597,7 @@ func TestStartRefusesFromErrorWithALiveVPS(t *testing.T) {
 		t.Fatalf("state = %s, want ERROR", got)
 	}
 
-	if _, err := h.o.Start(ctx, "eu"); err == nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err == nil {
 		t.Fatal("starting from ERROR with a live server should be refused")
 	} else if !strings.Contains(err.Error(), "reset") {
 		t.Fatalf("error should say what to do: %v", err)
@@ -596,7 +616,7 @@ func TestStartRefusesWhenHetznerHasAStrayServer(t *testing.T) {
 		t.Fatalf("seed stray: %v", err)
 	}
 
-	if _, err := h.o.Start(ctx, "eu"); err == nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err == nil {
 		t.Fatal("start should be refused while a labelled server exists")
 	} else if !strings.Contains(err.Error(), "already exist") {
 		t.Fatalf("error should name the problem: %v", err)
@@ -615,7 +635,7 @@ func TestStartIsRefusedWhileAnotherProcessHoldsTheLock(t *testing.T) {
 	}
 	defer release()
 
-	if _, err := h.o.Start(context.Background(), "eu"); err == nil {
+	if _, err := h.o.Start(context.Background(), "eu", ""); err == nil {
 		t.Fatal("start should be refused while another process is renting")
 	}
 	if h.servers.count() != 0 {
@@ -628,7 +648,7 @@ func TestRCONFailureLimitIsConfigurable(t *testing.T) {
 	ctx := context.Background()
 
 	h.o.cfg.Server.RCONFailureLimit = 2
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	h.tick(t) // RUNNING
@@ -648,23 +668,31 @@ func TestStartFallsBackWhenThePreferredSizeIsSoldOut(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	h.servers.unavailable = map[string]int{"cx32": 1}
+	h.servers.unavailable = map[string]int{"cx23": 1}
 	h.o.cfg.Regions["eu"] = config.Region{
 		Location:      "nbg1",
-		ServerType:    "cx32",
-		HourlyRate:    10,
-		FallbackTypes: []string{"cx31"},
+		ServerType:    "cx23",
+		FallbackTypes: []string{"cx33"},
 	}
 
-	st, err := h.o.Start(ctx, "eu")
+	st, err := h.o.Start(ctx, "eu", "")
 	if err != nil {
 		t.Fatalf("start should fall back, got %v", err)
 	}
-	if st.ServerType != "cx31" {
+	if st.ServerType != "cx33" {
 		t.Fatalf("server type = %q, want the fallback", st.ServerType)
 	}
-	if len(h.servers.created) != 2 || h.servers.created[0] != "cx32" || h.servers.created[1] != "cx31" {
+	if len(h.servers.created) != 2 || h.servers.created[0] != "cx23" || h.servers.created[1] != "cx33" {
 		t.Fatalf("create order = %v", h.servers.created)
+	}
+	// The session records the rate of the box that was actually rented, not the one
+	// that was asked for.
+	sess, err := h.store.CurrentSession()
+	if err != nil || sess == nil {
+		t.Fatalf("session: %v", err)
+	}
+	if rate, _ := hetzner.Rate("cx33"); sess.HourlyRate != rate {
+		t.Fatalf("session rate = %v, want cx33's %v", sess.HourlyRate, rate)
 	}
 	if got := h.mustState(t); got != store.Provisioning {
 		t.Fatalf("state = %s", got)
@@ -677,11 +705,11 @@ func TestStartDoesNotFallBackOnRealErrors(t *testing.T) {
 
 	h.servers.createErr = errors.New("invalid token")
 	h.o.cfg.Regions["eu"] = config.Region{
-		Location: "nbg1", ServerType: "cx32", HourlyRate: 10,
-		FallbackTypes: []string{"cx31", "cx21"},
+		Location: "nbg1", ServerType: "cx23",
+		FallbackTypes: []string{"cx33", "cax21"},
 	}
 
-	if _, err := h.o.Start(ctx, "eu"); err == nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err == nil {
 		t.Fatal("expected the error")
 	}
 	if len(h.servers.created) != 1 {
@@ -693,17 +721,17 @@ func TestStartReportsEverySizeItTried(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	h.servers.unavailable = map[string]int{"cx32": 1, "cx31": 1}
+	h.servers.unavailable = map[string]int{"cx23": 1, "cx33": 1}
 	h.o.cfg.Regions["eu"] = config.Region{
-		Location: "nbg1", ServerType: "cx32", HourlyRate: 10,
-		FallbackTypes: []string{"cx31", "cx21"},
+		Location: "nbg1", ServerType: "cx23",
+		FallbackTypes: []string{"cx33", "cax21"},
 	}
 
-	st, err := h.o.Start(ctx, "eu")
+	st, err := h.o.Start(ctx, "eu", "")
 	if err != nil {
 		t.Fatalf("third size should succeed: %v", err)
 	}
-	if st.ServerType != "cx21" {
+	if st.ServerType != "cax21" {
 		t.Fatalf("type = %q", st.ServerType)
 	}
 	if len(h.servers.created) != 3 {
@@ -714,7 +742,7 @@ func TestStartReportsEverySizeItTried(t *testing.T) {
 func TestProbeUsesTheTailnetAddressNotTheName(t *testing.T) {
 	h := newHarness(t)
 	h.resolveIP = "100.64.0.5"
-	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	h.tick(t)
@@ -730,7 +758,7 @@ func TestProbeFallsBackToTheNameWhenTheTailnetCannotAnswer(t *testing.T) {
 	h := newHarness(t)
 	h.resolveErr = errors.New("no tailscale here")
 
-	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	st, _ := h.store.GetState()
@@ -748,7 +776,7 @@ func TestTickSkipsWhileAnotherProcessHoldsTheLock(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if err := h.o.Stop(ctx); err != nil {
@@ -784,7 +812,7 @@ func TestTickSkipsWhileAnotherProcessHoldsTheLock(t *testing.T) {
 func runningHarness(t *testing.T) *harness {
 	t.Helper()
 	h := newHarness(t)
-	if _, err := h.o.Start(context.Background(), "eu"); err != nil {
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	h.tick(t)
@@ -902,7 +930,7 @@ func TestDNSFailureIsRetriedWhileTheServerIsUp(t *testing.T) {
 	ctx := context.Background()
 	h.dns.err = errors.New("cloudflare: 500")
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatal(err)
 	}
 	h.tick(t) // RUNNING, but the record did not take
@@ -922,7 +950,7 @@ func TestStartAdoptsAServerWhoseCreateReplyWasLost(t *testing.T) {
 	h := newHarness(t)
 	h.servers.lostReply = true
 
-	st, err := h.o.Start(context.Background(), "eu")
+	st, err := h.o.Start(context.Background(), "eu", "")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -1014,7 +1042,7 @@ func TestStartRefusesAProfileWithNothingInstalled(t *testing.T) {
 	h := newHarness(t)
 	h.assets.objects = map[string]bool{}
 
-	_, err := h.o.Start(context.Background(), "eu")
+	_, err := h.o.Start(context.Background(), "eu", "")
 	if err == nil || !strings.Contains(err.Error(), "no server installed") {
 		t.Fatalf("want a refusal naming the empty profile, got %v", err)
 	}
@@ -1032,7 +1060,7 @@ func TestTheWorldIsFiledUnderTheProfileTheSessionBooted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.o.Start(ctx, "eu"); err != nil {
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	st, _ := h.store.GetState()
@@ -1079,5 +1107,64 @@ func TestSetActiveProfileRefusesAProfileNameThatIsNotOne(t *testing.T) {
 	}
 	if p, _ := h.o.ActiveProfile(); p != "homestead" {
 		t.Fatalf("active profile = %q", p)
+	}
+}
+
+func TestStartRefusesAPlanTooSmallForTheActivePack(t *testing.T) {
+	h := newHarness(t)
+	// The profile's manifest says the pack wants 8 GB.
+	h.assets.files["mc-assets/profiles/default/pack.json"] = `{"slug":"cobblemon","name":"Cobblemon","memoryGB":8}`
+
+	_, err := h.o.Start(context.Background(), "eu", "cx23")
+	if err == nil {
+		t.Fatal("a 4 GB plan was rented for an 8 GB pack")
+	}
+	// The refusal names the plan that would work, so it is actionable.
+	if !strings.Contains(err.Error(), "cx23 has 4 GB") || !strings.Contains(err.Error(), "cx33") {
+		t.Fatalf("error = %q", err)
+	}
+	if len(h.servers.created) != 0 {
+		t.Fatalf("a refusal rented %v", h.servers.created)
+	}
+}
+
+func TestStartRemembersTheChosenPlanAndItsRate(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	st, err := h.o.Start(ctx, "eu", "cx33")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if st.ServerType != "cx33" {
+		t.Fatalf("server type = %q", st.ServerType)
+	}
+	if got, _ := h.store.MetaGet(metaServerType); got != "cx33" {
+		t.Fatalf("remembered plan = %q", got)
+	}
+
+	// The rate travels with the session, not with config: that is what keeps a
+	// past session's cost from changing when a plan is repriced.
+	sess, err := h.store.CurrentSession()
+	if err != nil || sess == nil {
+		t.Fatalf("session: %v", err)
+	}
+	if rate, _ := hetzner.Rate("cx33"); sess.HourlyRate != rate {
+		t.Fatalf("session rate = %v, want %v", sess.HourlyRate, rate)
+	}
+
+	// And the choice is what the next start uses when nobody names one.
+	if got := h.o.SelectedServerType(); got != "cx33" {
+		t.Fatalf("selected type = %q", got)
+	}
+}
+
+func TestStartFallsBackToTheConfiguredPlanWhenNothingIsChosen(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if len(h.servers.created) != 1 || h.servers.created[0] != "cx23" {
+		t.Fatalf("created = %v, want the region's default", h.servers.created)
 	}
 }

@@ -30,32 +30,26 @@ server:
 
 # Every key here is a valid `outpost start <region>` argument.
 #
-# `server_type` decides the price far more than the provider does. Hetzner
-# renamed and repriced its plans in June 2026: CX22 is gone, and these are the
-# current numbers from the API (net, EUR, Nuremberg, 2026-11-12):
+# `server_type` is the plan this region rents *by default*. It is not the menu:
+# `internal/hetzner/plans.go` holds the sizes, vCPU, RAM and EUR/hour for the CX
+# and CAX lines, the page offers a picker built from that table, and the choice
+# is remembered across sessions. The price therefore comes from the plan, not
+# from this file — there is one table, so the readout and the RAM guard cannot
+# disagree.
 #
-#   cx23   2c / 4 GB   €0.0104/h   ~€0.021 per 2 h session   ← default
-#   cx33   4c / 8 GB   €0.0160/h   ~€0.032 per session, room for a modpack
-#   cax11  2c / 4 GB   €0.0112/h   ARM
-#   cax21  4c / 8 GB   €0.0200/h   ARM
-#
-# Ashburn is no longer worth listing: its cheapest 4-8 GB plan is cpx21 at
-# €0.0601/h, six times Nuremberg. Swapping size is a one-line edit here; the
-# region key is just the argument to `outpost start <key>`.
-#
-# `hourly_rate` is a display estimate for `outpost status`, in EUR because that
-# is what Hetzner bills. It is never used to bill anything.
+# Fallbacks are not sizes you can choose. They are what to try when the chosen
+# plan is *sold out*: Hetzner answers with 412 resource_unavailable rather than
+# queueing, so without a list one missing size means no session at all. Keep them
+# at least as big as server_type, or a sold-out rental lands on a box too small
+# for the pack.
 regions:
   eu:
     location: nbg1            # Nuremberg
-    server_type: cx23         # 2 vCPU, 4 GB
-    hourly_rate: 0.0104       #   the rate of the type you expect to get
-    # Tried in order when server_type has no capacity. Hetzner answers a
-    # sold-out plan with 412 resource_unavailable rather than queueing, so
-    # without this one missing size means no session at all.
+    server_type: cx23         # 2 vCPU, 4 GB  (see internal/hetzner/plans.go)
+    # Tried in order when the chosen plan has no capacity at this location.
     fallback_types:
-      - cx33                  # 4 vCPU, 8 GB, EUR 0.0160/hr
-      - cax11                 # 2 vCPU, 4 GB, ARM, EUR 0.0112/hr
+      - cx33                  # 4 vCPU, 8 GB
+      - cax11                 # 2 vCPU, 4 GB, ARM
 
 cloudflare:
   zone_id: "your-zone-id"

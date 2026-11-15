@@ -60,7 +60,7 @@ func TestSessionsAndTotals(t *testing.T) {
 	s := open(t)
 	start := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 
-	id, err := s.StartSession(start, "eu", "cx32", "1")
+	id, err := s.StartSession(start, "eu", "cx32", 0.0096, "1")
 	if err != nil {
 		t.Fatalf("start session: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSessionsAndTotals(t *testing.T) {
 
 	// An open session must not count toward lifetime totals, or the dashboard
 	// would bill you for a server you are still using.
-	if _, err := s.StartSession(start, "eu", "cx32", "2"); err != nil {
+	if _, err := s.StartSession(start, "eu", "cx32", 0.0096, "2"); err != nil {
 		t.Fatalf("start session: %v", err)
 	}
 	if _, _, count, _ := s.Totals(); count != 1 {
@@ -96,7 +96,7 @@ func TestSessionsAndTotals(t *testing.T) {
 
 func TestUpdateSessionPlayersOnlyRaises(t *testing.T) {
 	s := open(t)
-	id, err := s.StartSession(time.Now().UTC(), "eu", "cx32", "1")
+	id, err := s.StartSession(time.Now().UTC(), "eu", "cx32", 0.0096, "1")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -239,5 +239,64 @@ func TestOpenAddsTheProfileColumnToAnExistingDatabase(t *testing.T) {
 	}
 	if got, _ := s.GetState(); got.Profile != "homestead" {
 		t.Fatalf("profile did not round-trip: %+v", got)
+	}
+}
+
+func TestOpenAddsTheHourlyRateColumnToAnExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A sessions table from before the rate was stored with the session.
+	if _, err := db.Exec(`
+		CREATE TABLE sessions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			started_at TEXT NOT NULL,
+			ended_at TEXT NOT NULL DEFAULT '',
+			duration_seconds INTEGER NOT NULL DEFAULT 0,
+			cost_usd REAL NOT NULL DEFAULT 0,
+			max_players INTEGER NOT NULL DEFAULT 0,
+			region TEXT NOT NULL DEFAULT '',
+			server_type TEXT NOT NULL DEFAULT '',
+			vps_id TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO sessions (started_at, region, server_type, vps_id, ended_at, cost_usd)
+		VALUES ('2026-11-01T10:00:00Z', 'eu', 'cx23', '7', '2026-11-01T11:00:00Z', 0.0096);
+	`); err != nil {
+		t.Fatalf("old schema: %v", err)
+	}
+	db.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open old database: %v", err)
+	}
+	defer s.Close()
+
+	sess, err := s.CurrentSession()
+	if err != nil || sess == nil {
+		t.Fatalf("session: %v", err)
+	}
+	// An old row keeps its recorded cost and reports an unknown rate rather than a
+	// wrong one; the caller falls back to the plan table.
+	if sess.HourlyRate != 0 {
+		t.Fatalf("hourly rate = %v, want the zero an old row has to report", sess.HourlyRate)
+	}
+	if sess.CostUSD != 0.0096 {
+		t.Fatalf("cost = %v", sess.CostUSD)
+	}
+
+	// And new rows carry it.
+	if _, err := s.StartSession(time.Now().UTC(), "eu", "cx33", 0.0144, "8"); err != nil {
+		t.Fatalf("start session: %v", err)
+	}
+	latest, err := s.CurrentSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.HourlyRate != 0.0144 {
+		t.Fatalf("new row rate = %v", latest.HourlyRate)
 	}
 }

@@ -250,13 +250,16 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 func (s *Server) action(w http.ResponseWriter, r *http.Request, raw []byte) {
 	var body struct {
 		Action string `json:"action"`
+		// Type is the plan the Start button rents. It is remembered, so the next
+		// start — from the page or the CLI — rents the same one.
+		Type string `json:"type"`
 	}
 	_ = json.Unmarshal(raw, &body)
 
 	ctx := r.Context()
 	switch body.Action {
 	case "start":
-		st, err := s.orch.Start(ctx, s.orch.DefaultRegion())
+		st, err := s.orch.Start(ctx, s.orch.DefaultRegion(), body.Type)
 		if err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
@@ -400,6 +403,9 @@ func (s *Server) players(w http.ResponseWriter, r *http.Request, raw []byte) {
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Region string `json:"region"`
+		// Type is the plan to rent. Empty takes the remembered choice, then the
+		// region's default, so a caller that does not care is unaffected.
+		Type string `json:"type"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -408,7 +414,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		body.Region = s.orch.DefaultRegion()
 	}
 
-	st, err := s.orch.Start(r.Context(), body.Region)
+	st, err := s.orch.Start(r.Context(), body.Region, body.Type)
 	if err != nil {
 		s.log.Error("start failed", "err", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})

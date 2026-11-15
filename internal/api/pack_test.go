@@ -289,3 +289,36 @@ func TestDestructivePackEndpointsRefuseWhileAServerIsRented(t *testing.T) {
 		}
 	}
 }
+
+func TestOverviewOffersThePlansAndPricesThem(t *testing.T) {
+	f, _, _ := newPackFixture(t)
+	rec := f.do("GET", "/api/overview", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("overview = %d: %s", rec.Code, rec.Body.String())
+	}
+	var out overviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Plans) < 4 {
+		t.Fatalf("plans = %+v", out.Plans)
+	}
+	for _, p := range out.Plans {
+		if p.Type == "" || p.VCPU <= 0 || p.RAMGB <= 0 || p.HourlyRate <= 0 {
+			t.Fatalf("plan %+v is missing what the picker shows", p)
+		}
+	}
+	// The default opens on a plan the server would rent, not on an empty string.
+	if out.SelectedType == "" {
+		t.Fatal("no plan was selected")
+	}
+	found := false
+	for _, p := range out.Plans {
+		if p.Type == out.SelectedType {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("selected %q is not in the list", out.SelectedType)
+	}
+}
