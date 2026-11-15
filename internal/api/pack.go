@@ -261,7 +261,7 @@ func (s *Server) packDelete(w http.ResponseWriter, r *http.Request, raw []byte) 
 		return
 	}
 
-	res, err := s.packs.DeleteProfile(r.Context(), body.Profile, nil)
+	res, err := s.packs.DeleteProfile(r.Context(), body.Profile, active, nil)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return

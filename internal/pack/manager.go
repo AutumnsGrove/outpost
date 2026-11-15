@@ -590,11 +590,18 @@ type ProfileDelete struct {
 // It refuses to remove the active profile. Switching away first is one command
 // (`outpost pack use <other>`), and deleting the thing Start boots would leave
 // the next session failing at "profile X has no server installed", which is a
-// confusing way to learn what you did. The caller knows the active profile (the
-// daemon and the CLI both read it from the orchestrator), so this does not guess.
-func (m *Manager) DeleteProfile(ctx context.Context, profile string, now func() time.Time) (ProfileDelete, error) {
+// confusing way to learn what you did. `active` is passed in because the active
+// profile is the orchestrator's business, and it is checked here rather than only
+// at the call sites so a switch between reading it and deleting cannot slip past.
+func (m *Manager) DeleteProfile(ctx context.Context, profile, active string, now func() time.Time) (ProfileDelete, error) {
 	if err := publish.ValidateProfile(profile); err != nil {
 		return ProfileDelete{}, err
+	}
+	// Checked here rather than only by the two callers: the page reads the active
+	// profile and then deletes, and a switch in between would otherwise delete the
+	// profile Start boots.
+	if profile == active {
+		return ProfileDelete{}, fmt.Errorf("profile %q is the active one; switch to another profile first, or delete just its world", profile)
 	}
 	release, err := m.Lease()
 	if err != nil {
