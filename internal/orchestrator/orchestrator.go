@@ -25,6 +25,9 @@ import (
 	"outpost/internal/config"
 	"outpost/internal/dns"
 	"outpost/internal/hetzner"
+	"outpost/internal/pack"
+	"outpost/internal/publish"
+	"outpost/internal/r2"
 	"outpost/internal/rcon"
 	"outpost/internal/remote"
 	"outpost/internal/store"
@@ -57,6 +60,14 @@ type Records interface {
 	SetA(ctx context.Context, ip string) error
 }
 
+// Assets is the asset bucket, asked one question: is there a server to boot for
+// this profile? A missing one is refused before renting, because the alternative
+// is a VPS that pulls nothing, generates a vanilla world, never answers RCON, and
+// times out fifteen minutes later.
+type Assets interface {
+	Stat(ctx context.Context, bucket, key string) (r2.Info, error)
+}
+
 // Remote is the SSH surface Outpost needs.
 type Remote interface {
 	Run(ctx context.Context, host, cmd string) (string, error)
@@ -73,6 +84,7 @@ type Deps struct {
 	Remote  Remote
 	Probe   Probe
 	Exec    Exec
+	Assets  Assets
 	Now     func() time.Time
 
 	// Resolve turns the VPS's tailnet name into an address without DNS. See
@@ -128,6 +140,9 @@ func NewWith(cfg *config.Config, st *store.Store, log *slog.Logger, deps Deps) *
 	}
 	if deps.Exec != nil {
 		o.deps.Exec = deps.Exec
+	}
+	if deps.Assets != nil {
+		o.deps.Assets = deps.Assets
 	}
 	if deps.Now != nil {
 		o.deps.Now = deps.Now
@@ -265,6 +280,65 @@ func (o *Orchestrator) Health() Health {
 	}
 }
 
+// metaProfile is the active pack+world pair. It lives in the meta table rather
+// than in config.yaml because the page switches it, and because it is state
+// ("what am I playing") rather than configuration.
+const metaProfile = "profile"
+
+// ActiveProfile is the pack+world pair the next session boots.
+func (o *Orchestrator) ActiveProfile() (string, error) {
+	p, err := o.store.MetaGet(metaProfile)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(p) == "" {
+		return publish.DefaultProfile, nil
+	}
+	return p, nil
+}
+
+// SetActiveProfile switches what the next session boots. It refuses while
+// anything is rented: a running server already pulled one profile's assets and
+// will upload its world to that profile, so a switch mid-session is a world in
+// the wrong drawer.
+func (o *Orchestrator) SetActiveProfile(profile string) error {
+	if err := publish.ValidateProfile(profile); err != nil {
+		return err
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	st, err := o.store.GetState()
+	if err != nil {
+		return err
+	}
+	if st.State != store.Offline {
+		return fmt.Errorf("the server is %s; switch packs when it is offline", st.State)
+	}
+	return o.store.MetaSet(metaProfile, profile)
+}
+
+// requireAssets refuses to rent for a profile that has no server files in R2.
+func (o *Orchestrator) requireAssets(ctx context.Context, profile string) error {
+	assets := o.deps.Assets
+	if assets == nil {
+		c, err := r2.New(o.cfg.R2.AccountID, o.cfg.Secrets.R2AccessKey, o.cfg.Secrets.R2SecretKey)
+		if err != nil {
+			return err
+		}
+		assets = c
+	}
+	key := "profiles/" + profile + "/server/fabric-server-launch.jar"
+	if _, err := assets.Stat(ctx, o.cfg.Server.AssetBucket, key); err != nil {
+		if errors.Is(err, r2.ErrNotFound) {
+			return fmt.Errorf("profile %q has no server installed (no %s in %s); publish a pack to it first — see the Modpack panel",
+				profile, key, o.cfg.Server.AssetBucket)
+		}
+		return fmt.Errorf("check the %q profile's assets: %w", profile, err)
+	}
+	return nil
+}
+
 // Start rents a VPS. Provisioning itself is Tick's job, so a crash between "we
 // asked Hetzner" and "Hetzner answered" cannot lose the server: the vps_id is
 // committed as soon as it exists.
@@ -320,6 +394,25 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		return st, err
 	}
 
+	// A start that lands in the middle of an install would pull a profile whose
+	// keys are half old and half new — the same failure as a missing profile, only
+	// harder to see, so it is refused the same way.
+	if profile, since, busy := pack.InstallingNow(o.cfg.Server.PackDir); busy {
+		return st, fmt.Errorf("profile %q is being installed (%s); wait for it to finish before starting",
+			profile, since.Local().Format("15:04"))
+	}
+
+	// Fixed for the whole session: the boot pulls this profile's assets and the
+	// shutdown uploads this profile's world, so the pair cannot be half-switched.
+	profile, err := o.ActiveProfile()
+	if err != nil {
+		return st, err
+	}
+	if err := o.requireAssets(ctx, profile); err != nil {
+		return st, err
+	}
+	st.Profile = profile
+
 	password, err := randomHex(24)
 	if err != nil {
 		return st, err
@@ -332,6 +425,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 
 	userData, err := cloudinit.Render(cloudinit.Data{
 		Hostname:         hostname,
+		Profile:          profile,
 		MCPort:           o.cfg.Server.MCPort,
 		RCONPassword:     password,
 		TailscaleAuthKey: o.cfg.Secrets.TailscaleAuthKey,
@@ -361,6 +455,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		Region:       region,
 		ServerType:   serverType,
 		RCONPassword: password,
+		Profile:      profile,
 		StartedAt:    o.now(),
 	}
 	if err := o.store.SetState(st); err != nil {
@@ -868,16 +963,26 @@ func (o *Orchestrator) persistWorld(ctx context.Context, st store.ServerState) (
 
 	// rclone runs on the VPS, so the world crosses the network once (out to R2)
 	// instead of twice (down to the Potato and back up).
+	// The profile the session booted, not the profile that is active now: a switch
+	// while this server was up must not file its world under the new one.
+	profile := st.Profile
+	if profile == "" {
+		profile = publish.DefaultProfile
+	}
+	if err := publish.ValidateProfile(profile); err != nil {
+		return 0, err
+	}
+
 	script := fmt.Sprintf(`set -e
 cd /opt/minecraft
 tar -czf /tmp/outpost-world.tar.gz world
 SIZE=$(stat -c%%s /tmp/outpost-world.tar.gz)
 STAMP=$(date -u +%%Y%%m%%dT%%H%%M%%SZ)
-rclone copyto /tmp/outpost-world.tar.gz r2:%[1]s/current/world.tar.gz --retries 3
-rclone copyto /tmp/outpost-world.tar.gz r2:%[1]s/backups/world-$STAMP.tar.gz --retries 3
-rclone delete r2:%[1]s/backups/ --include "world-*.tar.gz" --min-age 14d || true
+rclone copyto /tmp/outpost-world.tar.gz r2:%[1]s/profiles/%[2]s/world.tar.gz --retries 3
+rclone copyto /tmp/outpost-world.tar.gz r2:%[1]s/profiles/%[2]s/backups/world-$STAMP.tar.gz --retries 3
+rclone delete r2:%[1]s/profiles/%[2]s/backups/ --include "world-*.tar.gz" --min-age 14d || true
 rm -f /tmp/outpost-world.tar.gz
-echo SIZE=$SIZE`, o.cfg.Server.WorldBucket)
+echo SIZE=$SIZE`, o.cfg.Server.WorldBucket, profile)
 
 	out, err := o.deps.Remote.Run(ctx, host, script)
 	if err != nil {

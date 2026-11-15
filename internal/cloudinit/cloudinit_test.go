@@ -13,6 +13,7 @@ import (
 func sample() Data {
 	return Data{
 		Hostname:         "outpost-eu-abc123",
+		Profile:          "cobblemon",
 		MCPort:           25565,
 		RCONPassword:     "deadbeef",
 		TailscaleAuthKey: "tskey-auth-abc",
@@ -58,10 +59,10 @@ func TestRenderKeepsV1BucketLayout(t *testing.T) {
 	// These keys are read by the orchestrator and by a friend's Minecraft client.
 	// They are a fresh start (PLAN.md decision 6), but the layout is load-bearing.
 	for _, want := range []string{
-		"r2:mc-assets/server/",
-		"r2:mc-assets/mods/",
-		"r2:mc-assets/scripts/",
-		"r2:mc-worlds/current/world.tar.gz",
+		"r2:mc-assets/profiles/cobblemon/server/",
+		"r2:mc-assets/profiles/cobblemon/mods/",
+		"r2:mc-assets/profiles/cobblemon/scripts/",
+		"r2:mc-worlds/profiles/cobblemon/world.tar.gz",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cloud-init no longer references %s", want)
@@ -188,7 +189,7 @@ case "$1" in
     case "`+list+`" in
       fail) echo "Failed to lsf: AccessDenied" >&2; exit 1;;
       empty) exit 0;;
-      present) printf 'backups/world-1.tar.gz\ncurrent/world.tar.gz\n'; exit 0;;
+      present) printf 'backups/world-1.tar.gz\nprofiles/cobblemon/world.tar.gz\n'; exit 0;;
     esac;;
   copyto)
     [ "`+copy+`" = fail ] && { echo "copyto: connection reset" >&2; exit 1; }
@@ -275,12 +276,31 @@ func TestRenderHandsMinecraftOwnershipBeforeThePull(t *testing.T) {
 	// The rclone pull runs as `minecraft`, and a root-owned /opt/minecraft makes
 	// every copy fail with EACCES. Order matters, so assert the order.
 	chown := strings.Index(out, "chown -R minecraft:minecraft /opt/minecraft")
-	pull := strings.Index(out, "rclone copy r2:mc-assets/server/")
+	pull := strings.Index(out, "rclone copy r2:mc-assets/profiles/cobblemon/server/")
 	if chown < 0 || pull < 0 {
 		t.Fatalf("chown=%d pull=%d", chown, pull)
 	}
 	if chown > pull {
 		t.Fatal("the minecraft user owns /opt/minecraft only after the pull; every file copy will fail")
+	}
+}
+
+func TestRenderCopiesThePlayerListAfterTheProfile(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	// The whitelist is one file for the whole server, so it has to be copied after
+	// the profile's files — otherwise a pack that ships a whitelist decides who
+	// may play on every world.
+	scripts := strings.Index(out, "profiles/cobblemon/scripts/")
+	players := strings.Index(out, "r2:mc-assets/server/$f")
+	if scripts < 0 || players < 0 {
+		t.Fatalf("scripts=%d players=%d", scripts, players)
+	}
+	if players < scripts {
+		t.Fatal("the player list is copied before the profile, so a pack's whitelist wins")
 	}
 }
 
@@ -294,9 +314,9 @@ func TestRenderPullsThePackRootBeforeOurServerProperties(t *testing.T) {
 	// to land at the server root, and it has to land before server/ — otherwise a
 	// pack's server.properties would overwrite the one with this session's RCON
 	// password in it.
-	root := strings.Index(out, "rclone copy r2:mc-assets/root/ /opt/minecraft/")
-	server := strings.Index(out, "rclone copy r2:mc-assets/server/ /opt/minecraft/")
-	scripts := strings.Index(out, "rclone copy r2:mc-assets/scripts/ /opt/minecraft/")
+	root := strings.Index(out, "rclone copy r2:mc-assets/profiles/cobblemon/root/ /opt/minecraft/")
+	server := strings.Index(out, "rclone copy r2:mc-assets/profiles/cobblemon/server/ /opt/minecraft/")
+	scripts := strings.Index(out, "rclone copy r2:mc-assets/profiles/cobblemon/scripts/ /opt/minecraft/")
 	if root < 0 || server < 0 || scripts < 0 {
 		t.Fatalf("root=%d server=%d scripts=%d; a pull is missing from the template", root, server, scripts)
 	}
@@ -316,6 +336,17 @@ func tailscaleJoin(t *testing.T, out string) string {
 	}
 	t.Fatal("no tailscale up command in the rendered cloud-config")
 	return ""
+}
+
+func TestValidateRejectsAProfileThatIsNotAName(t *testing.T) {
+	// The profile lands in rclone commands and R2 keys, so it is an allowlist.
+	for _, bad := range []string{"", "../etc", "Has Caps", "a b"} {
+		d := sample()
+		d.Profile = bad
+		if _, err := Render(d); err == nil {
+			t.Errorf("profile %q rendered into a shell command", bad)
+		}
+	}
 }
 
 func TestRenderOmitsTagsUnlessConfigured(t *testing.T) {

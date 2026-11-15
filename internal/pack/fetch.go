@@ -46,6 +46,19 @@ type Options struct {
 	// Force re-downloads files whose hash already matches.
 	Force bool
 
+	// PlanOnly stops after working out what the pack contains: no mod files are
+	// downloaded and nothing is written. This is what "paste a link and look at it
+	// before installing" runs, so it has to be cheap.
+	PlanOnly bool
+
+	// CacheDir keeps downloaded .mrpack archives, so resolving the same pack twice
+	// (preview, then install) downloads it once. Empty means the user cache dir.
+	CacheDir string
+
+	// Progress is called as the fetch advances, for a page that has to show
+	// something during a 300 MB download.
+	Progress func(phase string, done, total int)
+
 	Log *slog.Logger
 }
 
@@ -54,12 +67,29 @@ type Result struct {
 	Pack publish.Pack
 
 	// Files is everything that landed in the pack directory, Mods only the ones
-	// in mods/.
+	// in mods/. Planned is the whole list, which a PlanOnly run returns instead.
 	Files    int
 	Mods     int
 	Bytes    int64
+	Planned  []PlannedFile
 	Skipped  []string
 	Warnings []string
+}
+
+// PlannedFile is one file a fetch would put in the pack directory.
+type PlannedFile struct {
+	Path string `json:"path"` // inside the pack directory
+	Size int64  `json:"size"`
+	// Source is "pack" for a file the manifest lists and "override" for one that
+	// came out of overrides/ or server-overrides/.
+	Source string `json:"source"`
+}
+
+// report is a nil-safe progress call.
+func (o Options) report(phase string, done, total int) {
+	if o.Progress != nil {
+		o.Progress(phase, done, total)
+	}
 }
 
 // target is one file to download and where it lands.
@@ -100,12 +130,14 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 
 	// Resolve before touching the disk: a pack for another Minecraft version
 	// should cost a lookup, not a 300-file download.
-	book, cleanup, err := openSource(ctx, src, opts.Version, &pk)
+	opts.report("archive", 0, 1)
+	book, cleanup, err := openSource(ctx, src, opts, &pk)
 	if err != nil {
 		return res, err
 	}
 	defer cleanup()
 
+	opts.report("archive", 1, 1)
 	zr, err := zip.NewReader(book.reader(), book.size)
 	if err != nil {
 		return res, fmt.Errorf("read %s: not a .mrpack (a zip): %w", book.label, err)
@@ -162,13 +194,10 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 		res.Warnings = append(res.Warnings, "the pack does not mark any file as client-only, so every file is being installed on the server; if it is a client pack like Fabulously Optimized, the server will not load the client mods")
 	}
 
-	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
-		return res, fmt.Errorf("create %s: %w", opts.Dir, err)
-	}
-
 	// Where everything goes, and what the pack directory should end up holding.
 	written := map[string]bool{}
 	targets := make([]target, 0, len(wanted))
+	res.Planned = make([]PlannedFile, 0, len(wanted)+len(overrides))
 	for _, f := range wanted {
 		rel, err := place(f.Path)
 		if err != nil {
@@ -181,10 +210,18 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 		url := f.Downloads[0]
 		targets = append(targets, target{rel: rel, url: url, algo: algo, sum: sum, size: f.FileSize})
 		written[rel] = true
+		res.Bytes += f.FileSize
+		res.Mods++
+		res.Planned = append(res.Planned, PlannedFile{Path: rel, Size: f.FileSize, Source: "pack"})
 	}
 
 	// Overrides after the indexed files: the pack author's own copy of a config
 	// wins over the one a jar ships, which is the whole point of overrides.
+	type overrideFile struct {
+		rel string
+		f   *zip.File
+	}
+	var overrideFiles []overrideFile
 	for _, f := range overrides {
 		rel, ok, err := overridePath(f.Name)
 		if err != nil {
@@ -193,21 +230,33 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 		if !ok {
 			continue
 		}
-		if err := writeOverride(opts.Dir, f, rel); err != nil {
-			return res, err
-		}
+		overrideFiles = append(overrideFiles, overrideFile{rel: rel, f: f})
 		written[rel] = true
+		res.Planned = append(res.Planned, PlannedFile{Path: rel, Size: int64(f.UncompressedSize64), Source: "override"})
 		if path.Base(rel) == "server.properties" {
 			res.Warnings = append(res.Warnings, "the pack ships a server.properties; outpost generates its own (port, RCON, whitelist) and the pack's other settings there are not applied")
 		}
 	}
 
-	if bytes, err := download(ctx, opts, targets, log); err != nil {
-		return res, err
-	} else {
-		res.Bytes = bytes
+	if opts.PlanOnly {
+		// Nothing is written: this is the "show me what is in this link" path.
+		res.Pack = pk
+		sort.Slice(res.Planned, func(i, j int) bool { return res.Planned[i].Path < res.Planned[j].Path })
+		return res, nil
 	}
-	res.Mods = len(targets)
+
+	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
+		return res, fmt.Errorf("create %s: %w", opts.Dir, err)
+	}
+	for _, of := range overrideFiles {
+		if err := writeOverride(opts.Dir, of.f, of.rel); err != nil {
+			return res, err
+		}
+	}
+
+	if _, err := download(ctx, opts, targets, log); err != nil {
+		return res, err
+	}
 
 	// A pack version that drops a mod has to drop the jar too, or the server
 	// loads two versions of it and fails on the mixin.
@@ -248,7 +297,7 @@ func (b book) reader() io.ReaderAt { return b.file }
 
 // openSource turns a parsed source into an opened .mrpack, recording what it
 // learned about the pack on the way.
-func openSource(ctx context.Context, src source, wantVersion string, pk *publish.Pack) (book, func(), error) {
+func openSource(ctx context.Context, src source, opts Options, pk *publish.Pack) (book, func(), error) {
 	noop := func() {}
 
 	switch src.kind {
@@ -265,7 +314,7 @@ func openSource(ctx context.Context, src source, wantVersion string, pk *publish
 		return book{file: f, size: info.Size(), label: src.path}, func() { f.Close() }, nil
 
 	case sourceURL:
-		f, cleanup, err := openMrpack(ctx, src.url, "")
+		f, cleanup, err := openMrpack(ctx, src.url, "", cachePath(opts.CacheDir, src.slug, ""))
 		if err != nil {
 			return book{}, noop, err
 		}
@@ -289,6 +338,7 @@ func openSource(ctx context.Context, src source, wantVersion string, pk *publish
 		if err != nil {
 			return book{}, noop, err
 		}
+		wantVersion := opts.Version
 		if wantVersion == "" {
 			wantVersion = src.version
 		}
@@ -309,7 +359,8 @@ func openSource(ctx context.Context, src source, wantVersion string, pk *publish
 		pk.VersionID = version.ID
 		pk.VersionNumber = version.VersionNumber
 
-		f, cleanup, err := openMrpack(ctx, file.URL, file.Hashes["sha512"])
+		f, cleanup, err := openMrpack(ctx, file.URL, file.Hashes["sha512"],
+			cachePath(opts.CacheDir, project.Slug, version.ID))
 		if err != nil {
 			return book{}, noop, err
 		}

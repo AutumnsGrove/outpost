@@ -91,6 +91,74 @@ export interface Overview {
 	canUpdate: boolean;
 }
 
+/** A pack as R2 records it: what was installed, and what it needs to run. */
+export interface PackMeta {
+	source: string;
+	slug: string;
+	name: string;
+	versionId: string;
+	versionNumber: string;
+	mc: string;
+	loader: string;
+	loaderVersion: string;
+	fileCount: number;
+	memoryGB: number;
+	fetchedAt: string;
+}
+
+export interface PackFile {
+	path: string;
+	size: number;
+	source: 'pack' | 'override';
+}
+
+export interface PackJobResult {
+	pack: PackMeta;
+	profile: string;
+	mods: PackFile[];
+	files: number;
+	bytes: number;
+	clientOnly?: string[];
+	warnings?: string[];
+	worldPack?: PackMeta;
+}
+
+/**
+ * A preview or install in flight. `phase` moves through archive → files → upload
+ * → done, and `done`/`total` are the counters for that phase.
+ */
+export interface PackJob {
+	kind: 'preview' | 'install';
+	phase: string;
+	source: string;
+	profile: string;
+	done: number;
+	total: number;
+	error?: string;
+	startedAt: string;
+	endedAt?: string;
+	result?: PackJobResult;
+}
+
+export interface PackProfile {
+	id: string;
+	active: boolean;
+	pack?: PackMeta;
+	mods: number;
+	bytes: number;
+	hasWorld: boolean;
+	worldPack?: PackMeta;
+}
+
+export interface PackOverview {
+	active: string;
+	profiles: PackProfile[];
+	job?: PackJob;
+	editable: boolean;
+	state: ServerState;
+	detail?: string;
+}
+
 export type ActionKind = 'start' | 'stop' | 'update';
 export type PlayerAction = 'add' | 'remove' | 'op' | 'deop';
 
@@ -132,6 +200,27 @@ export const playerAction = (action: PlayerAction, name: string, token: string) 
 		name,
 		token
 	});
+
+export const getPack = async (): Promise<PackOverview> =>
+	json<PackOverview>(await fetch('/api/pack', { headers: { accept: 'application/json' } }));
+
+export const packPreview = (source: string, token: string, memoryGB: number) =>
+	post<PackJob>('/api/pack/preview', { source, token, memoryGB });
+
+export const packInstall = (
+	req: {
+		source: string;
+		profile: string;
+		memoryGB: number;
+		newWorld: boolean;
+		keepWorld: boolean;
+		activate: boolean;
+	},
+	token: string
+) => post<PackJob>('/api/pack/install', { ...req, token });
+
+export const packUse = (profile: string, token: string) =>
+	post<{ active: string }>('/api/pack/use', { profile, token });
 
 export function euros(n: number, places = 4): string {
 	return '€' + n.toFixed(places);

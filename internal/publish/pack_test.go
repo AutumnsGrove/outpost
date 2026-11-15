@@ -60,10 +60,10 @@ func TestBuildTrustsThePackOverTheClientOnlyList(t *testing.T) {
 	// sodium is in client-only-mods.txt, but the pack said env.server: required.
 	// The pack wins: dropping a file the pack author marked server-side is a
 	// server that boots with a config referring to a mod that is not there.
-	if !have["mods/sodium-0.5.13.jar"] {
+	if !have[key("mods/sodium-0.5.13.jar")] {
 		t.Errorf("the hand-maintained client-only list was applied to a pack; keys: %v", keys(objects))
 	}
-	if !have["root/kubejs/start.js"] {
+	if !have[key("root/kubejs/start.js")] {
 		t.Errorf("root/ was not uploaded; keys: %v", keys(objects))
 	}
 	for _, o := range objects {
@@ -127,16 +127,16 @@ func TestRunRefusesAPackNoRegionCanHold(t *testing.T) {
 func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("world")
-	marker, _ := json.Marshal(Pack{Source: "modrinth", Slug: "test-pack", VersionID: "older", VersionNumber: "0.9.0"})
-	st.objects["current/pack.json"] = marker
+	st.objects[key("world.tar.gz")] = []byte("world")
+	marker, _ := json.Marshal(Pack{Source: "modrinth", Slug: "homestead", VersionID: "other", VersionNumber: "0.9.0"})
+	st.objects[key("pack.json")] = marker
 
 	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
 	_, err := Run(context.Background(), st, opts)
 	if err == nil || !strings.Contains(err.Error(), "--new-world") {
 		t.Fatalf("want a refusal naming --new-world, got %v", err)
 	}
-	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+	if _, ok := st.objects[key("world.tar.gz")]; !ok {
 		t.Fatal("the world was removed by a refused publish")
 	}
 
@@ -151,11 +151,33 @@ func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
 	}
 }
 
+func TestRunKeepsTheWorldAcrossAPackUpdate(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects[key("world.tar.gz")] = []byte("world")
+	// The same pack, one version older: that is an update, not a different game.
+	older, _ := json.Marshal(Pack{Source: "modrinth", Slug: "test-pack", VersionID: "older", VersionNumber: "0.9.0"})
+	st.objects[key("pack.json")] = older
+
+	res, err := Run(context.Background(), st, Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
+	if err != nil {
+		t.Fatalf("a pack update was refused: %v", err)
+	}
+	if _, ok := st.objects[key("world.tar.gz")]; !ok {
+		t.Fatal("a pack update discarded the world it should have kept")
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "world") {
+			t.Fatalf("a pack update complained about the world: %v", res.Warnings)
+		}
+	}
+}
+
 func TestRunNewWorldDiscardsTheWorldAfterTheUpload(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("vanilla world from 2025")
-	st.objects["current/pack.json"] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
+	st.objects[key("world.tar.gz")] = []byte("vanilla world from 2025")
+	st.objects[key("pack.json")] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
 
 	_, err := Run(context.Background(), st, Options{
 		Dir:         dir,
@@ -166,12 +188,12 @@ func TestRunNewWorldDiscardsTheWorldAfterTheUpload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new-world run: %v", err)
 	}
-	if _, ok := st.objects["current/world.tar.gz"]; ok {
+	if _, ok := st.objects[key("world.tar.gz")]; ok {
 		t.Fatal("--new-world left the old world behind")
 	}
 
 	var marker Pack
-	if err := json.Unmarshal(st.objects["current/pack.json"], &marker); err != nil {
+	if err := json.Unmarshal(st.objects[key("pack.json")], &marker); err != nil {
 		t.Fatalf("marker: %v", err)
 	}
 	if marker.VersionID != "ver1" {
@@ -182,7 +204,7 @@ func TestRunNewWorldDiscardsTheWorldAfterTheUpload(t *testing.T) {
 func TestRunRefusesAnUnmarkedWorldAndAcceptsItWithKeepWorld(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("world from before packs existed")
+	st.objects[key("world.tar.gz")] = []byte("world from before packs existed")
 
 	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
 	if _, err := Run(context.Background(), st, opts); err == nil || !strings.Contains(err.Error(), "--new-world") {
@@ -198,9 +220,9 @@ func TestRunRefusesAnUnmarkedWorldAndAcceptsItWithKeepWorld(t *testing.T) {
 func TestRunLeavesTheMarkerAloneForTheSameBuild(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("world")
+	st.objects[key("world.tar.gz")] = []byte("world")
 	same, _ := json.Marshal(testPack())
-	st.objects["current/pack.json"] = same
+	st.objects[key("pack.json")] = same
 
 	res, err := Run(context.Background(), st, Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
 	if err != nil {
@@ -211,7 +233,7 @@ func TestRunLeavesTheMarkerAloneForTheSameBuild(t *testing.T) {
 			t.Fatalf("a same-build publish complained about the world: %v", res.Warnings)
 		}
 	}
-	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+	if _, ok := st.objects[key("world.tar.gz")]; !ok {
 		t.Fatal("the world of the same pack was touched")
 	}
 }
@@ -219,7 +241,7 @@ func TestRunLeavesTheMarkerAloneForTheSameBuild(t *testing.T) {
 func TestRunDoesNotTouchTheWorldOnADryRun(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("old world")
+	st.objects[key("world.tar.gz")] = []byte("old world")
 
 	res, err := Run(context.Background(), st, Options{
 		Dir:         dir,
@@ -234,10 +256,10 @@ func TestRunDoesNotTouchTheWorldOnADryRun(t *testing.T) {
 	if !warningsContain(res.Warnings, "would discard") {
 		t.Fatalf("dry run should say what it would do: %v", res.Warnings)
 	}
-	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+	if _, ok := st.objects[key("world.tar.gz")]; !ok {
 		t.Fatal("a dry run removed the world")
 	}
-	if _, ok := st.objects["current/pack.json"]; ok {
+	if _, ok := st.objects[key("pack.json")]; ok {
 		t.Fatal("a dry run wrote the marker")
 	}
 }
@@ -259,8 +281,8 @@ func TestLoadPackTreatsAMissingManifestAsAHandRolledPack(t *testing.T) {
 func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("world")
-	st.objects["current/pack.json"] = []byte("{ this is not json")
+	st.objects[key("world.tar.gz")] = []byte("world")
+	st.objects[key("pack.json")] = []byte("{ this is not json")
 
 	// A corrupt marker must not be a dead end: --new-world is the way out, and it
 	// has to work without a shell and a manual delete.
@@ -273,10 +295,10 @@ func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new-world with a corrupt marker: %v", err)
 	}
-	if _, ok := st.objects["current/world.tar.gz"]; ok {
+	if _, ok := st.objects[key("world.tar.gz")]; ok {
 		t.Fatal("--new-world left the world behind")
 	}
-	if err := json.Unmarshal(st.objects["current/pack.json"], &Pack{}); err != nil {
+	if err := json.Unmarshal(st.objects[key("pack.json")], &Pack{}); err != nil {
 		t.Fatalf("the marker was not rewritten: %v", err)
 	}
 }
@@ -284,9 +306,9 @@ func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
 func TestRunNewWorldDiscardsEvenAWorldOfTheSameBuild(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("a world I no longer want")
+	st.objects[key("world.tar.gz")] = []byte("a world I no longer want")
 	same, _ := json.Marshal(testPack())
-	st.objects["current/pack.json"] = same
+	st.objects[key("pack.json")] = same
 
 	// --new-world is the only way out of a world that is simply unwanted, and it
 	// has to work when the pack has not changed: a corrupted chunk in a world of
@@ -299,7 +321,7 @@ func TestRunNewWorldDiscardsEvenAWorldOfTheSameBuild(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("new-world on the same build: %v", err)
 	}
-	if _, ok := st.objects["current/world.tar.gz"]; ok {
+	if _, ok := st.objects[key("world.tar.gz")]; ok {
 		t.Fatal("--new-world was a no-op because the pack had not changed")
 	}
 }
@@ -309,9 +331,9 @@ func TestRunClearsTheMarkerWhenPublishingAHandRolledPack(t *testing.T) {
 	// published. The marker still names Cobblemon, so it has to go.
 	dir := writePack(t)
 	st := newFakeStore()
-	st.objects["current/world.tar.gz"] = []byte("world")
+	st.objects[key("world.tar.gz")] = []byte("world")
 	marker, _ := json.Marshal(testPack())
-	st.objects["current/pack.json"] = marker
+	st.objects[key("pack.json")] = marker
 
 	if _, err := Run(context.Background(), st, Options{
 		Dir:         dir,
@@ -320,10 +342,10 @@ func TestRunClearsTheMarkerWhenPublishingAHandRolledPack(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("hand-rolled publish: %v", err)
 	}
-	if _, ok := st.objects["current/pack.json"]; ok {
+	if _, ok := st.objects[key("pack.json")]; ok {
 		t.Fatal("a stale pack marker survived a hand-rolled publish")
 	}
-	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+	if _, ok := st.objects[key("world.tar.gz")]; !ok {
 		t.Fatal("a hand-rolled publish removed the world")
 	}
 
@@ -357,5 +379,102 @@ func TestRunDoesNotRefuseOverAPlanTheTableDoesNotKnow(t *testing.T) {
 	}
 	if !warningsContain(res.Warnings, "cx24") {
 		t.Fatalf("the unchecked region should be named: %v", res.Warnings)
+	}
+}
+
+func TestBuildScopesEveryKeyByProfile(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	if err := os.WriteFile(filepath.Join(dir, "server", "whitelist.json"),
+		[]byte(`[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	objects, _, err := Build(context.Background(), Options{Dir: dir, Profile: "homestead"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	prefix := profilePrefix("homestead")
+	for _, o := range objects {
+		if playerKeys[o.Key] {
+			continue // the player list is deliberately server-wide
+		}
+		if !strings.HasPrefix(o.Key, prefix) {
+			t.Fatalf("%s is not under %s: two profiles would overwrite each other", o.Key, prefix)
+		}
+	}
+	// And the whitelist the summary prints still comes out, despite the prefix.
+	if names := whitelistNames(objects); len(names) == 0 {
+		t.Fatalf("the whitelist was lost behind the profile prefix: %v", keys(objects))
+	}
+}
+
+func TestBuildRefusesAProfileNameThatIsNotOne(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	for _, bad := range []string{"../etc", "Has Caps", "a/b", strings.Repeat("x", 40)} {
+		if _, _, err := Build(context.Background(), Options{Dir: dir, Profile: bad}); err == nil {
+			t.Errorf("profile %q was accepted", bad)
+		}
+	}
+}
+
+func TestPruneLeavesTheOtherProfileAlone(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	other := profilePrefix("cobblemon") + "mods/keep-me.jar"
+	st.objects[other] = []byte("another game's mod")
+	st.objects[profilePrefix("homestead")+"mods/stale.jar"] = []byte("old")
+
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		Profile:     "homestead",
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if _, ok := st.objects[profilePrefix("homestead")+"mods/stale.jar"]; ok {
+		t.Fatal("a stale mod survived in the profile being published")
+	}
+	if _, ok := st.objects[other]; !ok {
+		t.Fatal("publishing one profile pruned another profile's mods")
+	}
+}
+
+func TestReadPlayersAndPublishThemVerbatim(t *testing.T) {
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(`[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch"}]`)
+
+	// A missing ops.json is the normal state of a server nobody has opped on.
+	players, err := ReadPlayers(context.Background(), st, "mc-assets")
+	if err != nil {
+		t.Fatalf("read players: %v", err)
+	}
+	if string(players.Ops) != "[]" {
+		t.Fatalf("ops = %s", players.Ops)
+	}
+
+	// An install reuses those bytes instead of resolving names through Mojang,
+	// which rate-limits and would make a page-driven install fail at random.
+	dir := writeModpack(t, testPack())
+	if err := os.Remove(filepath.Join(dir, "server", "whitelist.json")); err != nil {
+		t.Fatal(err)
+	}
+	objects, _, err := Build(context.Background(), Options{Dir: dir, Players: players, Profile: "cobblemon"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	have := map[string]string{}
+	for _, o := range objects {
+		have[o.Key] = string(o.Content)
+	}
+	if got := have["server/whitelist.json"]; !strings.Contains(got, "Notch") {
+		t.Fatalf("the whitelist was not published verbatim: %q", got)
+	}
+	if _, ok := have["server/whitelist.json"]; !ok {
+		t.Fatal("the whitelist should stay global, not go under the profile")
+	}
+
+	if _, err := ReadPlayers(context.Background(), newFakeStore(), "mc-assets"); err == nil {
+		t.Fatal("an empty bucket should say the list is missing")
 	}
 }

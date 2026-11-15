@@ -33,6 +33,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -43,6 +44,91 @@ import (
 // ErrNotFound is re-exported so a Store implementation can answer "no such key"
 // without importing r2.
 var ErrNotFound = r2.ErrNotFound
+
+// DefaultProfile is what a publish without --profile writes to, and what a
+// database that has never been told otherwise boots. It has to stay a valid
+// name so the migration from the single-profile layout is a no-op.
+const DefaultProfile = "default"
+
+// profileName is what a profile id may look like. It lands in shell commands
+// (the cloud-init pulls and the shutdown upload) and in R2 keys, so this is an
+// allowlist rather than a check for "obviously bad".
+var profileName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// ValidateProfile refuses a name that could not be a key or a shell argument.
+func ValidateProfile(name string) error {
+	if !profileName.MatchString(name) {
+		return fmt.Errorf("profile %q is not a name (lowercase letters, digits, - and _, up to 32)", name)
+	}
+	return nil
+}
+
+// ProfileFromSlug is the profile a pack is installed into when nobody says: its
+// own slug, so `outpost publish` after `outpost pack fetch` lands in
+// profiles/cobblemon-fabric/ without anyone having to name it twice.
+func ProfileFromSlug(slug string) string {
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '-'
+		}
+	}, slug)
+	clean = strings.Trim(clean, "-_")
+	if len(clean) > 32 {
+		clean = strings.TrimRight(clean[:32], "-_")
+	}
+	if clean == "" {
+		return DefaultProfile
+	}
+	return clean
+}
+
+// ProfileOf returns the profile a run is scoped to.
+func (o Options) ProfileOf() string {
+	if o.Profile == "" {
+		return DefaultProfile
+	}
+	return o.Profile
+}
+
+// profilePrefix is where one profile's files live in both buckets.
+func profilePrefix(profile string) string { return "profiles/" + profile + "/" }
+
+// playerKeys are the two files that belong to the server rather than to a
+// profile. internal/roster writes them; cloud-init copies them last, over
+// whatever a pack shipped.
+var playerKeys = map[string]bool{
+	"server/whitelist.json": true,
+	"server/ops.json":       true,
+}
+
+// PlayerSet is the two player files as they are stored.
+type PlayerSet struct {
+	Whitelist []byte
+	Ops       []byte
+}
+
+// ReadPlayers reads the server-wide whitelist and ops files. A missing ops.json is
+// an empty list, because a server that has been played on but never opped anybody
+// is the normal state.
+func ReadPlayers(ctx context.Context, st Store, bucket string) (*PlayerSet, error) {
+	whitelist, err := st.Get(ctx, bucket, "server/whitelist.json")
+	if err != nil {
+		return nil, err
+	}
+	ops, err := st.Get(ctx, bucket, "server/ops.json")
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if ops == nil {
+		ops = []byte("[]")
+	}
+	return &PlayerSet{Whitelist: whitelist, Ops: ops}, nil
+}
 
 //go:embed client-only-mods.txt
 var defaultClientOnlyList string
@@ -64,6 +150,12 @@ type Options struct {
 	AssetBucket string
 	WorldBucket string
 
+	// Profile scopes every key in both buckets as profiles/<Profile>/... A
+	// profile is one pack and one world, so a second profile is a second game to
+	// switch to without either world landing in the other. Empty means
+	// "default", which is also what hand-rolled packs use.
+	Profile string
+
 	// FabricMC, when set (e.g. "1.20.1"), fetches a Fabric server launcher for
 	// that Minecraft version and uploads it as server/fabric-server-launch.jar.
 	// FabricLoader pins the loader; empty means the newest stable one.
@@ -74,6 +166,11 @@ type Options struct {
 	// Mojang at publish time, so the repo never holds a stale uuid.
 	Whitelist []string
 	Ops       []string
+
+	// Players, when set, is published verbatim instead of resolving names. The
+	// daemon uses it to reuse the roster it already has: Mojang rate-limits, and
+	// the bucket is the authoritative copy anyway (PLAN 18).
+	Players *PlayerSet
 
 	// Open publishes a server with white-list=false. Needs saying out loud,
 	// because the default is the opposite.
@@ -91,6 +188,10 @@ type Options struct {
 	// Regions are the plans a session can be rented on, used only to refuse a
 	// pack none of them has the RAM for. Empty skips that check.
 	Regions map[string]config.Region
+
+	// Progress is called after each uploaded key, for a page that has to show
+	// something for two minutes of uploading.
+	Progress func(done, total int)
 
 	// NewWorld discards the saved world when it belongs to another pack, and
 	// KeepWorld loads it anyway. Neither is set: publish refuses instead of
@@ -124,6 +225,66 @@ type Result struct {
 	Players []string
 }
 
+// Preflight is everything publish can decide before it uploads a byte: whether
+// the pack can run here, whether the plan has the RAM, and whose world is saved
+// in this profile. The page calls it to show a warning before someone commits to
+// a 300 MB download, and Run calls it so there is one answer, not two.
+type Preflight struct {
+	// Pack is nil for a hand-rolled pack directory.
+	Pack *Pack
+
+	Profile string
+
+	// WorldPack is the pack the saved world was built with, when the marker says
+	// so. Nil means no world, or no readable marker.
+	WorldPack *Pack
+
+	// Discard is set when --new-world asked for a fresh world and there is one to
+	// remove. Removal happens after a successful upload.
+	Discard bool
+
+	Warnings []string
+}
+
+// Inspect answers the questions that stop a publish before it starts.
+func Inspect(ctx context.Context, st Store, opts Options) (Preflight, error) {
+	pf := Preflight{Profile: opts.ProfileOf()}
+
+	pk, packed, err := LoadPack(opts.Dir)
+	if err != nil {
+		return pf, err
+	}
+	if !packed {
+		return pf, nil
+	}
+	return InspectPack(ctx, st, opts, pk)
+}
+
+// InspectPack is Inspect for a pack that is not on disk yet, which is what the
+// page has after it resolves a link and before anyone commits to the download.
+func InspectPack(ctx context.Context, st Store, opts Options, pk Pack) (Preflight, error) {
+	pf := Preflight{Profile: opts.ProfileOf()}
+
+	if err := CheckPack(pk); err != nil {
+		return pf, err
+	}
+	memWarnings, err := checkPackMemory(pk, opts.Regions)
+	if err != nil {
+		return pf, err
+	}
+	pf.Warnings = append(pf.Warnings, memWarnings...)
+
+	discard, worldPack, warnings, err := worldGuard(ctx, st, opts, pk)
+	if err != nil {
+		return pf, err
+	}
+	pf.Pack = &pk
+	pf.Discard = discard
+	pf.WorldPack = worldPack
+	pf.Warnings = append(pf.Warnings, warnings...)
+	return pf, nil
+}
+
 // Run uploads the pack, verifies it, and prunes what the pack no longer has.
 func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	log := opts.Log
@@ -138,19 +299,14 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// which loader it wants, and how much RAM the person who fetched it said it
 	// needs. Read that before anything is uploaded, so the refusals happen before
 	// the bytes and before the rental.
-	pk, packed, err := LoadPack(opts.Dir)
+	pf, err := Inspect(ctx, st, opts)
 	if err != nil {
 		return res, err
 	}
-	if packed {
-		if err := CheckPack(pk); err != nil {
-			return res, err
-		}
-		if memWarnings, err := checkPackMemory(pk, opts.Regions); err != nil {
-			return res, err
-		} else {
-			res.Warnings = append(res.Warnings, memWarnings...)
-		}
+	res.Warnings = append(res.Warnings, pf.Warnings...)
+	discardWorld = pf.Discard
+
+	if pk := pf.Pack; pk != nil {
 		// Pruning is not optional for a pack: the previous version's jars have to
 		// go, or the server loads two of everything.
 		opts.Prune = true
@@ -161,13 +317,6 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 			opts.FabricMC = pk.MC
 			opts.FabricLoader = pk.LoaderVersion
 		}
-
-		var warnings []string
-		discardWorld, warnings, err = worldGuard(ctx, st, opts, pk)
-		if err != nil {
-			return res, err
-		}
-		res.Warnings = append(res.Warnings, warnings...)
 		if discardWorld && opts.DryRun {
 			res.Warnings = append(res.Warnings, "dry run: would discard the saved world and start a fresh one")
 		}
@@ -184,7 +333,10 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// Verify every key exists at the expected size once it is up. A modpack that
 	// uploads 187 of 188 jars is a server that fails to boot in a way nobody can
 	// read from a log.
-	for _, obj := range objects {
+	for i, obj := range objects {
+		if opts.Progress != nil {
+			opts.Progress(i+1, len(objects))
+		}
 		sum, err := sum(obj)
 		if err != nil {
 			return res, err
@@ -239,8 +391,8 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// this pack, which is what the marker claims. Discarding the old world happens
 	// here too, never before the upload.
 	switch {
-	case packed:
-		if err := recordPack(ctx, st, opts.WorldBucket, pk, discardWorld); err != nil {
+	case pf.Pack != nil:
+		if err := recordPack(ctx, st, opts, *pf.Pack, discardWorld); err != nil {
 			return res, err
 		}
 	case opts.WorldBucket != "":
@@ -248,7 +400,8 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		// earlier fetched pack would still claim assets that are no longer there.
 		// Removing it means the next packed publish has to be told what to do with
 		// a world this publish cannot describe, instead of trusting a stale label.
-		if err := st.Remove(ctx, opts.WorldBucket, packMarkerKey); err != nil {
+		_, marker := worldKeys(opts.ProfileOf())
+		if err := st.Remove(ctx, opts.WorldBucket, marker); err != nil {
 			return res, fmt.Errorf("clear the pack marker: %w", err)
 		}
 	}
@@ -260,6 +413,10 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 // prints the plan before asking R2 anything.
 func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	var warnings []string
+
+	if err := ValidateProfile(opts.ProfileOf()); err != nil {
+		return nil, nil, err
+	}
 
 	root, err := os.Stat(opts.Dir)
 	if err != nil {
@@ -403,8 +560,19 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 		warnings = append(warnings, "generated server/server.properties")
 	}
 
-	// Whitelist and ops. Names are resolved now, never stored as uuids.
-	if len(opts.Whitelist) > 0 || len(opts.Ops) > 0 {
+	// The player list, either handed over whole or resolved from names.
+	if opts.Players != nil {
+		add("server/whitelist.json", Object{
+			Key:     "server/whitelist.json",
+			Content: opts.Players.Whitelist,
+			Size:    int64(len(opts.Players.Whitelist)),
+		})
+		add("server/ops.json", Object{
+			Key:     "server/ops.json",
+			Content: opts.Players.Ops,
+			Size:    int64(len(opts.Players.Ops)),
+		})
+	} else if len(opts.Whitelist) > 0 || len(opts.Ops) > 0 {
 		whitelist, ops, err := PlayerFiles(ctx, opts.Whitelist, opts.Ops)
 		if err != nil {
 			return nil, nil, err
@@ -425,6 +593,21 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 		return nil, nil, errors.New("no whitelist: pass --whitelist name1,name2 (resolved through Mojang), put server/whitelist.json in the pack, or pass --open for a server anyone can join")
 	}
 
+	// Every key is scoped by profile last, after all the key checks above, so the
+	// rules ("a launcher is required", "our server.properties wins") are written
+	// once against the layout inside a profile and the prefix is not repeated at
+	// every call site.
+	//
+	// Two keys stay global: the player list. The same people should be able to
+	// join every pack, and internal/roster is its only writer, so scoping it per
+	// profile would mean adding somebody once per world.
+	prefix := profilePrefix(opts.ProfileOf())
+	for i := range objects {
+		if !playerKeys[objects[i].Key] {
+			objects[i].Key = prefix + objects[i].Key
+		}
+	}
+
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
 	return objects, warnings, nil
 }
@@ -439,8 +622,9 @@ func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]str
 		want[o.Key] = true
 	}
 
+	base := profilePrefix(opts.ProfileOf())
 	var removed []string
-	for _, prefix := range []string{"mods/", "config/", "root/"} {
+	for _, prefix := range []string{base + "mods/", base + "config/", base + "root/"} {
 		existing, err := st.List(ctx, opts.AssetBucket, prefix)
 		if err != nil {
 			return nil, err
@@ -467,7 +651,9 @@ func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]str
 // whether it came from the pack or was generated from --whitelist.
 func whitelistNames(objects []Object) []string {
 	for _, obj := range objects {
-		if obj.Key != "server/whitelist.json" {
+		// The whitelist is global, so this matches both "server/whitelist.json"
+		// and a profile-scoped one from a pack that shipped its own.
+		if !strings.HasSuffix(obj.Key, "server/whitelist.json") {
 			continue
 		}
 		raw := obj.Content

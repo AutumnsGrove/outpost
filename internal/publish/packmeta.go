@@ -70,6 +70,18 @@ func (p Pack) Describe() string {
 	return name
 }
 
+// SamePack reports whether two descriptions are the same pack, at any version.
+// That is the question the world guard asks, and the answer changed when
+// profiles arrived: within one profile, 1.5.1 → 1.5.2 is an update that keeps the
+// world, which is the normal thing to do. A *different* pack in the same profile
+// is what has to be asked about.
+func (p Pack) SamePack(o Pack) bool {
+	if p.Source == "" && o.Source == "" && p.Slug == "" && o.Slug == "" {
+		return true // both unidentifiable: nothing says they differ
+	}
+	return p.Source == o.Source && p.Slug == o.Slug
+}
+
 // SameBuild reports whether two descriptions are the same build of the same
 // pack. That is the question the world guard asks: a world saved under another
 // build is not necessarily loadable, but the same build always is.
