@@ -46,15 +46,6 @@ func (a *app) packManager(rost *roster.Roster) (*pack.Manager, error) {
 		Log:         a.log,
 		Activate:    func(_ context.Context, profile string) error { return a.orch.SetActiveProfile(profile) },
 	}
-	if rost != nil {
-		m.Whitelist = func(ctx context.Context) ([]string, error) {
-			list, err := rost.List(ctx)
-			if err != nil {
-				return nil, err
-			}
-			return list.Whitelist, nil
-		}
-	}
 	return m, nil
 }
 

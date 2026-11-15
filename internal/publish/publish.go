@@ -106,6 +106,30 @@ var playerKeys = map[string]bool{
 	"server/ops.json":       true,
 }
 
+// PlayerSet is the two player files as they are stored.
+type PlayerSet struct {
+	Whitelist []byte
+	Ops       []byte
+}
+
+// ReadPlayers reads the server-wide whitelist and ops files. A missing ops.json is
+// an empty list, because a server that has been played on but never opped anybody
+// is the normal state.
+func ReadPlayers(ctx context.Context, st Store, bucket string) (*PlayerSet, error) {
+	whitelist, err := st.Get(ctx, bucket, "server/whitelist.json")
+	if err != nil {
+		return nil, err
+	}
+	ops, err := st.Get(ctx, bucket, "server/ops.json")
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if ops == nil {
+		ops = []byte("[]")
+	}
+	return &PlayerSet{Whitelist: whitelist, Ops: ops}, nil
+}
+
 //go:embed client-only-mods.txt
 var defaultClientOnlyList string
 
@@ -142,6 +166,11 @@ type Options struct {
 	// Mojang at publish time, so the repo never holds a stale uuid.
 	Whitelist []string
 	Ops       []string
+
+	// Players, when set, is published verbatim instead of resolving names. The
+	// daemon uses it to reuse the roster it already has: Mojang rate-limits, and
+	// the bucket is the authoritative copy anyway (PLAN 18).
+	Players *PlayerSet
 
 	// Open publishes a server with white-list=false. Needs saying out loud,
 	// because the default is the opposite.
@@ -531,8 +560,19 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 		warnings = append(warnings, "generated server/server.properties")
 	}
 
-	// Whitelist and ops. Names are resolved now, never stored as uuids.
-	if len(opts.Whitelist) > 0 || len(opts.Ops) > 0 {
+	// The player list, either handed over whole or resolved from names.
+	if opts.Players != nil {
+		add("server/whitelist.json", Object{
+			Key:     "server/whitelist.json",
+			Content: opts.Players.Whitelist,
+			Size:    int64(len(opts.Players.Whitelist)),
+		})
+		add("server/ops.json", Object{
+			Key:     "server/ops.json",
+			Content: opts.Players.Ops,
+			Size:    int64(len(opts.Players.Ops)),
+		})
+	} else if len(opts.Whitelist) > 0 || len(opts.Ops) > 0 {
 		whitelist, ops, err := PlayerFiles(ctx, opts.Whitelist, opts.Ops)
 		if err != nil {
 			return nil, nil, err

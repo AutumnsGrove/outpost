@@ -439,3 +439,42 @@ func TestPruneLeavesTheOtherProfileAlone(t *testing.T) {
 		t.Fatal("publishing one profile pruned another profile's mods")
 	}
 }
+
+func TestReadPlayersAndPublishThemVerbatim(t *testing.T) {
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(`[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch"}]`)
+
+	// A missing ops.json is the normal state of a server nobody has opped on.
+	players, err := ReadPlayers(context.Background(), st, "mc-assets")
+	if err != nil {
+		t.Fatalf("read players: %v", err)
+	}
+	if string(players.Ops) != "[]" {
+		t.Fatalf("ops = %s", players.Ops)
+	}
+
+	// An install reuses those bytes instead of resolving names through Mojang,
+	// which rate-limits and would make a page-driven install fail at random.
+	dir := writeModpack(t, testPack())
+	if err := os.Remove(filepath.Join(dir, "server", "whitelist.json")); err != nil {
+		t.Fatal(err)
+	}
+	objects, _, err := Build(context.Background(), Options{Dir: dir, Players: players, Profile: "cobblemon"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	have := map[string]string{}
+	for _, o := range objects {
+		have[o.Key] = string(o.Content)
+	}
+	if got := have["server/whitelist.json"]; !strings.Contains(got, "Notch") {
+		t.Fatalf("the whitelist was not published verbatim: %q", got)
+	}
+	if _, ok := have["server/whitelist.json"]; !ok {
+		t.Fatal("the whitelist should stay global, not go under the profile")
+	}
+
+	if _, err := ReadPlayers(context.Background(), newFakeStore(), "mc-assets"); err == nil {
+		t.Fatal("an empty bucket should say the list is missing")
+	}
+}

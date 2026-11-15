@@ -421,3 +421,87 @@ smuggle into this branch. FTB stays out: no clean public API for server files.
   is heavier than it needs to be, not a broken one.
 - No live session yet. A real Fabric pack booting on a real VPS with a Prism client on
   the same pack version is the test that counts, and it is the next thing to run.
+
+## Decisions from the profiles branch (2026-11-15, after the pack panel)
+
+The ask: paste a Modrinth link into the page, see what is in it, install it — and
+be able to keep **a world per pack** and swap between them. "A world on Cobblemon,
+then one on Homestead, hit a button, and swap the whole thing."
+
+### 34. A profile is a pack and its world, and the whole layout is scoped by it
+
+```
+mc-assets/profiles/<id>/{pack.json,server/,mods/,config/,scripts/,root/}
+mc-worlds/profiles/<id>/{world.tar.gz,pack.json,backups/...}
+```
+
+The active profile is a row in `meta`, not in `config.yaml`: it is state ("what am I
+playing"), and the page switches it. The profile is fixed at rent time and recorded on
+the session row, so the boot pulls one profile's assets and the shutdown uploads to that
+same profile even if the active one changes an hour later. Switching is refused while
+anything is rented, and `Start` refuses a profile with no server files in R2 rather than
+renting a VPS that pulls nothing, generates a vanilla world, never answers RCON, and
+times out fifteen minutes later with a bill.
+
+This also retired a question the single-world layout could not answer: with one world,
+"which pack made this" was guesswork at publish time. With profiles it is structural —
+the world belongs to the profile, and the profile is the pack. The guard survives
+*inside* a profile, where re-publishing is still possible, and it now compares the pack
+rather than the build: 1.5.1 → 1.5.2 is an update that keeps the world, which is the
+normal reason to re-publish. Only a different pack is a question, and the page asks it
+with a checkbox while the CLI asks for `--new-world` or `--keep-world`.
+
+The profile id comes from the pack's slug (`cobblemon-fabric`), so pasting a link needs
+no naming step. `--profile` overrides it, and a hand-rolled pack directory defaults to
+`default`, which is also what a database that has never been told otherwise boots.
+
+**What this costs:** disk in R2, deliberately. Two profiles in R2 is two copies of ~300
+MB of mods that never change. That is inside the free tier, and it is the price of a
+swap that takes one click instead of a re-upload.
+
+**What it does not do:** the old single-profile keys (`mc-assets/server/`, `mc-assets/mods/`,
+`mc-worlds/current/`) are not migrated and not deleted. They stop being read. Re-publishing
+the current pack with `outpost publish --profile default` is the one command that brings
+the old assets forward, and the old world is left where it is as an archive rather than
+guessed at.
+
+### 35. The player list stays global, and cloud-init copies it last
+
+Whitelist and ops are one file for the whole server: adding a friend should add them to
+every world, not once per pack. So `server/whitelist.json` and `server/ops.json` are the
+two keys `publish` does **not** scope by profile, `internal/roster` keeps being their only
+writer, and cloud-init copies them after the profile's files — so a pack that ships its
+own whitelist does not get to decide who may play.
+
+The one file whose absence is legitimate is exactly these two. The template says so out
+loud rather than swallowing the error.
+
+### 36. Installing and switching are daemon jobs, because the page is the only client
+
+`outpost pack fetch` runs on the Mac and needs no config; the page cannot. So the daemon
+grew a `pack.Manager` — profiles from R2, a preview that downloads only the `.mrpack`,
+and an install that fetches into `packs/<profile>/` and publishes from there — and the
+CLI uses the same manager for `pack list`. Two front doors, one implementation, and the
+rules live where they can be tested: one job at a time, nothing while a server is rented,
+the archive cached so preview-then-install downloads it once.
+
+The job outlives the request that started it (`context.WithoutCancel`), for the same
+reason renting does: a browser tab closed mid-install must not leave half a profile.
+Progress is a phase plus two counters, which is enough for "downloading mods — 86 of 231"
+and no more.
+
+A pack's RAM figure is still a judgement (`--memory`, default 4 GB); the manager passes
+it to the same `Inspect` the CLI uses, so the refusal and the warning are the same
+sentence in both places.
+
+### 37. Not done, on purpose, on this branch
+
+- Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
+  a second profile id (`--profile cobblemon-second`), which the page has no field for yet.
+- Deleting a profile from the page: `mc-assets/profiles/<id>/` and its world have to be
+  removed with rclone, and a button that deletes a world deserves more care than a
+  button that creates one.
+- The world itself is not versioned inside a profile: a pack update keeps the world,
+  which is right for 1.5.1 → 1.5.2 and wrong for a pack that changes world generation.
+  The backups in `profiles/<id>/backups/` are the answer for now.
+- The old single-profile keys are left in place (see 34).
