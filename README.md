@@ -149,8 +149,13 @@ A modpack is fetched, not assembled:
 
 ```bash
 outpost pack fetch https://modrinth.com/modpack/cobblemon-fabric --memory 4
-outpost publish pack --whitelist AutumnsAdventure --op AutumnsAdventure
+outpost publish pack
 ```
+
+No `--whitelist` on the publish: when nobody is named, the list already in R2 goes back up
+unchanged, so a re-publish never asks Mojang anything and the operators recorded on the
+page stay operators. `--whitelist`/`--op` are for changing who may play, not for
+repeating what the bucket already knows.
 
 `pack fetch` takes a Modrinth slug, a modpack URL (the one Prism's "open in browser"
 gives you), a `.mrpack` URL, or a `.mrpack` on disk. `--version` pins a pack version;

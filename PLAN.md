@@ -478,6 +478,12 @@ two keys `publish` does **not** scope by profile, `internal/roster` keeps being 
 writer, and cloud-init copies them after the profile's files — so a pack that ships its
 own whitelist does not get to decide who may play.
 
+`outpost publish` reuses those two keys byte for byte when it is not handed names: a
+re-publish should not re-resolve the same players through Mojang (which rate-limits), and
+an op set recorded on the page ought to survive a new pack version. `--whitelist`/`--op`
+replace the list deliberately — that is the one case where names are resolved — and
+`--open` publishes with `white-list=false` and no list at all.
+
 The one file whose absence is legitimate is exactly these two. The template says so out
 loud rather than swallowing the error.
 

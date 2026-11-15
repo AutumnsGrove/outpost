@@ -271,6 +271,21 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 	}
 
 	m.run(ctx, job, func(ctx context.Context) (*JobResult, error) {
+		// The cheapest refusal goes first: a roster with nobody in it is not worth
+		// downloading 300 MB for. Missing and empty are the same answer — `[]` is
+		// what removing the last player leaves behind, and either way the server
+		// would refuse everybody.
+		//
+		// The list is reused as it is in R2 rather than re-resolved through Mojang:
+		// the bucket is the authoritative copy, and Mojang rate-limits.
+		players, err := publish.ReadPlayers(ctx, m.Store, m.AssetBucket)
+		if err != nil && !errors.Is(err, publish.ErrNotFound) {
+			return nil, err
+		}
+		if err != nil || players.AllowsNobody() {
+			return nil, fmt.Errorf("the server-wide player list is empty; add someone on the page first, or the server would refuse everybody")
+		}
+
 		res, err := Fetch(ctx, opts)
 		if err != nil {
 			return nil, err
@@ -281,15 +296,6 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 		pub.NewWorld = req.NewWorld
 		pub.KeepWorld = req.KeepWorld
 		pub.Progress = m.uploadProgress(job)
-		// The player list is reused as it is in R2 rather than re-resolved through
-		// Mojang: the bucket is the authoritative copy, and Mojang rate-limits.
-		players, err := publish.ReadPlayers(ctx, m.Store, m.AssetBucket)
-		if err != nil {
-			if errors.Is(err, publish.ErrNotFound) {
-				return nil, fmt.Errorf("the server-wide player list is empty; add someone on the page first, or the server would refuse everybody")
-			}
-			return nil, err
-		}
 		pub.Players = players
 
 		uploaded, err := publish.Run(ctx, m.Store, pub)

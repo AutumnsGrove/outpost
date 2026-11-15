@@ -306,6 +306,166 @@ func TestRunUploadsThenLeavesItAlone(t *testing.T) {
 	}
 }
 
+// --- the player list ------------------------------------------------------
+
+// noMojang points the Mojang client at a server that fails the test the moment
+// it is asked anything. Reusing the bucket's player list is a promise that no
+// name is resolved, so the test has to be able to hear a lookup.
+func noMojang(t *testing.T) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("a Mojang lookup was made: %s", r.URL.Path)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(srv.Close)
+	old := mojangBase
+	mojangBase = srv.URL
+	t.Cleanup(func() { mojangBase = old })
+}
+
+// stripPlayers removes the player files writePack ships, which is the state of a
+// pack that was never authored with a list.
+func stripPlayers(t *testing.T, dir string) {
+	t.Helper()
+	for _, name := range []string{"whitelist.json", "ops.json"} {
+		if err := os.Remove(filepath.Join(dir, "server", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestRunReusesThePlayerListAlreadyInTheBucket(t *testing.T) {
+	pack := writePack(t)
+	stripPlayers(t, pack)
+
+	const whitelist = `[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch"}]`
+	const ops = `[{"uuid":"069a79f4-44e9-4726-a5be-fca90e38aaf5","name":"Notch","level":4,"bypassesPlayerLimit":false}]`
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(whitelist)
+	st.objects["server/ops.json"] = []byte(ops)
+	noMojang(t)
+
+	res, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// The plan has to actually hold both files, not merely leave the seeded bytes
+	// in the bucket: Unchanged means "planned and already correct in R2", while a
+	// file that was never planned appears in neither list.
+	planned := map[string]string{}
+	for _, k := range append(append([]string{}, res.Uploaded...), res.Unchanged...) {
+		planned[k] = "yes"
+	}
+	for _, k := range []string{"server/whitelist.json", "server/ops.json"} {
+		if planned[k] == "" {
+			t.Fatalf("%s was not in the plan: uploaded %v, unchanged %v", k, res.Uploaded, res.Unchanged)
+		}
+	}
+	// Verbatim: not re-marshalled, not reordered, not looked up again.
+	if got := string(st.objects["server/whitelist.json"]); got != whitelist {
+		t.Fatalf("the whitelist was not published verbatim: %q", got)
+	}
+	if got := string(st.objects["server/ops.json"]); got != ops {
+		t.Fatalf("ops.json was not published verbatim: %q", got)
+	}
+	if len(res.Players) != 1 || res.Players[0] != "Notch" {
+		t.Fatalf("players = %v", res.Players)
+	}
+	// A republish should say where the list came from, not leave it to be found.
+	if !strings.Contains(strings.Join(res.Warnings, " "), "reused the player list") {
+		t.Fatalf("no warning said the list was reused: %v", res.Warnings)
+	}
+}
+
+func TestRunPrefersThePacksOwnPlayerListToTheBucket(t *testing.T) {
+	// writePack ships server/whitelist.json holding "[]".
+	pack := writePack(t)
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(`[{"uuid":"x","name":"Notch"}]`)
+	noMojang(t)
+
+	if _, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := string(st.objects["server/whitelist.json"]); strings.Contains(got, "Notch") {
+		t.Fatalf("the bucket's list overwrote the pack's own: %q", got)
+	}
+}
+
+func TestRunResolvesNamesEvenWhenTheBucketHasAList(t *testing.T) {
+	pack := writePack(t)
+	stripPlayers(t, pack)
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(`[{"uuid":"x","name":"Notch"}]`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"00112233445566778899aabbccddeeff","name":"SomeoneElse"}`)
+	}))
+	defer srv.Close()
+	old := mojangBase
+	mojangBase = srv.URL
+	defer func() { mojangBase = old }()
+
+	// Naming a player is a deliberate override: it wins over the bucket.
+	if _, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+		Whitelist: []string{"SomeoneElse"},
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := string(st.objects["server/whitelist.json"])
+	if !strings.Contains(got, "SomeoneElse") {
+		t.Fatalf("--whitelist did not win: %q", got)
+	}
+	if strings.Contains(got, "Notch") {
+		t.Fatalf("the bucket's list leaked into an explicit --whitelist: %q", got)
+	}
+}
+
+func TestRunStillRefusesWhenThereIsNoListAnywhere(t *testing.T) {
+	pack := writePack(t)
+	stripPlayers(t, pack)
+	noMojang(t)
+
+	// An empty bucket and a pack with no list: a server nobody could join is not
+	// a publish worth making, so the same refusal stands.
+	_, err := Run(context.Background(), newFakeStore(), Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "whitelist") {
+		t.Fatalf("expected a whitelist error, got %v", err)
+	}
+}
+
+func TestRunNeverTouchesTheBucketForPlayersWithOpen(t *testing.T) {
+	pack := writePack(t)
+	stripPlayers(t, pack)
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(`[{"uuid":"x","name":"Notch"}]`)
+	noMojang(t)
+
+	if _, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true, Open: true,
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// The seeded key is still there because it was never ours to remove, but the
+	// run published no players of its own: nothing was added to the plan.
+	res, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true, Open: true, DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(res.Players) != 0 {
+		t.Fatalf("--open pulled the bucket's whitelist into the plan: %v", res.Players)
+	}
+}
+
 func TestRunPrunesStaleModsOnly(t *testing.T) {
 	pack := writePack(t)
 	st := newFakeStore()
@@ -552,5 +712,64 @@ func TestRunBackfillsObjectsWithoutAChecksum(t *testing.T) {
 	again, _ := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets"})
 	if len(again.Uploaded) != 0 {
 		t.Fatalf("a third run re-uploaded %v", again.Uploaded)
+	}
+}
+
+func TestRunRefusesAnOpsOnlyPackInsteadOfMixingItWithTheBucket(t *testing.T) {
+	// A hand-rolled pack that brought its own ops.json but no whitelist.json. The
+	// pack's player files are a pair, so half of the bucket's list must not be
+	// grafted onto the pack's half: that published a plan with server/ops.json
+	// twice, and the bucket's copy won by accident of sort order.
+	pack := writePack(t)
+	if err := os.Remove(filepath.Join(pack, "server", "whitelist.json")); err != nil {
+		t.Fatal(err)
+	}
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(`[{"uuid":"x","name":"Notch"}]`)
+	st.objects["server/ops.json"] = []byte(`[{"uuid":"x","name":"Notch","level":4}]`)
+	noMojang(t)
+
+	_, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "whitelist") {
+		t.Fatalf("expected the no-whitelist refusal, got %v", err)
+	}
+	// And nothing half-written: the refusal happens before any upload.
+	if st.puts != 0 {
+		t.Fatalf("refused after %d upload(s)", st.puts)
+	}
+}
+
+func TestRunDoesNotRepublishAnEmptyRoster(t *testing.T) {
+	// `[]` is what the roster writes when the last player is removed, and a server
+	// nobody may join is exactly what the refusal is for.
+	pack := writePack(t)
+	stripPlayers(t, pack)
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte("[]")
+	st.objects["server/ops.json"] = []byte("[]")
+	noMojang(t)
+
+	_, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no whitelist") {
+		t.Fatalf("expected a whitelist refusal for an empty roster, got %v", err)
+	}
+}
+
+func TestAllowsNobodyCoversTheRosterStatesThatRefuseEveryJoin(t *testing.T) {
+	cases := map[string]bool{
+		`[]`:                            true,
+		``:                              true,
+		`not json`:                      true,
+		`[{"uuid":"x","name":"Notch"}]`: false,
+	}
+	for raw, want := range cases {
+		set := &PlayerSet{Whitelist: []byte(raw), Ops: []byte("[]")}
+		if got := set.AllowsNobody(); got != want {
+			t.Errorf("AllowsNobody(%q) = %v, want %v", raw, got, want)
+		}
 	}
 }
