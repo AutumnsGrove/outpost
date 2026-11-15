@@ -557,20 +557,52 @@ into `packs/vanilla`: that directory may still hold a pack fetched under the sam
 and publishing it would send those jars up as "vanilla". `outpost pack vanilla` refuses
 a directory holding another pack for the same reason.
 
-<<<<<<< HEAD
-### 35. Not done, on purpose, on this branch
-=======
-### 34. Not done, on purpose, on this branch
->>>>>>> 5f0d214 (fix(pack): remove a stray conflict marker, and make the vanilla hint honest)
+### 35. Deleting copies first, and the copy expires on its own
+
+Deleting is the one operation where being wrong cannot be retried, so three things
+about its shape are decisions rather than implementation.
+
+**Copy to `trash/`, remove second.** `trash/<name>-<stamp>.tar.gz` is written with the
+same server-side `CopyObject` the world import uses, size verified, and the live key is
+removed only after that returns. A failed copy aborts with the world exactly where it
+was — the shutdown path's rule ("never delete a world you could not back up") applied in
+the other direction. The copy also means the page's confirmation does not have to be
+scary: the world is recoverable, so being clear about *which* world matters more than
+making someone type its name.
+
+**The trash expires by key stamp, swept on the next delete.** 14 days, the same number
+the shutdown upload uses for `backups/` (`rclone --min-age 14d`). There is no timer: the
+trash grows exactly when something is deleted, which is exactly when it should be
+emptied. The age comes from the key, so a trash entry this code did not write is left
+alone — guessing at the age of an object it did not name would delete somebody else's
+thing.
+
+**Two commands, because "delete" is two different wants.** `outpost world delete` keeps
+the pack installed and starts a fresh world next time (the common one: the world is
+broken, the pack is fine). `outpost pack delete --yes` is the profile — assets, backups,
+marker, and the world through the trash — for a slug that was typed wrong. `--force` is
+deliberately absent: this is not the "servers this database does not track" case `reset
+--force` exists for, and the confirmation should be about *which* world, not about
+skipping a check.
+
+The **active** profile is refused by `pack delete` and allowed, with a note, by the
+world delete. Deleting what Start boots leaves the next session failing at "profile X has
+no server installed", which is a confusing way to find out what happened; deleting the
+active *world* just means the next session makes a new one, which is what someone
+deleting a world asked for.
+
+Everything here is refused while a server is rented: a live session uploads over its own
+profile's world at shutdown, so a delete underneath it is a delete that undoes itself.
+
+### 36. Not done, on purpose, on this branch
 
 - Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
   a second profile id (`--profile cobblemon-second`), which the page has no field for yet.
-- Deleting a profile from the page: `mc-assets/profiles/<id>/` and its world have to be
-  removed with rclone, and a button that deletes a world deserves more care than a
-  button that creates one.
+- Undoing a delete from the page: the trash holds the world for 14 days, but restoring it
+  is a copy back by hand (`rclone` or a Go one-liner), not a button.
 - The world itself is not versioned inside a profile: a pack update keeps the world,
   which is right for 1.5.1 → 1.5.2 and wrong for a pack that changes world generation.
   The backups in `profiles/<id>/backups/` are the answer for now.
-- The old single-profile keys are left in place (see 30). `outpost world import` is the door
-to `mc-worlds/current/`, but nothing imports it on its own: a world moved without being
-asked for is a world moved by surprise.
+- The old single-profile keys are left in place (see 30). `outpost world import` is the
+  door to `mc-worlds/current/`, but nothing imports it on its own: a world moved without
+  being asked for is a world moved by surprise.

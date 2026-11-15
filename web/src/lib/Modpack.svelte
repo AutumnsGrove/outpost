@@ -7,11 +7,13 @@
 		bytes,
 		clock,
 		getPack,
+		packDelete,
 		packInstall,
 		packPreview,
 		packUse,
 		packVanilla,
 		packVersions,
+		packWorldDelete,
 		type PackJob,
 		type PackMeta,
 		type PackOverview,
@@ -42,6 +44,10 @@
 	let chosen = $state<{ id: string; number: string } | null>(null);
 	let showVersions = $state(false);
 	let loadingVersions = $state(false);
+	// Deleting is two steps and never the default: which row is asking, then which
+	// of the two things goes (the world, or the whole profile).
+	let deleting = $state<string | null>(null);
+	let deleteBusy = $state(false);
 
 	// "5.4.1 available" without anyone pressing Resolve: one call per installed
 	// Modrinth pack, once. Keyed by profile id, and empty for a pack that is
@@ -238,6 +244,31 @@
 		}
 	}
 
+	async function remove(kind: 'world' | 'profile', profile: string) {
+		if (deleteBusy) return;
+		deleteBusy = true;
+		message = '';
+		failed = false;
+		try {
+			const res =
+				kind === 'world'
+					? await packWorldDelete(token, profile)
+					: await packDelete(token, profile);
+			message = res.message;
+			deleting = null;
+			// The profile list just changed under the panel; re-read it rather than
+			// leaving a row that no longer exists on screen.
+			checkedNewer = false;
+			newer = {};
+			await refresh();
+		} catch (err) {
+			message = err instanceof Error ? err.message : String(err);
+			failed = true;
+		} finally {
+			deleteBusy = false;
+		}
+	}
+
 	async function use(profile: string) {
 		if (busy) return;
 		busy = true;
@@ -331,30 +362,79 @@
 							· {p.hasWorld ? 'has a world' : 'no world yet'}
 						</span>
 					</span>
-					<span class="row-actions">
-						{#if meta && newer[p.id]}
+					{#if deleting === p.id}
+						<span class="confirm" role="group" aria-label="Delete from {p.id}">
+							<span class="muted ask">
+								{#if p.hasWorld}
+									The world ({bytes(p.worldBytes ?? 0)}) goes to trash for 14 days.
+									{#if p.active}Start would make a fresh one.{/if}
+								{:else}
+									No world saved.
+								{/if}
+								Deleting the profile takes the pack's files too.
+							</span>
+							{#if p.hasWorld}
+								<button
+									class="btn danger small"
+									disabled={deleteBusy}
+									title="Keep the pack installed, start a fresh world next time"
+									onclick={() => remove('world', p.id)}
+								>
+									Delete world
+								</button>
+							{/if}
 							<button
-								class="btn quiet small upd"
-								disabled={busy || running || !editable}
-								title={editable
-									? `Update to ${newer[p.id]} — this keeps the world`
-									: 'Save and stop the server first'}
-								onclick={() => showUpdate(p.id, meta)}
+								class="btn danger small"
+								disabled={deleteBusy || p.active}
+								title={p.active
+									? 'This is the profile Start boots — switch away first'
+									: 'Remove the pack, its backups and its files'}
+								onclick={() => remove('profile', p.id)}
 							>
-								{newer[p.id]} available
+								Delete profile
 							</button>
-						{/if}
-					{#if !p.active}
-						<button
-							class="btn quiet small"
-							disabled={busy || running || !editable}
-							title={editable ? 'Boot this pack and its world next time' : 'Save and stop the server first'}
-							onclick={() => use(p.id)}
-						>
-							Use
-						</button>
+							<button
+								class="btn quiet small"
+								disabled={deleteBusy}
+								onclick={() => (deleting = null)}
+							>
+								Cancel
+							</button>
+						</span>
+					{:else}
+						<span class="row-actions">
+							{#if meta && newer[p.id]}
+								<button
+									class="btn quiet small upd"
+									disabled={busy || running || !editable}
+									title={editable
+										? `Update to ${newer[p.id]} — this keeps the world`
+										: 'Save and stop the server first'}
+									onclick={() => showUpdate(p.id, meta)}
+								>
+									{newer[p.id]} available
+								</button>
+							{/if}
+							{#if !p.active}
+								<button
+									class="btn quiet small"
+									disabled={busy || running || !editable}
+									title={editable ? 'Boot this pack and its world next time' : 'Save and stop the server first'}
+									onclick={() => use(p.id)}
+								>
+									Use
+								</button>
+							{/if}
+							<button
+								class="btn quiet small"
+								disabled={busy || running || !editable}
+								title={editable ? 'Delete its world, or the whole profile' : 'Save and stop the server first'}
+								onclick={() => (deleting = p.id)}
+							>
+								Delete…
+							</button>
+						</span>
 					{/if}
-					</span>
 				</li>
 			{/each}
 		</ul>
@@ -618,6 +698,21 @@
 		gap: 0.4rem;
 		align-items: center;
 		flex: none;
+	}
+	/* Two steps, and the second one names what goes and how big it is. */
+	.confirm {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 0.4rem;
+		flex: 1 1 auto;
+	}
+	.ask {
+		flex: 1 1 14rem;
+		text-align: right;
+		font-size: 0.78rem;
+		line-height: 1.35;
 	}
 	/* An update is information, not a warning: moss rather than the gold the
 	   active badge uses, so the two do not read as the same kind of thing. */
