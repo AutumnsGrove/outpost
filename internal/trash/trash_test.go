@@ -19,6 +19,10 @@ func TestKeyNamesAWorldRecognisably(t *testing.T) {
 		"current/world.tar.gz": "trash/current-world-20261115T120000Z.tar.gz",
 		// A backup under a profile keeps enough to say which copy it was.
 		"profiles/a/backups/world-2026.tar.gz": "trash/a-backups-world-2026-20261115T120000Z.tar.gz",
+		// A path that leaves no name still gets one: a key starting with the dash
+		// before the stamp is one Time refuses to date, so it would never be swept.
+		"profiles/.tar.gz":       "trash/world-20261115T120000Z.tar.gz",
+		"profiles//world.tar.gz": "trash/world-20261115T120000Z.tar.gz",
 	}
 	for worldKey, want := range cases {
 		if got := Key(worldKey, at); got != want {
@@ -37,6 +41,20 @@ func TestTimeReadsBackWhatKeyWrote(t *testing.T) {
 	}
 	if want := at.Add(Retention); !Expires(at).Equal(want) {
 		t.Fatalf("Expires = %s, want %s", Expires(at), want)
+	}
+
+	// Every key this package mints is one it can date again, or the trash would
+	// grow for ever on an entry the sweep skips.
+	for _, worldKey := range []string{
+		"profiles/cobblemon/world.tar.gz",
+		"current/world.tar.gz",
+		"profiles/a/backups/world-2026.tar.gz",
+		"profiles/.tar.gz",
+		"profiles//world.tar.gz",
+	} {
+		if _, ok := Time(Key(worldKey, at)); !ok {
+			t.Errorf("Key(%q) produced a key Time cannot date: %s", worldKey, Key(worldKey, at))
+		}
 	}
 
 	// Names this code did not write are left undated, not guessed at.
