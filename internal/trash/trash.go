@@ -58,7 +58,21 @@ func Key(worldKey string, at time.Time) string {
 func Expires(at time.Time) time.Time { return at.Add(Retention) }
 
 // name turns a world key into the readable half of a trash key.
+//
+// It never returns empty, because a key that starts with the dash before the
+// stamp is a key Time refuses to date — a trash entry that would never be swept.
+// `outpost world delete --key` accepts any archive, and a path with no name left
+// in it after the profile is still a world.
 func name(worldKey string) string {
+	out := readable(worldKey)
+	if out == "" {
+		return "world"
+	}
+	return out
+}
+
+// readable is the name part, which may be empty for a degenerate path.
+func readable(worldKey string) string {
 	trimmed := strings.TrimSuffix(worldKey, archiveSuffix)
 	after, inside := strings.CutPrefix(trimmed, "profiles/")
 	if !inside {
