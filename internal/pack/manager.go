@@ -58,6 +58,10 @@ type Manager struct {
 
 	mu  sync.Mutex
 	job *Job
+	// leased is true while a synchronous profile change (a delete) owns the same
+	// single slot the jobs use. Jobs and leases exclude each other: a delete that
+	// interleaved with an install would race it for the same keys.
+	leased bool
 }
 
 // Profile is one pack+world pair as the page sees it.
@@ -463,7 +467,7 @@ func (m *Manager) cacheDir() string                 { return filepath.Join(m.Dir
 func (m *Manager) begin(kind, source, profile string) (*Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.job != nil && m.job.running {
+	if (m.job != nil && m.job.running) || m.leased {
 		return nil, ErrBusy
 	}
 	job := &Job{
@@ -592,6 +596,12 @@ func (m *Manager) DeleteProfile(ctx context.Context, profile string, now func() 
 	if err := publish.ValidateProfile(profile); err != nil {
 		return ProfileDelete{}, err
 	}
+	release, err := m.Lease()
+	if err != nil {
+		return ProfileDelete{}, fmt.Errorf("cannot delete profile %s: %w", profile, err)
+	}
+	defer release()
+
 	out := ProfileDelete{Profile: profile}
 
 	// The world first, and through the trash: it is the only thing here that
@@ -624,4 +634,23 @@ func (m *Manager) DeleteProfile(ctx context.Context, profile string, now func() 
 		}
 	}
 	return out, nil
+}
+
+// Lease claims the single slot the jobs use, for work that is short enough to
+// finish inside the request it belongs to. A delete is that work: it removes a
+// profile's keys, and an install running at the same time would keep uploading
+// under the prefix after the delete returned, leaving a profile that is half
+// gone and reported as gone.
+func (m *Manager) Lease() (release func(), err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if (m.job != nil && m.job.running) || m.leased {
+		return nil, ErrBusy
+	}
+	m.leased = true
+	return func() {
+		m.mu.Lock()
+		m.leased = false
+		m.mu.Unlock()
+	}, nil
 }

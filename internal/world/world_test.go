@@ -515,3 +515,24 @@ func TestDeleteRefusesAKeyThatIsNotAWorldAndBothNamesAtOnce(t *testing.T) {
 		t.Fatal("want a refusal for a profile that could not be a key")
 	}
 }
+
+func TestListDoesNotOfferTheTrashAsAnOrphan(t *testing.T) {
+	st := newFakeStore()
+	st.bucket(worldBucket)["profiles/fo/world.tar.gz"] = []byte("a world")
+	// A world that was deleted a minute ago sits at the top level of the bucket.
+	st.bucket(worldBucket)["trash/fo-20261115T120000Z.tar.gz"] = []byte("a world")
+	st.bucket(worldBucket)["trash/current-world-20261115T120000Z.tar.gz"] = []byte("an orphan")
+
+	worlds, err := List(context.Background(), st, worldBucket)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(worlds) != 1 || worlds[0].Profile != "fo" {
+		t.Fatalf("the trash was listed as a world: %+v", worlds)
+	}
+	// And nothing else is gone: the trashed copies are still in the bucket for the
+	// retention period, they are just not things you can boot or import.
+	if _, ok := st.bucket(worldBucket)["trash/fo-20261115T120000Z.tar.gz"]; !ok {
+		t.Fatal("listing removed a trash entry")
+	}
+}
