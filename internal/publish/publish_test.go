@@ -351,6 +351,18 @@ func TestRunReusesThePlayerListAlreadyInTheBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
+	// The plan has to actually hold both files, not merely leave the seeded bytes
+	// in the bucket: Unchanged means "planned and already correct in R2", while a
+	// file that was never planned appears in neither list.
+	planned := map[string]string{}
+	for _, k := range append(append([]string{}, res.Uploaded...), res.Unchanged...) {
+		planned[k] = "yes"
+	}
+	for _, k := range []string{"server/whitelist.json", "server/ops.json"} {
+		if planned[k] == "" {
+			t.Fatalf("%s was not in the plan: uploaded %v, unchanged %v", k, res.Uploaded, res.Unchanged)
+		}
+	}
 	// Verbatim: not re-marshalled, not reordered, not looked up again.
 	if got := string(st.objects["server/whitelist.json"]); got != whitelist {
 		t.Fatalf("the whitelist was not published verbatim: %q", got)
@@ -700,5 +712,49 @@ func TestRunBackfillsObjectsWithoutAChecksum(t *testing.T) {
 	again, _ := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets"})
 	if len(again.Uploaded) != 0 {
 		t.Fatalf("a third run re-uploaded %v", again.Uploaded)
+	}
+}
+
+func TestRunRefusesAnOpsOnlyPackInsteadOfMixingItWithTheBucket(t *testing.T) {
+	// A hand-rolled pack that brought its own ops.json but no whitelist.json. The
+	// pack's player files are a pair, so half of the bucket's list must not be
+	// grafted onto the pack's half: that published a plan with server/ops.json
+	// twice, and the bucket's copy won by accident of sort order.
+	pack := writePack(t)
+	if err := os.Remove(filepath.Join(pack, "server", "whitelist.json")); err != nil {
+		t.Fatal(err)
+	}
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte(`[{"uuid":"x","name":"Notch"}]`)
+	st.objects["server/ops.json"] = []byte(`[{"uuid":"x","name":"Notch","level":4}]`)
+	noMojang(t)
+
+	_, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "whitelist") {
+		t.Fatalf("expected the no-whitelist refusal, got %v", err)
+	}
+	// And nothing half-written: the refusal happens before any upload.
+	if st.puts != 0 {
+		t.Fatalf("refused after %d upload(s)", st.puts)
+	}
+}
+
+func TestRunDoesNotRepublishAnEmptyRoster(t *testing.T) {
+	// `[]` is what the roster writes when the last player is removed, and a server
+	// nobody may join is exactly what the refusal is for.
+	pack := writePack(t)
+	stripPlayers(t, pack)
+	st := newFakeStore()
+	st.objects["server/whitelist.json"] = []byte("[]")
+	st.objects["server/ops.json"] = []byte("[]")
+	noMojang(t)
+
+	_, err := Run(context.Background(), st, Options{
+		Dir: pack, AssetBucket: "mc-assets", ReusePlayers: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no whitelist") {
+		t.Fatalf("expected a whitelist refusal for an empty roster, got %v", err)
 	}
 }
