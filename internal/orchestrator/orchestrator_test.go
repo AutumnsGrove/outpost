@@ -13,6 +13,7 @@ import (
 
 	"outpost/internal/config"
 	"outpost/internal/hetzner"
+	"outpost/internal/r2"
 	"outpost/internal/rcon"
 	"outpost/internal/store"
 )
@@ -123,6 +124,25 @@ func (d *fakeDNS) SetA(_ context.Context, ip string) error {
 	return d.err
 }
 
+// fakeAssets answers the one question Start asks of the asset bucket. The
+// "default" profile is installed unless a test says otherwise.
+type fakeAssets struct {
+	objects map[string]bool
+}
+
+func newFakeAssets() *fakeAssets {
+	return &fakeAssets{objects: map[string]bool{
+		"mc-assets/profiles/default/server/fabric-server-launch.jar": true,
+	}}
+}
+
+func (f *fakeAssets) Stat(_ context.Context, bucket, key string) (r2.Info, error) {
+	if f.objects[bucket+"/"+key] {
+		return r2.Info{Size: 1}, nil
+	}
+	return r2.Info{}, r2.ErrNotFound
+}
+
 type fakeRemote struct {
 	out string
 	err error
@@ -198,6 +218,7 @@ type harness struct {
 	servers *fakeServers
 	dns     *fakeDNS
 	remote  *fakeRemote
+	assets  *fakeAssets
 
 	clock time.Time
 
@@ -227,6 +248,7 @@ func newHarness(t *testing.T) *harness {
 		servers: newFakeServers(),
 		dns:     &fakeDNS{},
 		remote:  &fakeRemote{out: "SIZE=4096\n"},
+		assets:  newFakeAssets(),
 		clock:   time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC),
 		// Loopback so the real rcon.Dial inside persistWorld refuses instantly
 		// instead of waiting out a 5s connect timeout on a fake address.
@@ -238,6 +260,7 @@ func newHarness(t *testing.T) *harness {
 		Servers: h.servers,
 		DNS:     h.dns,
 		Remote:  h.remote,
+		Assets:  h.assets,
 		Now:     func() time.Time { return h.clock },
 		Probe: func(_ context.Context, addr, _ string) (rcon.Players, error) {
 			h.probeAddr = addr
@@ -982,5 +1005,79 @@ func TestNewWiresEveryDependency(t *testing.T) {
 		if missing {
 			t.Errorf("New() left Deps.%s nil; the production path that calls it will panic", name)
 		}
+	}
+}
+
+// --- profiles --------------------------------------------------------------
+
+func TestStartRefusesAProfileWithNothingInstalled(t *testing.T) {
+	h := newHarness(t)
+	h.assets.objects = map[string]bool{}
+
+	_, err := h.o.Start(context.Background(), "eu")
+	if err == nil || !strings.Contains(err.Error(), "no server installed") {
+		t.Fatalf("want a refusal naming the empty profile, got %v", err)
+	}
+	if len(h.servers.created) != 0 {
+		t.Fatal("a server was rented for a profile with no assets")
+	}
+}
+
+func TestTheWorldIsFiledUnderTheProfileTheSessionBooted(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.assets.objects["mc-assets/profiles/homestead/server/fabric-server-launch.jar"] = true
+	if err := h.store.MetaSet(metaProfile, "homestead"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.o.Start(ctx, "eu"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	st, _ := h.store.GetState()
+	if st.Profile != "homestead" {
+		t.Fatalf("session profile = %q, want homestead", st.Profile)
+	}
+
+	// Switching mid-session is refused, and even if the active profile changed
+	// underneath it, the save follows the session.
+	if err := h.o.SetActiveProfile("cobblemon"); err == nil {
+		t.Fatal("switching profiles while a server is rented was allowed")
+	}
+	if err := h.store.MetaSet(metaProfile, "cobblemon"); err != nil {
+		t.Fatal(err)
+	}
+
+	h.tick(t) // PROVISIONING -> RUNNING
+	h.players = 0
+	h.clock = h.clock.Add(2 * time.Hour)
+	h.tick(t) // idle -> TERMINATING
+	h.tick(t) // save and delete
+
+	var saved string
+	for _, c := range h.remote.calls {
+		if strings.Contains(c, "rclone copyto") {
+			saved = c
+		}
+	}
+	if !strings.Contains(saved, "mc-worlds/profiles/homestead/world.tar.gz") {
+		t.Fatalf("the world was not filed under the booted profile:\n%s", saved)
+	}
+	if strings.Contains(saved, "cobblemon") {
+		t.Fatalf("the world followed the switched-to profile instead of the session:\n%s", saved)
+	}
+}
+
+func TestSetActiveProfileRefusesAProfileNameThatIsNotOne(t *testing.T) {
+	h := newHarness(t)
+	if err := h.o.SetActiveProfile("../etc"); err == nil {
+		t.Fatal("a path was accepted as a profile name")
+	}
+	if err := h.o.SetActiveProfile("homestead"); err != nil {
+		t.Fatalf("a plain name was refused: %v", err)
+	}
+	if p, _ := h.o.ActiveProfile(); p != "homestead" {
+		t.Fatalf("active profile = %q", p)
 	}
 }

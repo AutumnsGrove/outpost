@@ -44,6 +44,11 @@ type ServerState struct {
 	StartedAt time.Time
 	IdleSince time.Time
 
+	// Profile is the pack+world pair this session booted, recorded at rent time so
+	// the shutdown upload lands in the same place the boot pulled from even if the
+	// active profile is switched an hour later.
+	Profile string
+
 	Players   int
 	DNSValue  string
 	LastError string
@@ -99,7 +104,62 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{path: path, db: db}, nil
+}
+
+// addedColumns are columns that arrived after the first real session.
+//
+// schema.sql is written as though a database is being created from nothing, and
+// CREATE TABLE IF NOT EXISTS does nothing to the outpost.db that already holds
+// sessions on the Potato. So the two are kept in step here instead: SQLite's
+// ADD COLUMN with a non-null default is instant and rewrites no rows.
+var addedColumns = []struct{ table, column, ddl string }{
+	{"server_state", "profile", `ALTER TABLE server_state ADD COLUMN profile TEXT NOT NULL DEFAULT ''`},
+}
+
+func migrate(db *sql.DB) error {
+	have := map[string]map[string]bool{}
+	for _, c := range addedColumns {
+		if have[c.table] != nil {
+			continue
+		}
+		columns, err := tableColumns(db, c.table)
+		if err != nil {
+			return err
+		}
+		have[c.table] = columns
+	}
+	for _, c := range addedColumns {
+		if have[c.table][c.column] {
+			continue
+		}
+		if _, err := db.Exec(c.ddl); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", c.table, c.column, err)
+		}
+	}
+	return nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, fmt.Errorf("read columns of %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
 }
 
 // TryLock takes an exclusive, non-blocking lock over the state machine.
@@ -176,11 +236,11 @@ func (s *Store) GetState() (ServerState, error) {
 	err := s.db.QueryRow(`
 		SELECT state, vps_id, vps_ip, tailnet_host, region, server_type,
 		       rcon_password, started_at, idle_since, players, dns_value,
-		       last_error, updated_at
+		       last_error, updated_at, profile
 		  FROM server_state WHERE id = 1`).
 		Scan(&st.State, &st.VPSID, &st.VPSIP, &st.TailnetHost, &st.Region,
 			&st.ServerType, &st.RCONPassword, &started, &idle, &st.Players,
-			&st.DNSValue, &st.LastError, &updated)
+			&st.DNSValue, &st.LastError, &updated, &st.Profile)
 	if err != nil {
 		return st, fmt.Errorf("read state: %w", err)
 	}
@@ -204,11 +264,12 @@ func (s *Store) SetState(st ServerState) error {
 		UPDATE server_state SET
 			state = ?, vps_id = ?, vps_ip = ?, tailnet_host = ?, region = ?,
 			server_type = ?, rcon_password = ?, started_at = ?, idle_since = ?,
-			players = ?, dns_value = ?, last_error = ?, updated_at = ?
+			players = ?, dns_value = ?, last_error = ?, updated_at = ?,
+			profile = ?
 		 WHERE id = 1`,
 		string(st.State), st.VPSID, st.VPSIP, st.TailnetHost, st.Region,
 		st.ServerType, st.RCONPassword, stamp(st.StartedAt), stamp(st.IdleSince),
-		st.Players, st.DNSValue, st.LastError, stamp(st.UpdatedAt))
+		st.Players, st.DNSValue, st.LastError, stamp(st.UpdatedAt), st.Profile)
 	if err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}

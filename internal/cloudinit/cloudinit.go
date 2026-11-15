@@ -23,7 +23,11 @@ var (
 // Data is everything the template needs. Secrets arrive here already read from
 // the orchestrator's environment and are never written to disk anywhere else.
 type Data struct {
-	Hostname         string
+	Hostname string
+	// Profile is which pack+world pair this VPS is for. It scopes every R2 key
+	// the server reads and the shutdown upload writes, so two profiles never see
+	// each other's mods or world.
+	Profile          string
 	MCPort           int
 	RCONPassword     string
 	TailscaleAuthKey string
@@ -41,6 +45,9 @@ func (d Data) Validate() error {
 	missing := []string{}
 	if d.Hostname == "" {
 		missing = append(missing, "hostname")
+	}
+	if d.Profile == "" {
+		missing = append(missing, "profile")
 	}
 	if d.MCPort == 0 {
 		missing = append(missing, "mc port")
@@ -74,7 +81,7 @@ func (d Data) Validate() error {
 			return fmt.Errorf("cloud-init: %s has characters outside A-Z a-z 0-9 . _ ~ + = / : -", name)
 		}
 	}
-	for _, v := range []string{d.Hostname, d.AssetBucket, d.WorldBucket, d.R2AccountID} {
+	for _, v := range []string{d.Hostname, d.Profile, d.AssetBucket, d.WorldBucket, d.R2AccountID} {
 		if !safeName.MatchString(v) {
 			return fmt.Errorf("cloud-init: %q is not a plain name (letters, digits, - . _)", v)
 		}
