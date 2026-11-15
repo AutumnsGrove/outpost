@@ -26,6 +26,9 @@ type fakeStore struct {
 	copies   []string
 	gets     []string
 	failCopy bool
+	// partialCopy writes a truncated object at the destination and then fails, the
+	// way a multipart copy that lost a part does.
+	partialCopy bool
 }
 
 func newFakeStore() *fakeStore {
@@ -84,6 +87,10 @@ func (f *fakeStore) Remove(_ context.Context, bucket, key string) error {
 }
 
 func (f *fakeStore) Copy(_ context.Context, bucket, srcKey, dstKey string) (int64, error) {
+	if f.partialCopy {
+		f.bucket(bucket)[dstKey] = []byte("half a wo")
+		return 0, errors.New("the multipart copy failed")
+	}
 	if f.failCopy {
 		return 0, errors.New("the multipart copy failed")
 	}
@@ -231,6 +238,11 @@ func TestImportIsIdempotent(t *testing.T) {
 	if len(st.copies) != 0 {
 		t.Fatalf("an already-there import still copied: %v", st.copies)
 	}
+	// The line says "profile X already has a world (<size>)", and that size is the
+	// world being kept, not the one that was offered.
+	if res.Bytes != int64(len("the world being played on")) {
+		t.Fatalf("bytes = %d, want the existing world's size", res.Bytes)
+	}
 	if st.wrote(worldBucket, "profiles/vanilla/pack.json") {
 		t.Fatal("an already-there import rewrote the marker")
 	}
@@ -330,4 +342,50 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestImportCleansUpAPartialCopySoARetryRetries(t *testing.T) {
+	st := newFakeStore()
+	st.bucket(worldBucket)[LegacyKey] = []byte("the whole world, eventually")
+	st.partialCopy = true
+
+	opts := ImportOptions{WorldBucket: worldBucket, AssetBucket: assetBucket, Profile: "vanilla", Now: testClock}
+	if _, err := Import(context.Background(), st, opts); err == nil {
+		t.Fatal("a failed copy must fail the import")
+	}
+	// A destination left behind would be adopted by the next run's idempotency
+	// check, and no command in the tool can replace it afterwards.
+	if _, ok := st.bucket(worldBucket)["profiles/vanilla/world.tar.gz"]; ok {
+		t.Fatal("a partial copy was left where the profile's world goes")
+	}
+
+	st.partialCopy = false
+	res, err := Import(context.Background(), st, opts)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if res.AlreadyThere {
+		t.Fatal("the retry saw a partial world and called it the profile's")
+	}
+	if got := string(st.bucket(worldBucket)["profiles/vanilla/world.tar.gz"]); got != "the whole world, eventually" {
+		t.Fatalf("retry wrote %q", got)
+	}
+}
+
+func TestListReadsAMarkerThatSitsBesideAnOrphan(t *testing.T) {
+	st := newFakeStore()
+	// What publish wrote before profiles: the world and its marker side by side.
+	st.bucket(worldBucket)[LegacyKey] = []byte("the lost world")
+	st.bucket(worldBucket)["current/pack.json"] = mustJSON(t, publish.Pack{Source: "modrinth", Slug: "fabulously-optimized", Name: "Fabulously Optimized"})
+
+	worlds, err := List(context.Background(), st, worldBucket)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(worlds) != 1 || !worlds[0].Orphaned() {
+		t.Fatalf("worlds = %+v", worlds)
+	}
+	if worlds[0].Pack == nil || worlds[0].Pack.Slug != "fabulously-optimized" {
+		t.Fatalf("the marker beside the orphan was not read: %+v", worlds[0].Pack)
+	}
 }
