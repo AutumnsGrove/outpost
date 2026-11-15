@@ -32,6 +32,25 @@ const (
 	// more, and it is the only copy of six months of play, so it is imported
 	// rather than moved and never removed by an import.
 	LegacyKey = "current/world.tar.gz"
+
+	// TrashPrefix is where a deleted world waits out its retention. Deleting is
+	// the one operation being wrong cannot be retried, so the world is copied
+	// there first and the live key removed second — the same order the shutdown
+	// path uses for `backups/`.
+	TrashPrefix = "trash/"
+
+	// TrashRetentionDays is how long a deleted world can be brought back. It
+	// matches the `--min-age 14d` the shutdown upload uses for backups.
+	TrashRetentionDays = 14
+
+	// TrashRetention is TrashRetentionDays as a duration. The trash is swept on the
+	// next delete rather than on a timer: it grows exactly when something is
+	// deleted, which is exactly when it needs emptying.
+	TrashRetention = time.Duration(TrashRetentionDays) * 24 * time.Hour
+
+	// trashStamp is the time format in a trash key. Fixed-width and UTC, so the
+	// keys sort and parse without asking R2 for a modification time.
+	trashStamp = "20060102T150405Z"
 )
 
 // Store is the slice of R2 a world command needs. Copy is here and Get is not,
@@ -86,9 +105,11 @@ func List(ctx context.Context, st Store, bucket string) ([]World, error) {
 				}
 			}
 			worlds = append(worlds, w)
-		case !inside && strings.HasSuffix(o.Key, ".tar.gz"):
-			// Not under profiles/: the pre-profile world, or something an older
-			// build left behind. Worth naming, because nothing else will. Its marker
+		case !inside && strings.HasSuffix(o.Key, ".tar.gz") && !strings.HasPrefix(o.Key, TrashPrefix):
+			// Not under profiles/ and not in the trash: the pre-profile world, or
+			// something an older build left behind. Worth naming, because nothing
+			// else will — but a trashed world is not a candidate for anything, and
+			// listing it would advertise the thing just deleted. Its marker
 			// sits beside it — `current/pack.json` next to `current/world.tar.gz` is
 			// what publish wrote before profiles — so say what made it when that key
 			// is still there.
@@ -254,4 +275,163 @@ func writeMarker(ctx context.Context, st Store, opts ImportOptions) (publish.Pac
 // pre-profile one alike, because both put the two files side by side.
 func markerBeside(key string) string {
 	return strings.TrimSuffix(key, ArchiveName) + publish.PackFile
+}
+
+// DeleteOptions is one world going away, and it has to be named either by the
+// profile it belongs to or by the key `outpost world list` printed.
+type DeleteOptions struct {
+	WorldBucket string
+	// Profile deletes profiles/<Profile>/world.tar.gz.
+	Profile string
+	// Key deletes an explicit world key instead: an orphan, or a backup. The
+	// profile is the common case and the key is the way out of it.
+	Key string
+	// Now is the clock for the trash name and the retention sweep.
+	Now func() time.Time
+}
+
+// DeleteResult is what a delete did, so the CLI can say it and the page can show
+// a size in the confirmation before it happens.
+type DeleteResult struct {
+	Key   string
+	Trash string
+	Bytes int64
+	// Expires is when the trash copy is swept: the answer to "can I still get it
+	// back", which is the question anyone deleting a world is asking.
+	Expires time.Time
+	// Missing is a delete of something already gone. It is a message, not an
+	// error: deleting twice should be safe to repeat.
+	Missing bool
+	// Swept are expired trash entries removed on the way past.
+	Swept []string
+}
+
+// Target is the key a DeleteOptions names, before any R2 call.
+func (o DeleteOptions) Target() (string, error) {
+	if o.Key != "" {
+		if o.Profile != "" {
+			return "", fmt.Errorf("name either a profile or a key, not both")
+		}
+		if !strings.HasSuffix(o.Key, ".tar.gz") {
+			return "", fmt.Errorf("%q is not a world archive (a world key ends in .tar.gz)", o.Key)
+		}
+		return o.Key, nil
+	}
+	if err := publish.ValidateProfile(o.Profile); err != nil {
+		return "", err
+	}
+	return publish.ProfilePrefix(o.Profile) + ArchiveName, nil
+}
+
+// Delete moves a world to the trash and then removes it from where it was.
+//
+// The order is the whole rule: copy to trash, verify the copy, and only then
+// remove the live key. A failed copy aborts the delete with the world exactly
+// where it was — the same promise the shutdown path makes ("never delete a world
+// you could not back up"), applied to the one operation that cannot be retried.
+//
+// The trash expires (TrashRetention), swept lazily on the next delete. Nothing
+// else may remove it: it is the answer to "I deleted the wrong world".
+func Delete(ctx context.Context, st Store, opts DeleteOptions) (DeleteResult, error) {
+	now := time.Now
+	if opts.Now != nil {
+		now = opts.Now
+	}
+	at := now().UTC()
+
+	key, err := opts.Target()
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	res := DeleteResult{Key: key}
+
+	// Sweep first, so a delete that fails halfway still leaves the trash tidy and
+	// a delete that succeeds does not add to a pile nobody empties.
+	swept, err := sweepTrash(ctx, st, opts.WorldBucket, at)
+	if err != nil {
+		return res, err
+	}
+	res.Swept = swept
+
+	src, err := st.Stat(ctx, opts.WorldBucket, key)
+	if err != nil {
+		if errors.Is(err, r2.ErrNotFound) {
+			res.Missing = true
+			return res, nil
+		}
+		return res, err
+	}
+
+	res.Trash = TrashPrefix + trashName(key) + "-" + at.Format(trashStamp) + ".tar.gz"
+	res.Expires = at.Add(TrashRetention)
+	if _, err := st.Copy(ctx, opts.WorldBucket, key, res.Trash); err != nil {
+		// Copy verifies the destination size, so an error here means the trash
+		// copy is not whole and the live key must stay.
+		return res, fmt.Errorf("nothing was deleted: could not put a copy in %s (%w)", res.Trash, err)
+	}
+
+	if err := st.Remove(ctx, opts.WorldBucket, key); err != nil {
+		return res, fmt.Errorf("the copy is safe in %s but the live key is still there: %w", res.Trash, err)
+	}
+	res.Bytes = src.Size
+	return res, nil
+}
+
+// trashName turns a world key into the readable half of a trash key:
+// profiles/cobblemon/world.tar.gz becomes "cobblemon", an orphan keeps its path
+// with the slashes flattened, and anything else under a profile keeps enough of
+// the path to say which copy it was.
+func trashName(key string) string {
+	trimmed := strings.TrimSuffix(key, ".tar.gz")
+	after, inside := strings.CutPrefix(trimmed, "profiles/")
+	if !inside {
+		return strings.ReplaceAll(trimmed, "/", "-")
+	}
+	profile, rest, found := strings.Cut(after, "/")
+	if !found {
+		return profile
+	}
+	// profiles/<id>/world.tar.gz is the live world: the profile name says it all.
+	if rest == strings.TrimSuffix(ArchiveName, ".tar.gz") {
+		return profile
+	}
+	return strings.ReplaceAll(profile+"-"+rest, "/", "-")
+}
+
+// sweepTrash removes the trash entries that have outlived their retention.
+//
+// The age comes from the key, not from R2's modification time: this package
+// wrote the stamp, so it can read it, and an entry whose name does not parse was
+// not written by this code and is left alone rather than guessed at.
+func sweepTrash(ctx context.Context, st Store, bucket string, now time.Time) ([]string, error) {
+	objects, err := st.List(ctx, bucket, TrashPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, o := range objects {
+		at, ok := trashTime(o.Key)
+		if !ok || now.Sub(at) < TrashRetention {
+			continue
+		}
+		if err := st.Remove(ctx, bucket, o.Key); err != nil {
+			return removed, err
+		}
+		removed = append(removed, o.Key)
+	}
+	return removed, nil
+}
+
+// trashTime reads the stamp out of a trash key.
+func trashTime(key string) (time.Time, bool) {
+	base := strings.TrimSuffix(strings.TrimPrefix(key, TrashPrefix), ".tar.gz")
+	dash := strings.LastIndex(base, "-")
+	if dash < 0 || dash == len(base)-1 {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(trashStamp, base[dash+1:])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return at, true
 }

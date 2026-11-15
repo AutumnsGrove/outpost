@@ -101,6 +101,8 @@ outpost pack list        # the installed profiles, and which one is active
 outpost pack use <id>    # switch which pack+world the next start boots
 outpost world list       # every profile's world, and any world no profile claims
 outpost world import <id>  # adopt an existing world into a profile, by copy
+outpost world delete <id>  # move a world to trash/, where it waits 14 days
+outpost pack delete <id>   # remove a profile: its world, backups and files
 outpost start [region]   # rent a server (default region: eu)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
@@ -268,6 +270,31 @@ the panel shows that as "Vanilla 1.20.1 · minecraft 1.20.1 · fabric".
 
 `outpost pack vanilla` refuses a directory that holds another pack, because `publish`
 uploads what is in the directory and old jars would go up as a vanilla server's mods.
+
+### Deleting a world, or a profile
+
+```bash
+outpost world delete cobblemon-fabric     # the world, keeping the pack installed
+outpost world delete --key current/world.tar.gz   # an orphan, by the key `list` printed
+outpost pack delete cobblemon-fabric --yes        # the whole profile
+```
+
+The order is the whole rule: **copy to `trash/` first, remove the live key second**, and
+a copy that fails leaves the world exactly where it was. That is the shutdown path's
+promise — never delete a world you could not back up — applied to the one operation that
+cannot be retried. The trash expires on its own after 14 days, swept by the next delete
+rather than by a timer; the age comes from the key, so an entry this code did not write
+is left alone rather than guessed at.
+
+`pack delete` needs `--yes` and is refused on the **active** profile: deleting what
+Start boots is a confusing way to learn what you did, so `outpost pack use <other>`
+comes first. `world delete` on the active profile is allowed and says so, because Start
+will simply make a fresh world. Both are refused while a server is rented — the session
+uploads over its own profile's world when it shuts down.
+
+The page does the same two things from each profile row's **Delete…**: it names the
+world and its size, and the two buttons are "Delete world" and "Delete profile".
+>>>>>>> 366da35 (feat(world): delete a world, and a profile, through the trash)
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --https=8896` in front of it gives you a page at

@@ -16,6 +16,8 @@ import (
 	"outpost/internal/publish"
 	"outpost/internal/r2"
 	"outpost/internal/roster"
+	"outpost/internal/store"
+	"outpost/internal/world"
 )
 
 func (a *app) packCmd() *cobra.Command {
@@ -29,7 +31,7 @@ func (a *app) packCmd() *cobra.Command {
 			"Source can be a Modrinth slug, a modrinth.com modpack link (Prism's \"open\n" +
 			"in browser\" gives you one), a .mrpack URL, or a .mrpack on disk.",
 	}
-	cmd.AddCommand(a.packFetchCmd(), a.packVanillaCmd(), a.packListCmd(), a.packUseCmd())
+	cmd.AddCommand(a.packFetchCmd(), a.packVanillaCmd(), a.packListCmd(), a.packUseCmd(), a.packDeleteCmd())
 	return cmd
 }
 
@@ -144,6 +146,72 @@ func (a *app) packListCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func (a *app) packDeleteCmd() *cobra.Command {
+	var yes bool
+
+	cmd := &cobra.Command{
+		Use:   "delete <profile>",
+		Short: "Remove a profile: its world, its backups, and its files",
+		Long: "Removes mc-assets/profiles/<id>/ and mc-worlds/profiles/<id>/. The world is\n" +
+			"copied to trash/ first and stays recoverable for " + fmt.Sprint(world.TrashRetentionDays) + " days; the\n" +
+			"backups under the profile go with it.\n\n" +
+			"Needs --yes, because it is the one command here that removes something you\n" +
+			"cannot publish again from a link. Refused while a server is rented, and\n" +
+			"refused on the active profile: `outpost pack use <other>` first, since\n" +
+			"deleting what Start boots is a confusing way to find out what happened.",
+		Example: "  outpost pack delete cobblemon-fabric --yes",
+		Args:    cobra.ExactArgs(1),
+		// R2 and the database: the active profile decides whether this is allowed.
+		Annotations: map[string]string{requiresCloud: "r2"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := args[0]
+			if err := publish.ValidateProfile(profile); err != nil {
+				return err
+			}
+
+			active, err := a.orch.ActiveProfile()
+			if err != nil {
+				return err
+			}
+			if profile == active {
+				return fmt.Errorf("profile %s is the active one; `outpost pack use <other>` first, then delete it", profile)
+			}
+			st, err := a.store.GetState()
+			if err != nil {
+				return err
+			}
+			if st.State != store.Offline {
+				return fmt.Errorf("the server is %s; stop it before deleting a profile", st.State)
+			}
+			if !yes {
+				return fmt.Errorf("this removes profile %q, its backups and its files (the world is kept in trash for %d days); pass --yes if that is what you want",
+					profile, world.TrashRetentionDays)
+			}
+
+			m, err := a.packManager(nil)
+			if err != nil {
+				return err
+			}
+			res, err := m.DeleteProfile(cmd.Context(), profile, active, nil)
+			if err != nil {
+				return err
+			}
+			if res.Trashed {
+				fmt.Printf("world   %s to %s, recoverable until %s\n",
+					humanSize(res.World.Bytes), res.World.Trash, res.World.Expires.Format("2006-01-02 15:04 MST"))
+			} else {
+				fmt.Printf("world   none saved, nothing to trash\n")
+			}
+			fmt.Printf("removed %d asset key(s) and %d world key(s) (marker, backups)\n", res.Assets, res.Leftovers)
+			fmt.Printf("profile %s is gone\n", profile)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&yes, "yes", false, "actually delete it")
+	return cmd
 }
 
 func (a *app) packUseCmd() *cobra.Command {

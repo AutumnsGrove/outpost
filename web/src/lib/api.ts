@@ -177,6 +177,8 @@ export interface PackProfile {
 	mods: number;
 	bytes: number;
 	hasWorld: boolean;
+	/** How big the saved world is, so the page can say what it is deleting. */
+	worldBytes?: number;
 	worldPack?: PackMeta;
 }
 
@@ -235,6 +237,14 @@ export const playerAction = (action: PlayerAction, name: string, token: string) 
 
 export const getPack = async (): Promise<PackOverview> =>
 	json<PackOverview>(await fetch('/api/pack', { headers: { accept: 'application/json' } }));
+
+/** Moves the profile's world to trash/ — recoverable for two weeks. */
+export const packWorldDelete = (token: string, profile: string) =>
+	post<{ message: string }>('/api/pack/world/delete', { token, profile });
+
+/** Removes the profile: its world (through the trash), backups and files. */
+export const packDelete = (token: string, profile: string) =>
+	post<{ message: string }>('/api/pack/delete', { token, profile });
 
 /** profile scopes the list to a row: a profile named --profile potato is not
  *  named after its pack, so deriving it from the source would answer about a
