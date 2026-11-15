@@ -374,8 +374,15 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		res.TotalSize += obj.Size
 	}
 
-	if opts.Prune {
-		removed, err := prune(ctx, st, opts, objects)
+	// mods/ always belongs to the publish: the directory (or the pack) *is* the
+	// list of jars the server loads, so anything left from an earlier publish is a
+	// second copy of a mod, which is a crash rather than a stale file. A hand-rolled
+	// publish over a former pack profile is the case that needs it — without this a
+	// "vanilla" profile keeps forty-nine jars. config/ and root/ are only pruned on
+	// request, because a hand-rolled directory may be the first publish into a
+	// profile whose configs somebody wrote by hand.
+	if packed := pf.Pack != nil; opts.Prune || !packed {
+		removed, err := prune(ctx, st, opts, objects, opts.Prune || packed)
 		if err != nil {
 			return res, err
 		}
@@ -395,14 +402,22 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		if err := recordPack(ctx, st, opts, *pf.Pack, discardWorld); err != nil {
 			return res, err
 		}
-	case opts.WorldBucket != "":
-		// A hand-rolled pack has no identity to record, and the marker from an
-		// earlier fetched pack would still claim assets that are no longer there.
-		// Removing it means the next packed publish has to be told what to do with
-		// a world this publish cannot describe, instead of trusting a stale label.
-		_, marker := worldKeys(opts.ProfileOf())
-		if err := st.Remove(ctx, opts.WorldBucket, marker); err != nil {
-			return res, fmt.Errorf("clear the pack marker: %w", err)
+	default:
+		// A hand-rolled pack has no identity to record, so both halves of an earlier
+		// fetched publish have to go: the marker in the world bucket, or the next
+		// packed publish trusts a label that no longer describes the assets, and the
+		// manifest in the asset bucket, or the page keeps naming a pack that is not
+		// installed any more.
+		if opts.AssetBucket != "" {
+			if err := st.Remove(ctx, opts.AssetBucket, profilePrefix(opts.ProfileOf())+PackFile); err != nil {
+				return res, fmt.Errorf("clear the pack manifest: %w", err)
+			}
+		}
+		if opts.WorldBucket != "" {
+			_, marker := worldKeys(opts.ProfileOf())
+			if err := st.Remove(ctx, opts.WorldBucket, marker); err != nil {
+				return res, fmt.Errorf("clear the pack marker: %w", err)
+			}
 		}
 	}
 	return res, nil
@@ -584,6 +599,18 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	// start.sh is what minecraft.service runs. Generating one means a bare
 	// `outpost publish --fabric 1.20.1` produces a bootable server rather than a
 	// VPS that fails systemd twenty minutes later.
+	// pack.json is not just local bookkeeping: it is how the page names a profile
+	// ("Fabulously Optimized 5.2.8", "minecraft 1.20.1") and how the RAM guard
+	// knows what it is looking at. It is small, and it belongs beside the files it
+	// describes.
+	if packed {
+		raw, err := os.ReadFile(filepath.Join(opts.Dir, PackFile))
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %w", PackFile, err)
+		}
+		add(PackFile, Object{Key: PackFile, Content: raw, Size: int64(len(raw))})
+	}
+
 	if !hasKey(objects, "scripts/start.sh") {
 		add("scripts/start.sh", textObject("scripts/start.sh", defaultStartScript))
 		warnings = append(warnings, "generated scripts/start.sh (2 GB heap; raise it in the pack if the modpack needs more)")
@@ -616,15 +643,20 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 // is where a person's own files live) or the world bucket. root/ is pruned
 // because a fetched pack owns every file in it: a config the new pack version
 // dropped would otherwise stay in R2 and load with the next boot.
-func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]string, error) {
+func prune(ctx context.Context, st Store, opts Options, objects []Object, everything bool) ([]string, error) {
 	want := map[string]bool{}
 	for _, o := range objects {
 		want[o.Key] = true
 	}
 
 	base := profilePrefix(opts.ProfileOf())
+	prefixes := []string{base + "mods/"}
+	if everything {
+		prefixes = append(prefixes, base+"config/", base+"root/")
+	}
+
 	var removed []string
-	for _, prefix := range []string{base + "mods/", base + "config/", base + "root/"} {
+	for _, prefix := range prefixes {
 		existing, err := st.List(ctx, opts.AssetBucket, prefix)
 		if err != nil {
 			return nil, err

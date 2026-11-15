@@ -127,16 +127,16 @@ func TestRunRefusesAPackNoRegionCanHold(t *testing.T) {
 func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("world")
+	st.worlds[key("world.tar.gz")] = []byte("world")
 	marker, _ := json.Marshal(Pack{Source: "modrinth", Slug: "homestead", VersionID: "other", VersionNumber: "0.9.0"})
-	st.objects[key("pack.json")] = marker
+	st.worlds[key("pack.json")] = marker
 
 	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
 	_, err := Run(context.Background(), st, opts)
 	if err == nil || !strings.Contains(err.Error(), "--new-world") {
 		t.Fatalf("want a refusal naming --new-world, got %v", err)
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; !ok {
+	if _, ok := st.worlds[key("world.tar.gz")]; !ok {
 		t.Fatal("the world was removed by a refused publish")
 	}
 
@@ -154,16 +154,16 @@ func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
 func TestRunKeepsTheWorldAcrossAPackUpdate(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("world")
+	st.worlds[key("world.tar.gz")] = []byte("world")
 	// The same pack, one version older: that is an update, not a different game.
 	older, _ := json.Marshal(Pack{Source: "modrinth", Slug: "test-pack", VersionID: "older", VersionNumber: "0.9.0"})
-	st.objects[key("pack.json")] = older
+	st.worlds[key("pack.json")] = older
 
 	res, err := Run(context.Background(), st, Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
 	if err != nil {
 		t.Fatalf("a pack update was refused: %v", err)
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; !ok {
+	if _, ok := st.worlds[key("world.tar.gz")]; !ok {
 		t.Fatal("a pack update discarded the world it should have kept")
 	}
 	for _, w := range res.Warnings {
@@ -176,8 +176,8 @@ func TestRunKeepsTheWorldAcrossAPackUpdate(t *testing.T) {
 func TestRunNewWorldDiscardsTheWorldAfterTheUpload(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("vanilla world from 2025")
-	st.objects[key("pack.json")] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
+	st.worlds[key("world.tar.gz")] = []byte("vanilla world from 2025")
+	st.worlds[key("pack.json")] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
 
 	_, err := Run(context.Background(), st, Options{
 		Dir:         dir,
@@ -188,12 +188,12 @@ func TestRunNewWorldDiscardsTheWorldAfterTheUpload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new-world run: %v", err)
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; ok {
+	if _, ok := st.worlds[key("world.tar.gz")]; ok {
 		t.Fatal("--new-world left the old world behind")
 	}
 
 	var marker Pack
-	if err := json.Unmarshal(st.objects[key("pack.json")], &marker); err != nil {
+	if err := json.Unmarshal(st.worlds[key("pack.json")], &marker); err != nil {
 		t.Fatalf("marker: %v", err)
 	}
 	if marker.VersionID != "ver1" {
@@ -204,7 +204,7 @@ func TestRunNewWorldDiscardsTheWorldAfterTheUpload(t *testing.T) {
 func TestRunRefusesAnUnmarkedWorldAndAcceptsItWithKeepWorld(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("world from before packs existed")
+	st.worlds[key("world.tar.gz")] = []byte("world from before packs existed")
 
 	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
 	if _, err := Run(context.Background(), st, opts); err == nil || !strings.Contains(err.Error(), "--new-world") {
@@ -220,9 +220,9 @@ func TestRunRefusesAnUnmarkedWorldAndAcceptsItWithKeepWorld(t *testing.T) {
 func TestRunLeavesTheMarkerAloneForTheSameBuild(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("world")
+	st.worlds[key("world.tar.gz")] = []byte("world")
 	same, _ := json.Marshal(testPack())
-	st.objects[key("pack.json")] = same
+	st.worlds[key("pack.json")] = same
 
 	res, err := Run(context.Background(), st, Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
 	if err != nil {
@@ -233,7 +233,7 @@ func TestRunLeavesTheMarkerAloneForTheSameBuild(t *testing.T) {
 			t.Fatalf("a same-build publish complained about the world: %v", res.Warnings)
 		}
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; !ok {
+	if _, ok := st.worlds[key("world.tar.gz")]; !ok {
 		t.Fatal("the world of the same pack was touched")
 	}
 }
@@ -241,7 +241,7 @@ func TestRunLeavesTheMarkerAloneForTheSameBuild(t *testing.T) {
 func TestRunDoesNotTouchTheWorldOnADryRun(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("old world")
+	st.worlds[key("world.tar.gz")] = []byte("old world")
 
 	res, err := Run(context.Background(), st, Options{
 		Dir:         dir,
@@ -256,10 +256,10 @@ func TestRunDoesNotTouchTheWorldOnADryRun(t *testing.T) {
 	if !warningsContain(res.Warnings, "would discard") {
 		t.Fatalf("dry run should say what it would do: %v", res.Warnings)
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; !ok {
+	if _, ok := st.worlds[key("world.tar.gz")]; !ok {
 		t.Fatal("a dry run removed the world")
 	}
-	if _, ok := st.objects[key("pack.json")]; ok {
+	if _, ok := st.worlds[key("pack.json")]; ok {
 		t.Fatal("a dry run wrote the marker")
 	}
 }
@@ -281,8 +281,8 @@ func TestLoadPackTreatsAMissingManifestAsAHandRolledPack(t *testing.T) {
 func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("world")
-	st.objects[key("pack.json")] = []byte("{ this is not json")
+	st.worlds[key("world.tar.gz")] = []byte("world")
+	st.worlds[key("pack.json")] = []byte("{ this is not json")
 
 	// A corrupt marker must not be a dead end: --new-world is the way out, and it
 	// has to work without a shell and a manual delete.
@@ -295,10 +295,10 @@ func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new-world with a corrupt marker: %v", err)
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; ok {
+	if _, ok := st.worlds[key("world.tar.gz")]; ok {
 		t.Fatal("--new-world left the world behind")
 	}
-	if err := json.Unmarshal(st.objects[key("pack.json")], &Pack{}); err != nil {
+	if err := json.Unmarshal(st.worlds[key("pack.json")], &Pack{}); err != nil {
 		t.Fatalf("the marker was not rewritten: %v", err)
 	}
 }
@@ -306,9 +306,9 @@ func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
 func TestRunNewWorldDiscardsEvenAWorldOfTheSameBuild(t *testing.T) {
 	dir := writeModpack(t, testPack())
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("a world I no longer want")
+	st.worlds[key("world.tar.gz")] = []byte("a world I no longer want")
 	same, _ := json.Marshal(testPack())
-	st.objects[key("pack.json")] = same
+	st.worlds[key("pack.json")] = same
 
 	// --new-world is the only way out of a world that is simply unwanted, and it
 	// has to work when the pack has not changed: a corrupted chunk in a world of
@@ -321,7 +321,7 @@ func TestRunNewWorldDiscardsEvenAWorldOfTheSameBuild(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("new-world on the same build: %v", err)
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; ok {
+	if _, ok := st.worlds[key("world.tar.gz")]; ok {
 		t.Fatal("--new-world was a no-op because the pack had not changed")
 	}
 }
@@ -331,9 +331,16 @@ func TestRunClearsTheMarkerWhenPublishingAHandRolledPack(t *testing.T) {
 	// published. The marker still names Cobblemon, so it has to go.
 	dir := writePack(t)
 	st := newFakeStore()
-	st.objects[key("world.tar.gz")] = []byte("world")
-	marker, _ := json.Marshal(testPack())
-	st.objects[key("pack.json")] = marker
+	// A fetched pack was installed here first: it left a manifest in the asset
+	// bucket and a marker in the world bucket.
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         writeModpack(t, testPack()),
+		AssetBucket: "mc-assets",
+		WorldBucket: "mc-worlds",
+	}); err != nil {
+		t.Fatalf("packed publish: %v", err)
+	}
+	st.worlds[key("world.tar.gz")] = []byte("world")
 
 	if _, err := Run(context.Background(), st, Options{
 		Dir:         dir,
@@ -342,10 +349,16 @@ func TestRunClearsTheMarkerWhenPublishingAHandRolledPack(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("hand-rolled publish: %v", err)
 	}
-	if _, ok := st.objects[key("pack.json")]; ok {
+	if _, ok := st.worlds[key("pack.json")]; ok {
 		t.Fatal("a stale pack marker survived a hand-rolled publish")
 	}
-	if _, ok := st.objects[key("world.tar.gz")]; !ok {
+	// The asset bucket had a manifest of its own (uploaded by the packed publish
+	// above in spirit): the page reads that one to name the profile, so it has to
+	// go too, or a hand-rolled pack keeps being called Fabulously Optimized.
+	if _, ok := st.objects[key("pack.json")]; ok {
+		t.Fatal("a stale asset manifest survived a hand-rolled publish")
+	}
+	if _, ok := st.worlds[key("world.tar.gz")]; !ok {
 		t.Fatal("a hand-rolled publish removed the world")
 	}
 
@@ -476,5 +489,74 @@ func TestReadPlayersAndPublishThemVerbatim(t *testing.T) {
 
 	if _, err := ReadPlayers(context.Background(), newFakeStore(), "mc-assets"); err == nil {
 		t.Fatal("an empty bucket should say the list is missing")
+	}
+}
+
+func TestBuildUploadsTheManifestSoThePageCanNameTheProfile(t *testing.T) {
+	dir := writeModpack(t, testPack())
+
+	objects, _, err := Build(context.Background(), Options{Dir: dir, Profile: "cobblemon"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	var got Object
+	for _, o := range objects {
+		if strings.HasSuffix(o.Key, "/pack.json") {
+			got = o
+		}
+	}
+	if got.Key == "" {
+		t.Fatalf("no pack.json in the plan; the page reads it to name a profile: %v", keys(objects))
+	}
+	if got.Key != profilePrefix("cobblemon")+PackFile {
+		t.Fatalf("pack.json landed at %s, want it inside the profile", got.Key)
+	}
+	if !strings.Contains(string(got.Content), `"slug": "test-pack"`) {
+		t.Fatalf("the uploaded manifest is not the pack's: %s", got.Content)
+	}
+
+	// A hand-rolled directory has no manifest, and must not gain an empty one.
+	plain := writePack(t)
+	objects, _, err = Build(context.Background(), Options{Dir: plain, Profile: "default"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	for _, o := range objects {
+		if strings.HasSuffix(o.Key, "/pack.json") {
+			t.Fatalf("a hand-rolled pack grew a manifest: %s", o.Key)
+		}
+	}
+}
+
+func TestAHandRolledPublishOwnsModsButNotConfigs(t *testing.T) {
+	st := newFakeStore()
+	// A former pack profile: forty-nine jars and a config written by hand.
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         writeModpack(t, testPack()),
+		AssetBucket: "mc-assets",
+	}); err != nil {
+		t.Fatalf("packed publish: %v", err)
+	}
+	st.objects[key("config/hand-written.toml")] = []byte("mine")
+
+	// Now the same profile gets a hand-rolled directory with no mods.
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         writePack(t),
+		AssetBucket: "mc-assets",
+	}); err != nil {
+		t.Fatalf("hand-rolled publish: %v", err)
+	}
+
+	// mods/ is the publish's to own: a leftover jar is a second copy of a mod.
+	for k := range st.objects {
+		if strings.HasPrefix(k, key("mods/")) && strings.Contains(k, "sodium") {
+			t.Fatalf("a former pack's mod survived: %s", k)
+		}
+	}
+	// configs are not, because the first hand-rolled publish into a profile may be
+	// the moment someone's own config lands there.
+	if _, ok := st.objects[key("config/hand-written.toml")]; !ok {
+		t.Fatal("a hand-rolled publish pruned a config it did not write")
 	}
 }
