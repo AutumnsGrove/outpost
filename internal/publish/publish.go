@@ -160,6 +160,9 @@ type Store interface {
 	Stat(ctx context.Context, bucket, key string) (r2.Info, error)
 	List(ctx context.Context, bucket, prefix string) ([]r2.Object, error)
 	Remove(ctx context.Context, bucket, key string) error
+	// Copy puts a world in the trash before a discard removes it. Server-side, and
+	// verified against the source, because a world is bigger than Get will read.
+	Copy(ctx context.Context, bucket, srcKey, dstKey string) (int64, error)
 }
 
 // Options is one publish run.

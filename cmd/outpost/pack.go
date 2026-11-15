@@ -17,7 +17,7 @@ import (
 	"outpost/internal/r2"
 	"outpost/internal/roster"
 	"outpost/internal/store"
-	"outpost/internal/world"
+	"outpost/internal/trash"
 )
 
 func (a *app) packCmd() *cobra.Command {
@@ -155,7 +155,7 @@ func (a *app) packDeleteCmd() *cobra.Command {
 		Use:   "delete <profile>",
 		Short: "Remove a profile: its world, its backups, and its files",
 		Long: "Removes mc-assets/profiles/<id>/ and mc-worlds/profiles/<id>/. The world is\n" +
-			"copied to trash/ first and stays recoverable for " + fmt.Sprint(world.TrashRetentionDays) + " days; the\n" +
+			"copied to trash/ first and stays recoverable for " + fmt.Sprint(trash.RetentionDays) + " days; the\n" +
 			"backups under the profile go with it.\n\n" +
 			"Needs --yes, because it is the one command here that removes something you\n" +
 			"cannot publish again from a link. Refused while a server is rented, and\n" +
@@ -187,7 +187,7 @@ func (a *app) packDeleteCmd() *cobra.Command {
 			}
 			if !yes {
 				return fmt.Errorf("this removes profile %q, its backups and its files (the world is kept in trash for %d days); pass --yes if that is what you want",
-					profile, world.TrashRetentionDays)
+					profile, trash.RetentionDays)
 			}
 
 			m, err := a.packManager(nil)
