@@ -92,6 +92,10 @@ func (a *app) packVanillaCmd() *cobra.Command {
 			}
 			fmt.Printf("wrote %s: %s, no mods\n", filepath.Join(dir, publish.PackFile), pk.Describe())
 			fmt.Printf("next: outpost publish %s\n", dir)
+			// `publish` refuses a server nobody could join, and the roster in R2 is
+			// what it falls back to. Saying so here beats a refusal that looks like
+			// the vanilla directory is wrong.
+			fmt.Println("      (that reuses the player list in R2; on an empty bucket pass --whitelist <names>)")
 			return nil
 		},
 	}

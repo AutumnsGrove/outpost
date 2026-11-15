@@ -557,7 +557,11 @@ into `packs/vanilla`: that directory may still hold a pack fetched under the sam
 and publishing it would send those jars up as "vanilla". `outpost pack vanilla` refuses
 a directory holding another pack for the same reason.
 
+<<<<<<< HEAD
 ### 35. Not done, on purpose, on this branch
+=======
+### 34. Not done, on purpose, on this branch
+>>>>>>> 5f0d214 (fix(pack): remove a stray conflict marker, and make the vanilla hint honest)
 
 - Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
   a second profile id (`--profile cobblemon-second`), which the page has no field for yet.
