@@ -44,10 +44,6 @@ type Manager struct {
 
 	Log *slog.Logger
 
-	// Whitelist returns the names on the server-wide player list. An install needs
-	// one, and the page already has it.
-	Whitelist func(ctx context.Context) ([]string, error)
-
 	// Activate switches the active profile after a successful install.
 	Activate func(ctx context.Context, profile string) error
 
@@ -273,16 +269,16 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 		pub.NewWorld = req.NewWorld
 		pub.KeepWorld = req.KeepWorld
 		pub.Progress = m.uploadProgress(job)
-		if m.Whitelist != nil {
-			names, err := m.Whitelist(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if len(names) == 0 {
+		// The player list is reused as it is in R2 rather than re-resolved through
+		// Mojang: the bucket is the authoritative copy, and Mojang rate-limits.
+		players, err := publish.ReadPlayers(ctx, m.Store, m.AssetBucket)
+		if err != nil {
+			if errors.Is(err, publish.ErrNotFound) {
 				return nil, fmt.Errorf("the server-wide player list is empty; add someone on the page first, or the server would refuse everybody")
 			}
-			pub.Whitelist = names
+			return nil, err
 		}
+		pub.Players = players
 
 		uploaded, err := publish.Run(ctx, m.Store, pub)
 		if err != nil {
