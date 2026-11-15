@@ -373,6 +373,9 @@ func TestBuildScopesEveryKeyByProfile(t *testing.T) {
 	}
 	prefix := profilePrefix("homestead")
 	for _, o := range objects {
+		if playerKeys[o.Key] {
+			continue // the player list is deliberately server-wide
+		}
 		if !strings.HasPrefix(o.Key, prefix) {
 			t.Fatalf("%s is not under %s: two profiles would overwrite each other", o.Key, prefix)
 		}

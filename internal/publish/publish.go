@@ -74,6 +74,14 @@ func (o Options) ProfileOf() string {
 // profilePrefix is where one profile's files live in both buckets.
 func profilePrefix(profile string) string { return "profiles/" + profile + "/" }
 
+// playerKeys are the two files that belong to the server rather than to a
+// profile. internal/roster writes them; cloud-init copies them last, over
+// whatever a pack shipped.
+var playerKeys = map[string]bool{
+	"server/whitelist.json": true,
+	"server/ops.json":       true,
+}
+
 //go:embed client-only-mods.txt
 var defaultClientOnlyList string
 
@@ -128,6 +136,10 @@ type Options struct {
 	// pack none of them has the RAM for. Empty skips that check.
 	Regions map[string]config.Region
 
+	// Progress is called after each uploaded key, for a page that has to show
+	// something for two minutes of uploading.
+	Progress func(done, total int)
+
 	// NewWorld discards the saved world when it belongs to another pack, and
 	// KeepWorld loads it anyway. Neither is set: publish refuses instead of
 	// guessing, because a world from a different pack is a world with missing
@@ -160,6 +172,66 @@ type Result struct {
 	Players []string
 }
 
+// Preflight is everything publish can decide before it uploads a byte: whether
+// the pack can run here, whether the plan has the RAM, and whose world is saved
+// in this profile. The page calls it to show a warning before someone commits to
+// a 300 MB download, and Run calls it so there is one answer, not two.
+type Preflight struct {
+	// Pack is nil for a hand-rolled pack directory.
+	Pack *Pack
+
+	Profile string
+
+	// WorldPack is the pack the saved world was built with, when the marker says
+	// so. Nil means no world, or no readable marker.
+	WorldPack *Pack
+
+	// Discard is set when --new-world asked for a fresh world and there is one to
+	// remove. Removal happens after a successful upload.
+	Discard bool
+
+	Warnings []string
+}
+
+// Inspect answers the questions that stop a publish before it starts.
+func Inspect(ctx context.Context, st Store, opts Options) (Preflight, error) {
+	pf := Preflight{Profile: opts.ProfileOf()}
+
+	pk, packed, err := LoadPack(opts.Dir)
+	if err != nil {
+		return pf, err
+	}
+	if !packed {
+		return pf, nil
+	}
+	return InspectPack(ctx, st, opts, pk)
+}
+
+// InspectPack is Inspect for a pack that is not on disk yet, which is what the
+// page has after it resolves a link and before anyone commits to the download.
+func InspectPack(ctx context.Context, st Store, opts Options, pk Pack) (Preflight, error) {
+	pf := Preflight{Profile: opts.ProfileOf()}
+
+	if err := CheckPack(pk); err != nil {
+		return pf, err
+	}
+	memWarnings, err := checkPackMemory(pk, opts.Regions)
+	if err != nil {
+		return pf, err
+	}
+	pf.Warnings = append(pf.Warnings, memWarnings...)
+
+	discard, worldPack, warnings, err := worldGuard(ctx, st, opts, pk)
+	if err != nil {
+		return pf, err
+	}
+	pf.Pack = &pk
+	pf.Discard = discard
+	pf.WorldPack = worldPack
+	pf.Warnings = append(pf.Warnings, warnings...)
+	return pf, nil
+}
+
 // Run uploads the pack, verifies it, and prunes what the pack no longer has.
 func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	log := opts.Log
@@ -174,19 +246,14 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// which loader it wants, and how much RAM the person who fetched it said it
 	// needs. Read that before anything is uploaded, so the refusals happen before
 	// the bytes and before the rental.
-	pk, packed, err := LoadPack(opts.Dir)
+	pf, err := Inspect(ctx, st, opts)
 	if err != nil {
 		return res, err
 	}
-	if packed {
-		if err := CheckPack(pk); err != nil {
-			return res, err
-		}
-		if memWarnings, err := checkPackMemory(pk, opts.Regions); err != nil {
-			return res, err
-		} else {
-			res.Warnings = append(res.Warnings, memWarnings...)
-		}
+	res.Warnings = append(res.Warnings, pf.Warnings...)
+	discardWorld = pf.Discard
+
+	if pk := pf.Pack; pk != nil {
 		// Pruning is not optional for a pack: the previous version's jars have to
 		// go, or the server loads two of everything.
 		opts.Prune = true
@@ -197,13 +264,6 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 			opts.FabricMC = pk.MC
 			opts.FabricLoader = pk.LoaderVersion
 		}
-
-		var warnings []string
-		discardWorld, warnings, err = worldGuard(ctx, st, opts, pk)
-		if err != nil {
-			return res, err
-		}
-		res.Warnings = append(res.Warnings, warnings...)
 		if discardWorld && opts.DryRun {
 			res.Warnings = append(res.Warnings, "dry run: would discard the saved world and start a fresh one")
 		}
@@ -220,7 +280,10 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// Verify every key exists at the expected size once it is up. A modpack that
 	// uploads 187 of 188 jars is a server that fails to boot in a way nobody can
 	// read from a log.
-	for _, obj := range objects {
+	for i, obj := range objects {
+		if opts.Progress != nil {
+			opts.Progress(i+1, len(objects))
+		}
 		sum, err := sum(obj)
 		if err != nil {
 			return res, err
@@ -275,8 +338,8 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// this pack, which is what the marker claims. Discarding the old world happens
 	// here too, never before the upload.
 	switch {
-	case packed:
-		if err := recordPack(ctx, st, opts, pk, discardWorld); err != nil {
+	case pf.Pack != nil:
+		if err := recordPack(ctx, st, opts, *pf.Pack, discardWorld); err != nil {
 			return res, err
 		}
 	case opts.WorldBucket != "":
@@ -470,9 +533,15 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	// rules ("a launcher is required", "our server.properties wins") are written
 	// once against the layout inside a profile and the prefix is not repeated at
 	// every call site.
+	//
+	// Two keys stay global: the player list. The same people should be able to
+	// join every pack, and internal/roster is its only writer, so scoping it per
+	// profile would mean adding somebody once per world.
 	prefix := profilePrefix(opts.ProfileOf())
 	for i := range objects {
-		objects[i].Key = prefix + objects[i].Key
+		if !playerKeys[objects[i].Key] {
+			objects[i].Key = prefix + objects[i].Key
+		}
 	}
 
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
@@ -518,7 +587,9 @@ func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]str
 // whether it came from the pack or was generated from --whitelist.
 func whitelistNames(objects []Object) []string {
 	for _, obj := range objects {
-		if !strings.HasSuffix(obj.Key, "/server/whitelist.json") {
+		// The whitelist is global, so this matches both "server/whitelist.json"
+		// and a profile-scoped one from a pack that shipped its own.
+		if !strings.HasSuffix(obj.Key, "server/whitelist.json") {
 			continue
 		}
 		raw := obj.Content

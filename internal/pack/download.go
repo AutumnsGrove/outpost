@@ -28,6 +28,7 @@ func download(ctx context.Context, opts Options, targets []target, log *slog.Log
 		mu       sync.Mutex
 		firstErr error
 		bytes    atomic.Int64
+		done     atomic.Int64
 		sem      = make(chan struct{}, workers)
 	)
 
@@ -62,6 +63,7 @@ func download(ctx context.Context, opts Options, targets []target, log *slog.Log
 			if !unchanged {
 				log.Debug("fetched", "file", t.rel, "bytes", n)
 			}
+			opts.report("files", int(done.Add(1)), len(targets))
 		}(t)
 	}
 	wg.Wait()
