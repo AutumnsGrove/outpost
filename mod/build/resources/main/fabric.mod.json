@@ -1,0 +1,22 @@
+{
+	"schemaVersion": 1,
+	"id": "outpost",
+	"version": "1.0.0",
+	"name": "Outpost",
+	"description": "Registers /outpost in game and asks the Outpost daemon what to say. Every rule lives in Go, not here.",
+	"authors": ["Autumn Brown"],
+	"contact": {
+		"sources": "https://github.com/AutumnsGrove/outpost"
+	},
+	"license": "MIT",
+	"environment": "server",
+	"entrypoints": {
+		"main": ["io.github.autumnsgrove.outpost.OutpostMod"]
+	},
+	"depends": {
+		"fabricloader": ">=0.15.0",
+		"fabric-api": "*",
+		"minecraft": "~1.20.1",
+		"java": ">=17"
+	}
+}
