@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -118,6 +119,14 @@ type InstallRequest struct {
 	NewWorld     bool   `json:"newWorld"`
 	KeepWorld    bool   `json:"keepWorld"`
 	Activate     bool   `json:"activate"`
+}
+
+// VanillaRequest is "give me a plain server": no Modrinth project, no mods.
+type VanillaRequest struct {
+	// Profile is where it lands. Empty is the pack's own slug, which is the same
+	// rule a fetched pack follows, so the default is "vanilla".
+	Profile  string `json:"profile"`
+	Activate bool   `json:"activate"`
 }
 
 // Profiles lists what is installed in both buckets, with the active one marked.
@@ -322,6 +331,79 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 			}
 		}
 		return result, nil
+	})
+	return m.Job(), nil
+}
+
+// InstallVanilla publishes a server with no mods into a profile.
+//
+// It is the same publish a fetched pack gets, run from a directory holding
+// nothing but a pack.json: the launcher is fetched by the same code, the player
+// list is the same roster, the world guard reads the same marker, and `mods/` is
+// emptied by the same prune. That is the point — vanilla is a pack with no mods,
+// not a second way to build a server.
+//
+// The directory is the manager's own scratch, emptied first. It is deliberately
+// not `packs/<profile>/`: that may still hold a pack fetched under the same
+// name, and publishing it would send those jars up as "vanilla".
+func (m *Manager) InstallVanilla(ctx context.Context, req VanillaRequest) (*Job, error) {
+	pk := publish.VanillaPack()
+	profile := strings.TrimSpace(req.Profile)
+	if profile == "" {
+		profile = publish.ProfileFromSlug(pk.Slug)
+	}
+	if err := publish.ValidateProfile(profile); err != nil {
+		return nil, err
+	}
+
+	job, err := m.begin("install", pk.Describe(), profile)
+	if err != nil {
+		return nil, err
+	}
+
+	m.run(ctx, job, func(ctx context.Context) (*JobResult, error) {
+		dir := filepath.Join(m.Dir, "_vanilla")
+		if err := os.RemoveAll(dir); err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		if err := publish.WritePack(dir, pk); err != nil {
+			return nil, err
+		}
+
+		// Same as a fetched install: the roster owns the whitelist, and resolving
+		// names again through Mojang is slower and rate-limited.
+		players, err := publish.ReadPlayers(ctx, m.Store, m.AssetBucket)
+		if err != nil {
+			if errors.Is(err, publish.ErrNotFound) {
+				return nil, fmt.Errorf("the server-wide player list is empty; add someone on the page first, or the server would refuse everybody")
+			}
+			return nil, err
+		}
+
+		pub := m.publishOptions(profile)
+		pub.Dir = dir
+		pub.Players = players
+		pub.Progress = m.uploadProgress(job)
+		uploaded, err := publish.Run(ctx, m.Store, pub)
+		if err != nil {
+			return nil, err
+		}
+
+		if req.Activate && m.Activate != nil {
+			if err := m.Activate(ctx, profile); err != nil {
+				return nil, err
+			}
+		}
+		return &JobResult{
+			Pack:     pk,
+			Profile:  profile,
+			Files:    len(uploaded.Uploaded) + len(uploaded.Unchanged),
+			Bytes:    uploaded.TotalSize,
+			Warnings: uploaded.Warnings,
+		}, nil
 	})
 	return m.Job(), nil
 }

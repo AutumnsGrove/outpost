@@ -531,7 +531,33 @@ The import is refused while a server is rented, for the reason installing is: a 
 session uploads over its own profile's world at shutdown, so a copy placed underneath it
 is a copy that disappears when they log off.
 
-### 34. Not done, on purpose, on this branch
+### 34. Vanilla is a pack with no mods, not a second kind of server
+
+There are two readings of "vanilla" and the choice is not cosmetic: the real server jar
+from Mojang's version manifest, or Fabric with an empty `mods/`.
+
+It is Fabric. A zero-mod Fabric server plays as vanilla and accepts vanilla clients, so
+the difference is invisible to a player, while the jar would mean a second jar name in
+`Build`, a second `scripts/start.sh`, and a second boot path that cloud-init, the
+provisioning timeout and the orchestrator all have to tolerate. "No logic in bash" has a
+sibling: no second way to boot.
+
+What vanilla *does* get is an identity. `publish.VanillaPack()` is an ordinary
+`pack.json` with `source: "outpost"` and `slug: "vanilla"`, so vanilla is a profile like
+any other — the world guard claims its world (`SamePack` is source+slug, so a vanilla
+world is never claimed by a Modrinth pack and vice versa), `prune` empties `mods/`, and
+`world import` can name what will boot.
+
+`loader: "fabric"` is the honest field. The pack is Fabricked and says so; "vanilla" is
+the absence of mods, which `mods: 0` and the name say plainly. The panel reads it as
+"Vanilla 1.20.1 · minecraft 1.20.1 · fabric", which is exactly what to match in Prism.
+
+The panel's install writes into `packs/_vanilla` and empties it first, deliberately not
+into `packs/vanilla`: that directory may still hold a pack fetched under the same name,
+and publishing it would send those jars up as "vanilla". `outpost pack vanilla` refuses
+a directory holding another pack for the same reason.
+
+### 35. Not done, on purpose, on this branch
 
 - Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
   a second profile id (`--profile cobblemon-second`), which the page has no field for yet.

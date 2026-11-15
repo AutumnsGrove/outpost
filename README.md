@@ -96,6 +96,7 @@ three-minute rebuild.
 outpost serve            # the reconcile loop + JSON API (this is the daemon)
 outpost publish [dir]    # upload a server pack to R2
 outpost pack fetch <src> # resolve a Modrinth modpack into a pack directory
+outpost pack vanilla     # write a server with no mods: Fabric, 1.20.1
 outpost pack list        # the installed profiles, and which one is active
 outpost pack use <id>    # switch which pack+world the next start boots
 outpost world list       # every profile's world, and any world no profile claims
@@ -143,7 +144,8 @@ everything, and verifies each key's size in R2 before claiming success. Add
 `--prune` to delete mods and config files the pack no longer has, and `--dry-run`
 to see the plan without writing anything.
 
-Vanilla is `--fabric 1.20.1` with an empty `mods/`.
+There is no loader flag to remember for vanilla: `outpost pack vanilla` writes the
+`pack.json` that means "no mods", and `outpost publish` does the rest.
 
 ## Modpacks
 
@@ -243,6 +245,27 @@ overwritten. The copy is refused while a server is rented, because a running ses
 uploads over its own profile's world when it shuts down. The marker written beside the
 import is the profile's installed `pack.json` when there is one — so the next boot of
 that pack loads the world without asking — and a hand-rolled marker otherwise.
+
+### Vanilla
+
+```bash
+outpost pack vanilla && outpost publish packs/vanilla
+```
+
+Or press **Install Vanilla 1.20.1** in the panel. Either way it lands in the profile
+`vanilla`, gets the same world, the same player list, and the same name in the panel.
+
+Vanilla here is **Fabric with an empty `mods/`**, not Mojang's server jar. A zero-mod
+Fabric server plays as vanilla and accepts vanilla clients, so a second jar name and a
+second `start.sh` would buy a difference no player can see — at the cost of a boot path
+nothing else in the system knows about. What it *is* is a real `pack.json`
+(`source: "outpost"`, `slug: "vanilla"`), which is what makes the world guard, the
+pruning and the panel treat vanilla like any other pack. `pack.json`
+says `loader: fabric` because that is what boots; "vanilla" is the absence of mods, and
+the panel shows that as "Vanilla 1.20.1 · minecraft 1.20.1 · fabric".
+
+`outpost pack vanilla` refuses a directory that holds another pack, because `publish`
+uploads what is in the directory and old jars would go up as a vanilla server's mods.
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --https=8896` in front of it gives you a page at
