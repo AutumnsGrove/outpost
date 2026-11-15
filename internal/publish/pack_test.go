@@ -1,0 +1,257 @@
+package publish
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"outpost/internal/config"
+)
+
+// testPack is the pack.json a fetch of a small 1.20.1 Fabric pack would leave.
+func testPack() Pack {
+	return Pack{
+		Source:        "modrinth",
+		Slug:          "test-pack",
+		Name:          "Test Pack",
+		VersionID:     "ver1",
+		VersionNumber: "1.0.0",
+		MC:            "1.20.1",
+		Loader:        "fabric",
+		LoaderVersion: "0.15.7",
+		MemoryGB:      4,
+	}
+}
+
+// writeModpack is writePack plus a pack.json and the root/ tree a fetched pack
+// puts its non-mod files in.
+func writeModpack(t *testing.T, p Pack) string {
+	t.Helper()
+	dir := writePack(t)
+
+	if err := os.MkdirAll(filepath.Join(dir, "root", "kubejs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "root", "kubejs", "start.js"), []byte("console.info('hi')"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePack(dir, p); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestBuildTrustsThePackOverTheClientOnlyList(t *testing.T) {
+	dir := writeModpack(t, testPack())
+
+	objects, warnings, err := Build(context.Background(), Options{Dir: dir, AssetBucket: "mc-assets"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	have := map[string]bool{}
+	for _, o := range objects {
+		have[o.Key] = true
+	}
+
+	// sodium is in client-only-mods.txt, but the pack said env.server: required.
+	// The pack wins: dropping a file the pack author marked server-side is a
+	// server that boots with a config referring to a mod that is not there.
+	if !have["mods/sodium-0.5.13.jar"] {
+		t.Errorf("the hand-maintained client-only list was applied to a pack; keys: %v", keys(objects))
+	}
+	if !have["root/kubejs/start.js"] {
+		t.Errorf("root/ was not uploaded; keys: %v", keys(objects))
+	}
+	for _, o := range objects {
+		if strings.HasPrefix(o.Key, "pack.json") || strings.Contains(o.Key, "client-only-mods") {
+			t.Errorf("%s is local bookkeeping and should not be uploaded", o.Key)
+		}
+	}
+	if !warningsContain(warnings, "Test Pack") {
+		t.Errorf("the summary should name the pack: %v", warnings)
+	}
+}
+
+func TestBuildRefusesAPackForAnotherMinecraftVersion(t *testing.T) {
+	p := testPack()
+	p.MC = "1.21.1"
+	dir := writeModpack(t, p)
+
+	_, _, err := Build(context.Background(), Options{Dir: dir})
+	if err == nil || !strings.Contains(err.Error(), "Java 17") {
+		t.Fatalf("want a Java 17 refusal, got %v", err)
+	}
+}
+
+func TestRunRefusesAPackNoRegionCanHold(t *testing.T) {
+	p := testPack()
+	p.MemoryGB = 8
+	dir := writeModpack(t, p)
+	st := newFakeStore()
+
+	_, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		Regions: map[string]config.Region{
+			"eu": {ServerType: "cx23", FallbackTypes: []string{"cax11"}},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "8 GB") {
+		t.Fatalf("want a RAM refusal, got %v", err)
+	}
+	if len(st.objects) != 0 {
+		t.Fatal("the refusal happened after uploading")
+	}
+
+	// A region that has the RAM is enough, and the small one is called out.
+	res, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		Regions: map[string]config.Region{
+			"eu": {ServerType: "cx23", FallbackTypes: []string{"cax11"}},
+			"us": {ServerType: "cx33"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a region with 8 GB should be allowed: %v", err)
+	}
+	if !warningsContain(res.Warnings, "eu") {
+		t.Fatalf("the too-small region should be named: %v", res.Warnings)
+	}
+}
+
+func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("world")
+	marker, _ := json.Marshal(Pack{Source: "modrinth", Slug: "test-pack", VersionID: "older", VersionNumber: "0.9.0"})
+	st.objects["current/pack.json"] = marker
+
+	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
+	_, err := Run(context.Background(), st, opts)
+	if err == nil || !strings.Contains(err.Error(), "--new-world") {
+		t.Fatalf("want a refusal naming --new-world, got %v", err)
+	}
+	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+		t.Fatal("the world was removed by a refused publish")
+	}
+
+	// --keep-world says so out loud and lets it through.
+	opts.KeepWorld = true
+	res, err := Run(context.Background(), st, opts)
+	if err != nil {
+		t.Fatalf("keep-world run: %v", err)
+	}
+	if !warningsContain(res.Warnings, "--keep-world") {
+		t.Fatalf("the warning should mention what was overridden: %v", res.Warnings)
+	}
+}
+
+func TestRunNewWorldDiscardsTheWorldAfterTheUpload(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("vanilla world from 2025")
+	st.objects["current/pack.json"] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
+
+	_, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		WorldBucket: "mc-worlds",
+		NewWorld:    true,
+	})
+	if err != nil {
+		t.Fatalf("new-world run: %v", err)
+	}
+	if _, ok := st.objects["current/world.tar.gz"]; ok {
+		t.Fatal("--new-world left the old world behind")
+	}
+
+	var marker Pack
+	if err := json.Unmarshal(st.objects["current/pack.json"], &marker); err != nil {
+		t.Fatalf("marker: %v", err)
+	}
+	if marker.VersionID != "ver1" {
+		t.Fatalf("marker still says %q", marker.VersionID)
+	}
+}
+
+func TestRunRefusesAnUnmarkedWorldAndAcceptsItWithKeepWorld(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("world from before packs existed")
+
+	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
+	if _, err := Run(context.Background(), st, opts); err == nil || !strings.Contains(err.Error(), "--new-world") {
+		t.Fatalf("want a refusal for an unmarked world, got %v", err)
+	}
+
+	opts.KeepWorld = true
+	if _, err := Run(context.Background(), st, opts); err != nil {
+		t.Fatalf("keep-world: %v", err)
+	}
+}
+
+func TestRunLeavesTheMarkerAloneForTheSameBuild(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("world")
+	same, _ := json.Marshal(testPack())
+	st.objects["current/pack.json"] = same
+
+	res, err := Run(context.Background(), st, Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
+	if err != nil {
+		t.Fatalf("same build should publish without ceremony: %v", err)
+	}
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "world") {
+			t.Fatalf("a same-build publish complained about the world: %v", res.Warnings)
+		}
+	}
+	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+		t.Fatal("the world of the same pack was touched")
+	}
+}
+
+func TestRunDoesNotTouchTheWorldOnADryRun(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("old world")
+
+	res, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		WorldBucket: "mc-worlds",
+		NewWorld:    true,
+		DryRun:      true,
+	})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if !warningsContain(res.Warnings, "would discard") {
+		t.Fatalf("dry run should say what it would do: %v", res.Warnings)
+	}
+	if _, ok := st.objects["current/world.tar.gz"]; !ok {
+		t.Fatal("a dry run removed the world")
+	}
+	if _, ok := st.objects["current/pack.json"]; ok {
+		t.Fatal("a dry run wrote the marker")
+	}
+}
+
+func TestLoadPackTreatsAMissingManifestAsAHandRolledPack(t *testing.T) {
+	if _, ok, err := LoadPack(t.TempDir()); err != nil || ok {
+		t.Fatalf("missing pack.json: ok=%v err=%v", ok, err)
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, PackFile), []byte("{nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadPack(dir); err == nil {
+		t.Fatal("a corrupt pack.json was accepted")
+	}
+}
