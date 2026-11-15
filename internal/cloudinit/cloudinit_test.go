@@ -1,6 +1,7 @@
 package cloudinit
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -464,5 +465,183 @@ func TestValidateRejectsMissingData(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+// --- the in-game command token ---------------------------------------------
+
+// tokenScript returns the runcmd entry that writes config/outpost.json, or "" if
+// the config asked for no endpoint.
+func tokenScript(t *testing.T, d Data) (string, []string) {
+	t.Helper()
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	script := ""
+	for _, c := range doc.Runcmd {
+		cmd, ok := c.(string)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.Contains(cmd, "outpost.json"):
+			script = cmd
+			order = append(order, "token")
+		case strings.Contains(cmd, "rclone copy") && strings.Contains(cmd, "/config/"):
+			// The pack's config pull, now scoped by profile: whatever the path, the
+			// token has to be written after it.
+			order = append(order, "pull")
+		}
+	}
+	return script, order
+}
+
+func TestTheGameTokenIsWrittenForTheModToRead(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "http://100.64.0.5:8896"
+	d.GameToken = "abc123def456"
+
+	script, order := tokenScript(t, d)
+	if script == "" {
+		t.Fatal("no outpost.json step in runcmd")
+	}
+	// A config file pulled from R2 must not be able to shadow this session's
+	// URL and token, so the write has to come after the pull.
+	if len(order) != 2 || order[0] != "pull" || order[1] != "token" {
+		t.Fatalf("outpost.json is written in the wrong order relative to the pull: %v", order)
+	}
+
+	// Run it for real with the path redirected, and parse what comes out: the
+	// mod reads this file, so it has to be JSON, not nearly JSON.
+	dir := t.TempDir()
+	mc := filepath.Join(dir, "minecraft")
+	config := filepath.Join(mc, "config")
+	if err := os.MkdirAll(config, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script = strings.ReplaceAll(script, "/opt/minecraft", mc)
+	if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("writing the token failed: %v\n%s", err, out)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(config, "outpost.json"))
+	if err != nil {
+		t.Fatalf("no outpost.json: %v", err)
+	}
+	var got struct {
+		URL   string `json:"url"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("outpost.json is not valid JSON (%v): %s", err, raw)
+	}
+	if got.URL != d.GameEndpoint || got.Token != d.GameToken {
+		t.Fatalf("outpost.json = %+v, want url %q token %q", got, d.GameEndpoint, d.GameToken)
+	}
+}
+
+func TestNoEndpointWritesNoTokenFile(t *testing.T) {
+	script, _ := tokenScript(t, sample())
+	if script != "" {
+		t.Fatalf("a config with no game_endpoint should not write a token file, got:\n%s", script)
+	}
+}
+
+func TestValidateRejectsAnEndpointThatCouldBreakTheFile(t *testing.T) {
+	for _, bad := range []string{
+		`http://100.64.0.5:8896/"}`,
+		"http://100.64.0.5:8896/; rm -rf /",
+		"ftp://100.64.0.5",
+		"not a url",
+	} {
+		d := sample()
+		d.GameEndpoint = bad
+		d.GameToken = "abc123"
+		if err := d.Validate(); err == nil {
+			t.Errorf("endpoint %q was accepted", bad)
+		}
+	}
+}
+
+// The in-game command needs the daemon's NAME to resolve on the VPS with a
+// certificate that matches it. --accept-dns=false rules out MagicDNS, so the
+// name is pinned to the tailnet address at boot.
+func TestTheDaemonNameIsPinnedForTheInGameCommand(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "https://lepotato.taild95077.ts.net:8896"
+	d.GameToken = "abc123"
+	d.GameHostIP = "100.81.103.51"
+
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var doc struct {
+		Runcmd []any `yaml:"runcmd"`
+	}
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	hostsAt, upAt := -1, -1
+	for i, c := range doc.Runcmd {
+		cmd, ok := c.(string)
+		if !ok {
+			continue
+		}
+		switch {
+		case strings.Contains(cmd, "/etc/hosts"):
+			hostsAt = i
+			// The exact line, because a wrong separator or a missing name means a
+			// server that boots fine and answers nothing.
+			if !strings.Contains(cmd, `printf '%s\t%s\n' "100.81.103.51" "lepotato.taild95077.ts.net"`) {
+				t.Errorf("hosts line is not the expected mapping:\n%s", cmd)
+			}
+		case strings.Contains(cmd, "tailscale up"):
+			upAt = i
+		}
+	}
+	if hostsAt < 0 {
+		t.Fatal("no /etc/hosts step in runcmd")
+	}
+	if upAt < 0 || hostsAt < upAt {
+		t.Errorf("the hosts line should follow the tailnet join (up at %d, hosts at %d)", upAt, hostsAt)
+	}
+}
+
+func TestNoHostsLineWithoutAnAddressToPin(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "http://100.64.0.5:8896"
+	d.GameToken = "abc123"
+	// No GameHostIP: an endpoint that is already an IP needs no name.
+
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "/etc/hosts") {
+		t.Error("an IP endpoint should not write a hosts line")
+	}
+	// But the token file is still written, which is the other half.
+	if !strings.Contains(out, "outpost.json") {
+		t.Error("the token file should still be written")
+	}
+}
+
+func TestValidateRejectsANonsenseHostPin(t *testing.T) {
+	d := sample()
+	d.GameEndpoint = "https://lepotato.taild95077.ts.net:8896"
+	d.GameToken = "abc123"
+	d.GameHostIP = "not-an-ip"
+	if err := d.Validate(); err == nil {
+		t.Fatal("a non-IP host pin was accepted")
 	}
 }

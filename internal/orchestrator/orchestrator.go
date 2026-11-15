@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -207,6 +208,12 @@ type Status struct {
 	IdleGraceSec int64   `json:"idleGraceSeconds"`
 	IdleLimitSec int64   `json:"idleLimitSeconds"`
 }
+
+// The hold and the month-to-date cost are deliberately NOT fields on Status.
+// /api/status is a contract with Meridian's tile and a test pins its field count
+// (see api_test.go, TestStatusKeepsTheShapeMeridianReads); everything new goes
+// to /api/overview. HoldState and Cost are the readouts both the page and
+// /outpost use.
 
 // Status reads the current state and decorates it with costs and timers.
 //
@@ -417,6 +424,13 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	if err != nil {
 		return st, err
 	}
+	// The in-game command token is per session, handed to this one VPS and dead
+	// when it is deleted. The jar that reads it ships in the public mods/ prefix,
+	// so a long-lived secret baked into the jar would be a secret published.
+	gameToken, err := randomHex(24)
+	if err != nil {
+		return st, err
+	}
 	suffix, err := randomHex(3)
 	if err != nil {
 		return st, err
@@ -428,6 +442,9 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		Profile:          profile,
 		MCPort:           o.cfg.Server.MCPort,
 		RCONPassword:     password,
+		GameToken:        gameToken,
+		GameEndpoint:     o.cfg.Server.GameEndpoint,
+		GameHostIP:       o.gameHostIP(ctx, o.cfg.Server.GameEndpoint),
 		TailscaleAuthKey: o.cfg.Secrets.TailscaleAuthKey,
 		TailscaleTags:    o.cfg.Tailscale.Tags,
 		R2AccountID:      o.cfg.R2.AccountID,
@@ -455,6 +472,7 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 		Region:       region,
 		ServerType:   serverType,
 		RCONPassword: password,
+		GameToken:    gameToken,
 		Profile:      profile,
 		StartedAt:    o.now(),
 	}
@@ -474,6 +492,40 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	_ = o.store.Log("start", "rented %s in %s (%s)", hostname, reg.Location, serverType)
 
 	return st, nil
+}
+
+// gameHostIP resolves the daemon's hostname from inside our own tailnet, so the
+// VPS can pin it in /etc/hosts.
+//
+// The VPS joins with --accept-dns=false and the daemon's certificate is for its
+// name, not its address, so a name that resolves is what makes HTTPS work over
+// the tailnet. Empty means "nothing to pin": no endpoint, an endpoint that is
+// already an IP, or a lookup that failed. A failure is not fatal — the server is
+// still worth renting without a working /outpost — but it is recorded, because
+// the alternative is a player typing a command and getting a timeout.
+func (o *Orchestrator) gameHostIP(ctx context.Context, endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	if net.ParseIP(u.Hostname()) != nil {
+		return ""
+	}
+	if o.deps.Resolve == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ip, err := o.deps.Resolve(ctx, u.Hostname())
+	if err != nil || net.ParseIP(ip) == nil {
+		o.log.Warn("cannot resolve the daemon host, /outpost will not work this session", "host", u.Hostname(), "err", err)
+		_ = o.store.Log("game-unreachable", "cannot resolve %s for the in-game command: %v", u.Hostname(), err)
+		return ""
+	}
+	return ip
 }
 
 // rent creates the server, walking through the configured fallback sizes when
@@ -768,6 +820,31 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 
 	if sess, err := o.store.CurrentSession(); err == nil && sess != nil {
 		_ = o.store.UpdateSessionPlayers(sess.ID, players.Online)
+	}
+
+	// A hold suspends the idle rule, and this is where that happens.
+	//
+	// The clock is paused rather than reset: while held, IdleSince stays zero,
+	// so the moment the hold runs out the ordinary "nobody on, start the clock"
+	// branch below gives the full grace period. Someone who asked for 12h and
+	// got it should not be terminated on the tick it expires.
+	if !st.HoldUntil.IsZero() {
+		if st.HoldUntil.After(o.now()) {
+			next.State = store.Running
+			next.IdleSince = time.Time{}
+			return o.store.SetState(next)
+		}
+		next.HoldUntil = time.Time{}
+		st.HoldUntil = time.Time{}
+		// The clock starts from zero, never from where it was when the hold
+		// began. A hold that ran its full length is not thirty minutes of nobody
+		// playing, and inheriting that clock would terminate on the next tick —
+		// which is exactly what this does if the daemon was down for the whole
+		// hold and no pass got to pause the clock in between.
+		st.IdleSince = time.Time{}
+		next.IdleSince = time.Time{}
+		o.log.Info("hold expired", "players", players.Online)
+		_ = o.store.Log("hold-expired", "the hold ran out; the normal idle clock starts now")
 	}
 
 	grace := o.cfg.Server.IdleGrace.Std()

@@ -28,6 +28,23 @@ server:
                               #   is assumed wedged and taken down. 15 x 20s = 5
                               #   minutes: enough for a tailnet reconnect.
 
+  # `hold` is the one deliberate exception to "only bill while someone plays":
+  # /outpost hold 48h keeps the server up with nobody on it. Longer than this is
+  # refused with the cap named. Anything over 12h asks for confirmation and
+  # quotes the price first.
+  max_hold: "72h"
+
+  # Where the in-game /outpost command reaches the daemon, written into the VPS
+  # as config/outpost.json at boot. Empty means the mod ships with no URL and
+  # answers "not configured".
+  #
+  # Use the tailnet NAME, not an address: the daemon's certificate is issued for
+  # the name, so an https URL against a bare IP fails validation. The VPS joins
+  # with --accept-dns=false (MagicDNS does not resolve there), so the daemon
+  # resolves this hostname locally at rent time and cloud-init pins it in the
+  # VPS's /etc/hosts. Nothing else has to change about how it is served.
+  # game_endpoint: "https://lepotato.taild95077.ts.net:8896"
+
 # Every key here is a valid `outpost start <region>` argument.
 #
 # `server_type` decides the price far more than the provider does. Hetzner

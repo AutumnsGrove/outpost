@@ -35,6 +35,8 @@
 	// Values that move between polls are advanced locally, then snap back to the
 	// server's number on the next poll.
 	const ttl = $derived(Math.max(0, s.ttlSeconds - elapsed));
+	// Time left on a hold, advanced locally between polls like everything else.
+	const holdLeft = $derived(o.hold.active ? Math.max(0, o.hold.seconds - elapsed) : 0);
 	const uptime = $derived(s.uptimeSeconds + elapsed);
 	const sessionCost = $derived(s.sessionCost + (s.hourlyRate * elapsed) / 3600);
 	const provElapsed = $derived(uptime);
@@ -108,7 +110,9 @@
 		</div>
 	{:else if s.state === 'RUNNING'}
 		<div class="copy">
-			<p class="eyebrow"><Play aria-hidden="true" />Running · {s.region} · {s.serverType}</p>
+			<p class="eyebrow">
+				<Play aria-hidden="true" />Running · {s.region} · {s.serverType}{o.hold.active ? ' · held' : ''}
+			</p>
 			<h2 id="hero-title" class="big-count">
 				{#if s.players > 0}
 					<span class="n num">{s.players}</span> playing
@@ -124,7 +128,10 @@
 				</ul>
 			{/if}
 			<p class="sub">
-				{#if s.players > 0}
+				{#if o.hold.active}
+					Held open: <span class="num">{duration(holdLeft)}</span> left with nobody needing to be
+					on, about {euros((s.hourlyRate * holdLeft) / 3600, 2)} to run out.
+				{:else if s.players > 0}
 					Shuts down {duration(idleTotal)} after the last player leaves.
 				{:else}
 					The idle clock is running: <span class="num">{duration(ttl)}</span> until it saves and

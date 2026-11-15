@@ -311,6 +311,97 @@ is set.
 - If the Potato itself is down, nothing deletes the VPS. A Hetzner spending alert is the
   backstop.
 
+## Decisions from the in-game commands branch (2026-11-14)
+
+### 23. `/outpost` is a server-side mod talking to one endpoint, and the mod decides nothing
+
+Fabric has no plugin API, so the only door that lets a *player* type a command is a mod.
+RCON can send commands into the game but nothing can arrive through it, and the v1 habit of
+tailing the log for `!commands` is the format-dependent class of bug that killed the watchdog.
+So: `mod/`, a Fabric server-side jar (`environment: server` — clients neither need it nor load
+it), registering `/outpost` through Fabric API's `CommandRegistrationCallback`, which hands over
+Brigadier, Minecraft's own parser. Arguments are therefore parsed and tab-completed by the game
+rather than by a `split(" ")`.
+
+The jar is a pipe. It reads `config/outpost.json` for a URL and a token, POSTs
+`{command, arg, player}`, and prints the string that comes back. Every rule — what a hold costs,
+how long is too long, who may set one — is in `internal/api/game.go`, where it has tests and where
+`curl` reaches it with no Minecraft client in sight. Same lesson as "no logic in bash": the part
+without tests must not decide anything.
+
+The call is asynchronous and the reply is printed from the server thread. A tailnet blip must not
+freeze the tick loop for the length of a connect timeout, which is exactly what a synchronous
+`HttpClient` call on the command thread would do.
+
+### 24. The token is per session, and it is not authentication
+
+`Start` now generates a second secret next to the RCON password. cloud-init writes it, with the
+daemon URL, into `/opt/minecraft/config/outpost.json` — *after* the `config/` pull from R2, so a
+file left in the bucket cannot shadow the session's real one. It dies with the VPS.
+
+The jar ships in the public `mods/` prefix, so a long-lived secret inside it would be a published
+secret. What the token buys is narrow and worth saying precisely: "this request came from this
+session's jar". It does not say who a player is. The tailnet remains the actual boundary, as
+everywhere else here.
+
+`hold` and `cancel` are op-only in two places. The mod refuses at permission level 2, which is the
+fast path and no round trip; the daemon independently checks the name against `ops.json` in R2
+through `internal/roster`, because it cannot see the game's own op state and must not take the
+caller's word for it. The second check is also the one `curl` can exercise.
+
+### 25. `hold` is bounded, priced, and expires into the ordinary grace
+
+A hold suspends the idle rule on purpose, so it is the one place where the premise ("a server
+that exists only while someone plays") is deliberately broken. Three rules: `server.max_hold`
+(default 72h) refuses anything longer and names the cap rather than silently shortening it; a hold
+over 12h states the projected cost and needs `/outpost hold 48h confirm` within sixty seconds; and
+an expired hold starts the idle clock from **zero**, so the person who asked for 48h still gets
+the usual grace on the way out instead of being terminated on the tick it runs out.
+
+The clock is paused, not just ignored: `tickLive` clears `IdleSince` while a hold is in force, and
+both `Hold` and the expiry branch clear it again. That second clear is not redundant — a daemon
+that was down for the whole hold would otherwise resume a stale clock and delete the server
+immediately, which is precisely what the first version of this did.
+
+`hold_until` and `game_token` are new columns on `server_state`. `schema.sql` is written as though
+a database is created from nothing and `CREATE TABLE IF NOT EXISTS` does nothing to a table that
+already exists, so `store.Open` now applies `ALTER TABLE ... ADD COLUMN` for columns it does not
+find. An existing `outpost.db` gains them without a dump and reimport.
+
+Cost got the two readouts the issue asked for: `store.TotalsSince` for the calendar month (closed
+sessions only — the live one is added by `Orchestrator.Cost`, which owns the clock) and the
+existing `Status.SessionCost` for the session. Neither went into `Status`: `/api/status` is a
+contract with Meridian's tile and a test pins its field count, so `hold` and `month` are new
+top-level fields on `/api/overview`.
+
+### 26. The mod reaches the daemon by name, pinned in the VPS's hosts file
+
+The first deployed launcher pins Fabric Loader 0.20.1 (read from
+`fabric-server-launcher.properties` in the bucket, not assumed from the issue), and the
+bucket's `mods/` prefix was empty — the server is vanilla. So a mod that needs Fabric
+API needs it *shipped*, and both jars went up alongside the existing pack in one
+`outpost publish` with no `--prune`. `publish` refuses a mods-only directory, so the
+pack was pulled out of R2 first and republished; identical keys upload nothing.
+
+The endpoint then ran into the same seam as everything else here. The page is served
+as `https://<potato>.ts.net:8896`, and the VPS joins the tailnet with
+`--accept-dns=false`, so the name does not resolve there — while an https URL against
+the raw tailnet address fails certificate validation, because the certificate is
+issued for the name. Three options, and the third is the one taken:
+
+- change `tailscale serve` to plain http on the endpoint port: visible change to how
+  the page is reached, for one background call;
+- put the address in `game_endpoint` and turn certificate checks off in the mod:
+  disabling TLS validation to work around DNS is the wrong trade;
+- **resolve the name where the tailnet is and pin it in the VPS's `/etc/hosts`.** The
+  daemon is on the tailnet and can resolve the name at rent time; cloud-init writes
+  one line. A resolvable name, a valid certificate, no change to how anything is
+  served.
+
+A lookup failure does not stop the rental — the server is still worth having without a
+working `/outpost` — but it is logged, because the alternative is a player typing a
+command into a black hole.
+
 ## Decisions from the modpack branch (2026-11-15)
 
 Issue #12. Phase 1: Modrinth packs on Fabric, done at publish time. This went first,

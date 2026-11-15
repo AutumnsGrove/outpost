@@ -5,6 +5,8 @@ package cloudinit
 import (
 	_ "embed"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"text/template"
@@ -18,6 +20,9 @@ var parsed = template.Must(template.New("cloud-init").Parse(tmpl))
 var (
 	safeSecret = regexp.MustCompile(`^[A-Za-z0-9._~+=/:-]+$`)
 	safeName   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+	// safeEndpoint accepts http(s)://host[:port] and nothing else interesting.
+	safeEndpoint = regexp.MustCompile(`^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$`)
 )
 
 // Data is everything the template needs. Secrets arrive here already read from
@@ -37,6 +42,32 @@ type Data struct {
 	R2SecretKey      string
 	AssetBucket      string
 	WorldBucket      string
+
+	// GameEndpoint and GameToken are the in-game /outpost command's way back to
+	// the daemon: the URL the VPS posts to, and this session's credential. Both
+	// are optional together — a config with no game_endpoint ships the mod with
+	// no URL, and it answers "not configured" instead of dialling nowhere.
+	GameEndpoint string
+	GameToken    string
+
+	// GameHostIP pins the endpoint's hostname to this address in /etc/hosts.
+	//
+	// The VPS joins the tailnet with --accept-dns=false, so a MagicDNS name does
+	// not resolve there, and an HTTPS URL against a bare IP fails certificate
+	// validation because the certificate is for the name. Writing one hosts line
+	// gets a valid certificate AND no dependency on MagicDNS, without changing
+	// how the daemon is published.
+	GameHostIP string
+}
+
+// GameHost is the hostname out of GameEndpoint, for the hosts line in the
+// template. Empty when there is no endpoint to point at.
+func (d Data) GameHost() string {
+	u, err := url.Parse(d.GameEndpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // Validate catches the mistakes that would otherwise show up as a half-built
@@ -89,6 +120,20 @@ func (d Data) Validate() error {
 	for _, tag := range d.TailscaleTags {
 		if !safeName.MatchString(strings.ReplaceAll(tag, ":", "-")) {
 			return fmt.Errorf("cloud-init: tailscale tag %q is not a plain name", tag)
+		}
+	}
+	// The endpoint lands inside a JSON document written by a shell printf, so it
+	// gets the same allowlist treatment as the secrets: no quotes, no braces, no
+	// shell metacharacters. A tailnet IP or a MagicDNS name both fit.
+	if d.GameEndpoint != "" {
+		if !safeEndpoint.MatchString(d.GameEndpoint) {
+			return fmt.Errorf("cloud-init: game endpoint %q must be scheme://host[:port] using A-Z a-z 0-9 . : / - _", d.GameEndpoint)
+		}
+		if !safeSecret.MatchString(d.GameToken) {
+			return fmt.Errorf("cloud-init: game token has characters outside A-Z a-z 0-9 . _ ~ + = / : -")
+		}
+		if d.GameHostIP != "" && net.ParseIP(d.GameHostIP) == nil {
+			return fmt.Errorf("cloud-init: game host %q is not an IP address", d.GameHostIP)
 		}
 	}
 	return nil
