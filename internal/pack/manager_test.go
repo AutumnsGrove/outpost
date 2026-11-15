@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"outpost/internal/publish"
 	"outpost/internal/r2"
 )
 
@@ -439,5 +440,33 @@ func TestVersionsRefusesASourceThatNamesOneVersion(t *testing.T) {
 	_, err := m.Versions(context.Background(), "https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack")
 	if !errors.Is(err, ErrNoVersions) {
 		t.Fatalf("err = %v, want ErrNoVersions", err)
+	}
+}
+
+func TestEveryPathNamesAProfileByTheSameRule(t *testing.T) {
+	m, _ := newManager(t)
+	newFakeModrinth(t, []Version{
+		{ID: "v1", VersionNumber: "1.0.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+	})
+
+	// A slug with characters the two derivations used to disagree about, and one
+	// long enough to need truncating.
+	for _, slug := range []string{"cobblemon_fabric", strings.Repeat("a", 40)} {
+		src := "https://modrinth.com/modpack/" + slug
+		fromSource, err := m.profileFor(src, "")
+		if err != nil {
+			t.Fatalf("profileFor(%q): %v", src, err)
+		}
+		listed, err := m.Versions(context.Background(), src)
+		if err != nil {
+			t.Fatalf("versions(%q): %v", src, err)
+		}
+		if listed.Profile != fromSource {
+			t.Errorf("slug %q: picker says %q, install says %q — one of them reads the wrong profile",
+				slug, listed.Profile, fromSource)
+		}
+		if err := publish.ValidateProfile(listed.Profile); err != nil {
+			t.Errorf("slug %q produced an invalid profile %q: %v", slug, listed.Profile, err)
+		}
 	}
 }
