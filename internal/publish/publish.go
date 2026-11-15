@@ -112,6 +112,14 @@ type PlayerSet struct {
 	Ops       []byte
 }
 
+// AllowsNobody reports whether these two files let nobody in: the roster after
+// the last player was removed (`[]`), a zero-byte file, or one that cannot be
+// parsed. A server in that state refuses every join, which is why both publish
+// doors refuse to make one rather than boot a working server nobody can use.
+func (p *PlayerSet) AllowsNobody() bool {
+	return len(whitelistNamesIn(p.Whitelist)) == 0
+}
+
 // ReadPlayers reads the server-wide whitelist and ops files. A missing ops.json is
 // an empty list, because a server that has been played on but never opped anybody
 // is the normal state.
@@ -171,6 +179,17 @@ type Options struct {
 	// daemon uses it to reuse the roster it already has: Mojang rate-limits, and
 	// the bucket is the authoritative copy anyway (PLAN 18).
 	Players *PlayerSet
+
+	// ReusePlayers publishes the player list already in the asset bucket when
+	// nothing else supplies one: no Players, no Whitelist/Ops, no --open, and no
+	// player file in the pack directory. Re-publishing an installed pack is
+	// exactly that case, and the roster is the authority on those two keys, so
+	// resolving the same names again through Mojang only adds a 429.
+	//
+	// A pack that ships its own server/whitelist.json is taken at its word: it
+	// was authored with a list in mind, and the bucket's list is for packs that
+	// were not.
+	ReusePlayers bool
 
 	// Open publishes a server with white-list=false. Needs saying out loud,
 	// because the default is the opposite.
@@ -322,6 +341,29 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		}
 	}
 
+	// The player list, when nobody named one. Build cannot do this itself: it
+	// never sees the bucket, and the whole point is not to ask Mojang again.
+	reusedPlayers := false
+	if opts.ReusePlayers && !opts.Open && opts.Players == nil &&
+		len(opts.Whitelist) == 0 && len(opts.Ops) == 0 && !packShipsPlayers(opts.Dir) {
+		players, err := ReadPlayers(ctx, st, opts.AssetBucket)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			// No list anywhere: Build refuses below, and its message names the
+			// three ways to supply one.
+		case err != nil:
+			return res, err
+		case len(whitelistNamesIn(players.Whitelist)) == 0:
+			// An empty whitelist is the roster's way of saying "nobody", and a server
+			// nobody may join is exactly what Build's refusal exists to prevent. It is
+			// also a normal state — removing the last player writes `[]` — so it must
+			// not be treated as a list worth republishing.
+		default:
+			opts.Players = players
+			reusedPlayers = true
+		}
+	}
+
 	objects, warnings, err := Build(ctx, opts)
 	if err != nil {
 		return res, err
@@ -329,6 +371,11 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 
 	res.Warnings = append(res.Warnings, warnings...)
 	res.Players = whitelistNames(objects)
+	if reusedPlayers {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"reused the player list already in %s (%d name(s), operators included) instead of resolving them again",
+			opts.AssetBucket, len(res.Players)))
+	}
 
 	// Verify every key exists at the expected size once it is up. A modpack that
 	// uploads 187 of 188 jars is a server that fails to boot in a way nobody can
@@ -443,7 +490,18 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 
 	var objects []Object
 
-	add := func(key string, o Object) { objects = append(objects, o) }
+	add := func(key string, o Object) {
+		// Replace, never append: two objects with one key would both be uploaded and
+		// whichever landed last would win, which sort.Slice below makes undefined.
+		o.Key = key
+		for i := range objects {
+			if objects[i].Key == key {
+				objects[i] = o
+				return
+			}
+		}
+		objects = append(objects, o)
+	}
 
 	pk, packed, err := LoadPack(opts.Dir)
 	if err != nil {
@@ -639,6 +697,35 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	return objects, warnings, nil
 }
 
+// whitelistNamesIn reads the names out of one whitelist.json, and answers nil for
+// anything it cannot parse: the answer is only ever used to decide whether there
+// is anybody at all.
+func whitelistNamesIn(raw []byte) []string {
+	var players []Player
+	if err := json.Unmarshal(raw, &players); err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(players))
+	for _, p := range players {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
+// packShipsPlayers reports whether the pack directory carries its own player
+// list. Either file counts: Build publishes both from one source, so a pack that
+// brought one of them must not have the other half swapped for the bucket's —
+// and a pack with an ops.json but no whitelist.json lets nobody join anyway,
+// which Build's refusal is there to say.
+func packShipsPlayers(dir string) bool {
+	for _, name := range []string{"whitelist.json", "ops.json"} {
+		if _, err := os.Stat(filepath.Join(dir, "server", name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // prune removes stale mods, config and root files. It never touches server/ (that
 // is where a person's own files live) or the world bucket. root/ is pruned
 // because a fetched pack owns every file in it: a config the new pack version
@@ -696,15 +783,7 @@ func whitelistNames(objects []Object) []string {
 			}
 			raw = b
 		}
-		var players []Player
-		if err := json.Unmarshal(raw, &players); err != nil {
-			return nil
-		}
-		names := make([]string, 0, len(players))
-		for _, p := range players {
-			names = append(names, p.Name)
-		}
-		return names
+		return whitelistNamesIn(raw)
 	}
 	return nil
 }
