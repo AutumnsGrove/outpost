@@ -180,30 +180,59 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func TestAnInstallMarksItselfSoAStartWaits(t *testing.T) {
+func TestTheInstallMarkerLivesExactlyAsLongAsTheJob(t *testing.T) {
 	m, _ := newManager(t)
 
 	if _, _, busy := InstallingNow(m.Dir); busy {
 		t.Fatal("nothing is installing yet")
 	}
 
+	// run owns the marker for install jobs, so this exercises the same path the
+	// page takes — deleting the marker logic leaves this failing.
 	job, err := m.begin("install", "cobblemon", "cobblemon")
 	if err != nil {
 		t.Fatal(err)
 	}
-	clear, err := MarkInstalling(m.Dir, "cobblemon")
+
+	var during string
+	var busyDuring bool
+	m.run(context.Background(), job, func(context.Context) (*JobResult, error) {
+		during, _, busyDuring = InstallingNow(m.Dir)
+		return &JobResult{}, nil
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for m.Job().running && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !busyDuring || during != "cobblemon" {
+		t.Fatalf("the marker was not there during the install: %q %v", during, busyDuring)
+	}
+	if _, _, busy := InstallingNow(m.Dir); busy {
+		t.Fatal("the marker outlived the install")
+	}
+}
+
+func TestAProgressTickKeepsTheMarkerFresh(t *testing.T) {
+	m, _ := newManager(t)
+	clear, touch, err := MarkInstalling(m.Dir, "cobblemon")
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, _, busy := InstallingNow(m.Dir)
-	if !busy || profile != "cobblemon" {
-		t.Fatalf("marker = %q %v", profile, busy)
-	}
+	defer clear()
 
-	clear()
-	m.run(context.Background(), job, func(context.Context) (*JobResult, error) { return nil, nil })
+	// Backdate it, then refresh: freshness is silence, not duration.
+	old := time.Now().Add(-2 * staleInstall)
+	path := filepath.Join(m.Dir, installMarker)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, busy := InstallingNow(m.Dir); busy {
-		t.Fatal("the marker outlived the install")
+		t.Fatal("a marker with no progress for two hours was trusted")
+	}
+	touch()
+	if _, _, busy := InstallingNow(m.Dir); !busy {
+		t.Fatal("a refreshed marker was not trusted")
 	}
 }
 
@@ -212,10 +241,14 @@ func TestAStaleInstallMarkerDoesNotBlockAStart(t *testing.T) {
 	if err := os.MkdirAll(m.Dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A daemon killed mid-install leaves the marker behind. An hour later it must
-	// not stop a rental for ever.
-	old := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	if err := os.WriteFile(filepath.Join(m.Dir, installMarker), []byte("cobblemon\n"+old+"\n"), 0o644); err != nil {
+	// A daemon killed mid-install leaves the marker behind. Later it must not stop
+	// a rental for ever.
+	path := filepath.Join(m.Dir, installMarker)
+	if err := os.WriteFile(path, []byte("cobblemon\n"+time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, busy := InstallingNow(m.Dir); busy {

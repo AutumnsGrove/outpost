@@ -77,6 +77,8 @@ type Job struct {
 	Result    *JobResult `json:"result,omitempty"`
 
 	running bool
+	// touch refreshes the install marker. Set by run, called from progress.
+	touch func()
 }
 
 // JobResult is what a finished job has to say.
@@ -248,13 +250,6 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 	if err != nil {
 		return nil, err
 	}
-	// Tell other processes (a shell running `outpost start`) to wait. The marker
-	// lives exactly as long as the work, so it is cleared in the goroutine.
-	clear, err := MarkInstalling(m.Dir, profile)
-	if err != nil {
-		clear = func() {}
-		m.Log.Warn("could not mark the install in progress; a start may race it", "err", err)
-	}
 
 	opts := Options{
 		Source:       req.Source,
@@ -268,8 +263,6 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 	}
 
 	m.run(ctx, job, func(ctx context.Context) (*JobResult, error) {
-		defer clear()
-
 		res, err := Fetch(ctx, opts)
 		if err != nil {
 			return nil, err
@@ -316,7 +309,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 		}
 		return result, nil
 	})
-	return job, nil
+	return m.Job(), nil
 }
 
 // publishOptions is the part of publish's options that comes from the manager.
@@ -375,6 +368,24 @@ func (m *Manager) run(ctx context.Context, job *Job, fn func(ctx context.Context
 		// rule as renting a server.
 		ctx = context.WithoutCancel(ctx)
 
+		// An install rewrites a profile's keys, so it says so for exactly as long as
+		// it runs: a start that lands in the middle would rent a server that pulls a
+		// half-written pack. The marker is refreshed by progress, so a slow install
+		// stays marked and a dead daemon stops being trusted.
+		if job.Kind == "install" {
+			clear, touch, err := MarkInstalling(m.Dir, job.Profile)
+			if err != nil {
+				m.Log.Warn("could not mark the install in progress; a start may race it", "err", err)
+			} else {
+				defer clear()
+				// Under the lock: Job() copies the whole struct, so an unlocked
+				// write here races with every poll.
+				m.mu.Lock()
+				job.touch = touch
+				m.mu.Unlock()
+			}
+		}
+
 		result, err := fn(ctx)
 
 		m.mu.Lock()
@@ -411,6 +422,9 @@ func (m *Manager) progress(job *Job) func(phase string, done, total int) {
 		}
 		job.Phase = phase
 		job.Done, job.Total = done, total
+		if job.touch != nil {
+			job.touch()
+		}
 	}
 }
 
@@ -425,5 +439,8 @@ func (m *Manager) uploadProgress(job *Job) func(done, total int) {
 		}
 		job.Phase = "upload"
 		job.Done, job.Total = done, total
+		if job.touch != nil {
+			job.touch()
+		}
 	}
 }
