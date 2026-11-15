@@ -100,28 +100,37 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 		return false, nil, err
 	}
 
+	// What the world was made by, if R2 says so. A missing marker and an
+	// unreadable one are the same answer here — "no idea" — because --new-world
+	// has to work in both cases, and a corrupt marker is not something a person
+	// can repair without a shell.
+	var current Pack
+	known := false
 	raw, err := st.Get(ctx, opts.WorldBucket, packMarkerKey)
 	switch {
+	case err == nil:
+		if err := json.Unmarshal(raw, &current); err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s/%s is unreadable (%v), so this pack cannot be checked against the world", opts.WorldBucket, packMarkerKey, err))
+		} else if current.SameBuild(p) {
+			return false, nil, nil
+		} else {
+			known = true
+		}
 	case errors.Is(err, ErrNotFound):
 		// A world saved before packs had a marker, or by a hand-rolled pack.
-		switch {
-		case opts.NewWorld:
-			return true, nil, nil
-		case opts.KeepWorld:
-			return false, []string{"keeping a world with no pack marker: it may predate packs, so pack identity could not be checked"}, nil
-		}
-		return false, nil, fmt.Errorf("publish: %s has a saved world with no pack marker, so this pack cannot be checked against it; "+
-			"pass --new-world to discard it and start fresh, or --keep-world to load it anyway", opts.WorldBucket)
-	case err != nil:
+	default:
 		return false, nil, err
 	}
 
-	var current Pack
-	if err := json.Unmarshal(raw, &current); err != nil {
-		return false, nil, fmt.Errorf("publish: %s/%s is unreadable (%v); pass --new-world or --keep-world to decide what to do with the world", opts.WorldBucket, packMarkerKey, err)
-	}
-	if current.SameBuild(p) {
-		return false, nil, nil
+	if !known {
+		switch {
+		case opts.NewWorld:
+			return true, warnings, nil
+		case opts.KeepWorld:
+			return false, append(warnings, "keeping a world whose pack could not be identified: it may predate packs, or the marker may be corrupt"), nil
+		}
+		return false, warnings, fmt.Errorf("publish: %s has a saved world with no readable pack marker, so this pack cannot be checked against it; "+
+			"pass --new-world to discard it and start fresh, or --keep-world to load it anyway", opts.WorldBucket)
 	}
 
 	msg := fmt.Sprintf("publish: the saved world was made by %s and this is %s", current.Describe(), p.Describe())
