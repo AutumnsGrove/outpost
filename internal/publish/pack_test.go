@@ -478,3 +478,40 @@ func TestReadPlayersAndPublishThemVerbatim(t *testing.T) {
 		t.Fatal("an empty bucket should say the list is missing")
 	}
 }
+
+func TestBuildUploadsTheManifestSoThePageCanNameTheProfile(t *testing.T) {
+	dir := writeModpack(t, testPack())
+
+	objects, _, err := Build(context.Background(), Options{Dir: dir, Profile: "cobblemon"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	var got Object
+	for _, o := range objects {
+		if strings.HasSuffix(o.Key, "/pack.json") {
+			got = o
+		}
+	}
+	if got.Key == "" {
+		t.Fatalf("no pack.json in the plan; the page reads it to name a profile: %v", keys(objects))
+	}
+	if got.Key != profilePrefix("cobblemon")+PackFile {
+		t.Fatalf("pack.json landed at %s, want it inside the profile", got.Key)
+	}
+	if !strings.Contains(string(got.Content), `"slug": "test-pack"`) {
+		t.Fatalf("the uploaded manifest is not the pack's: %s", got.Content)
+	}
+
+	// A hand-rolled directory has no manifest, and must not gain an empty one.
+	plain := writePack(t)
+	objects, _, err = Build(context.Background(), Options{Dir: plain, Profile: "default"})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	for _, o := range objects {
+		if strings.HasSuffix(o.Key, "/pack.json") {
+			t.Fatalf("a hand-rolled pack grew a manifest: %s", o.Key)
+		}
+	}
+}
