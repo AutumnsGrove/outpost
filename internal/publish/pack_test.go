@@ -255,3 +255,28 @@ func TestLoadPackTreatsAMissingManifestAsAHandRolledPack(t *testing.T) {
 		t.Fatal("a corrupt pack.json was accepted")
 	}
 }
+
+func TestRunNewWorldStillWorksWhenTheMarkerIsUnreadable(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.objects["current/world.tar.gz"] = []byte("world")
+	st.objects["current/pack.json"] = []byte("{ this is not json")
+
+	// A corrupt marker must not be a dead end: --new-world is the way out, and it
+	// has to work without a shell and a manual delete.
+	_, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		WorldBucket: "mc-worlds",
+		NewWorld:    true,
+	})
+	if err != nil {
+		t.Fatalf("new-world with a corrupt marker: %v", err)
+	}
+	if _, ok := st.objects["current/world.tar.gz"]; ok {
+		t.Fatal("--new-world left the world behind")
+	}
+	if err := json.Unmarshal(st.objects["current/pack.json"], &Pack{}); err != nil {
+		t.Fatalf("the marker was not rewritten: %v", err)
+	}
+}

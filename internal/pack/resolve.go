@@ -2,6 +2,8 @@ package pack
 
 import (
 	"context"
+	"crypto/sha512"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -247,7 +249,12 @@ func contains(list []string, want string) bool {
 
 // openMrpack produces a readable .mrpack, downloading it when the source is a
 // URL. cleanup is safe to call in every case.
-func openMrpack(ctx context.Context, rawURL string) (f *os.File, cleanup func(), err error) {
+//
+// wantSHA512 is the hash the API published for the archive, and it is checked
+// when there is one: the pack's mod jars get verified one by one as they land,
+// but overrides/ carries no hashes at all, so the archive is the only thing that
+// vouches for those bytes before they are extracted and run.
+func openMrpack(ctx context.Context, rawURL, wantSHA512 string) (f *os.File, cleanup func(), err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, func() {}, err
@@ -268,11 +275,36 @@ func openMrpack(ctx context.Context, rawURL string) (f *os.File, cleanup func(),
 	if err != nil {
 		return nil, func() {}, err
 	}
-	cleanup = func() { os.Remove(tmp.Name()) }
+	// Close before removing: the pack is up to a few hundred MB and the caller
+	// defers this, so a leaked descriptor would live as long as the process.
+	cleanup = func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
 	if _, err := io.Copy(tmp, resp.Body); err != nil {
 		tmp.Close()
 		cleanup()
 		return nil, func() {}, fmt.Errorf("download %s: %w", rawURL, err)
+	}
+	// The temp file is at EOF, and both the hash and the caller read it from the
+	// start.
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		tmp.Close()
+		cleanup()
+		return nil, func() {}, err
+	}
+	if wantSHA512 != "" {
+		h := sha512.New()
+		if _, err := io.Copy(h, tmp); err != nil {
+			tmp.Close()
+			cleanup()
+			return nil, func() {}, fmt.Errorf("hash %s: %w", rawURL, err)
+		}
+		if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, wantSHA512) {
+			tmp.Close()
+			cleanup()
+			return nil, func() {}, fmt.Errorf("downloaded %s does not match the hash Modrinth published for it", rawURL)
+		}
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		tmp.Close()

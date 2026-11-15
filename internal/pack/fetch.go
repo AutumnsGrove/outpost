@@ -68,6 +68,7 @@ type target struct {
 	url  string
 	algo string
 	sum  string
+	size int64 // what the pack says the file is, for catching a truncated answer
 }
 
 // Fetch materialises a pack directory from a Modrinth modpack.
@@ -178,7 +179,7 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 			res.Warnings = append(res.Warnings, fmt.Sprintf("%s carries no checksum; downloaded unverified", f.Path))
 		}
 		url := f.Downloads[0]
-		targets = append(targets, target{rel: rel, url: url, algo: algo, sum: sum})
+		targets = append(targets, target{rel: rel, url: url, algo: algo, sum: sum, size: f.FileSize})
 		written[rel] = true
 	}
 
@@ -201,7 +202,7 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 		}
 	}
 
-	if _, bytes, err := download(ctx, opts, targets, log); err != nil {
+	if bytes, err := download(ctx, opts, targets, log); err != nil {
 		return res, err
 	} else {
 		res.Bytes = bytes
@@ -264,7 +265,7 @@ func openSource(ctx context.Context, src source, wantVersion string, pk *publish
 		return book{file: f, size: info.Size(), label: src.path}, func() { f.Close() }, nil
 
 	case sourceURL:
-		f, cleanup, err := openMrpack(ctx, src.url)
+		f, cleanup, err := openMrpack(ctx, src.url, "")
 		if err != nil {
 			return book{}, noop, err
 		}
@@ -308,7 +309,7 @@ func openSource(ctx context.Context, src source, wantVersion string, pk *publish
 		pk.VersionID = version.ID
 		pk.VersionNumber = version.VersionNumber
 
-		f, cleanup, err := openMrpack(ctx, file.URL)
+		f, cleanup, err := openMrpack(ctx, file.URL, file.Hashes["sha512"])
 		if err != nil {
 			return book{}, noop, err
 		}

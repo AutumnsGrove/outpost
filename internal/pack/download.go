@@ -22,12 +22,11 @@ import (
 )
 
 // download fetches every target, a few at a time, and reports what it moved.
-func download(ctx context.Context, opts Options, targets []target, log *slog.Logger) (int, int64, error) {
+func download(ctx context.Context, opts Options, targets []target, log *slog.Logger) (int64, error) {
 	var (
 		wg       sync.WaitGroup
 		mu       sync.Mutex
 		firstErr error
-		count    int
 		bytes    atomic.Int64
 		sem      = make(chan struct{}, workers)
 	)
@@ -63,14 +62,11 @@ func download(ctx context.Context, opts Options, targets []target, log *slog.Log
 			if !unchanged {
 				log.Debug("fetched", "file", t.rel, "bytes", n)
 			}
-			mu.Lock()
-			count++
-			mu.Unlock()
 		}(t)
 	}
 	wg.Wait()
 
-	return count, bytes.Load(), firstErr
+	return bytes.Load(), firstErr
 }
 
 // fetchFile downloads one file and verifies it against the pack's checksum. A
@@ -134,6 +130,11 @@ func fetchFile(ctx context.Context, dir string, t target, force bool) (n int64, 
 	if err := out.Close(); err != nil {
 		os.Remove(tmp)
 		return 0, false, err
+	}
+
+	if t.size > 0 && n != t.size {
+		os.Remove(tmp)
+		return 0, false, fmt.Errorf("%s: got %d bytes, the pack says %d", t.rel, n, t.size)
 	}
 
 	if h != nil {
