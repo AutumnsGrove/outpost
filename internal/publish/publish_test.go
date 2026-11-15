@@ -207,18 +207,32 @@ func TestBuildSkipsWorldDirectories(t *testing.T) {
 
 // --- Run against a fake store ---------------------------------------------
 
+// fakeStore is bucket-aware: `objects` is the asset bucket and `worlds` is
+// mc-worlds. The two hold keys of the same shape (profiles/<id>/pack.json), so a
+// test that could not tell them apart could not see which one was written.
 type fakeStore struct {
 	objects map[string][]byte
+	worlds  map[string][]byte
 	sums    map[string]string
 	puts    int
 	removes int
 }
 
+const worldBucket = "mc-worlds"
+
 func newFakeStore() *fakeStore {
-	return &fakeStore{objects: map[string][]byte{}, sums: map[string]string{}}
+	return &fakeStore{objects: map[string][]byte{}, worlds: map[string][]byte{}, sums: map[string]string{}}
 }
 
-func (f *fakeStore) Put(_ context.Context, _ string, key string, r io.Reader, size int64, sum string) error {
+// bucket picks the map a call is talking about.
+func (f *fakeStore) bucket(name string) map[string][]byte {
+	if name == worldBucket {
+		return f.worlds
+	}
+	return f.objects
+}
+
+func (f *fakeStore) Put(_ context.Context, bucket, key string, r io.Reader, size int64, sum string) error {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return err
@@ -226,31 +240,31 @@ func (f *fakeStore) Put(_ context.Context, _ string, key string, r io.Reader, si
 	if int64(len(b)) != size {
 		return io.ErrUnexpectedEOF
 	}
-	f.objects[key] = b
+	f.bucket(bucket)[key] = b
 	f.sums[key] = sum
 	f.puts++
 	return nil
 }
 
-func (f *fakeStore) Get(_ context.Context, _, key string) ([]byte, error) {
-	b, ok := f.objects[key]
+func (f *fakeStore) Get(_ context.Context, bucket, key string) ([]byte, error) {
+	b, ok := f.bucket(bucket)[key]
 	if !ok {
 		return nil, r2.ErrNotFound
 	}
 	return b, nil
 }
 
-func (f *fakeStore) Stat(_ context.Context, _, key string) (r2.Info, error) {
-	b, ok := f.objects[key]
+func (f *fakeStore) Stat(_ context.Context, bucket, key string) (r2.Info, error) {
+	b, ok := f.bucket(bucket)[key]
 	if !ok {
 		return r2.Info{}, r2.ErrNotFound
 	}
 	return r2.Info{Size: int64(len(b)), SHA256: f.sums[key]}, nil
 }
 
-func (f *fakeStore) List(_ context.Context, _, prefix string) ([]r2.Object, error) {
+func (f *fakeStore) List(_ context.Context, bucket, prefix string) ([]r2.Object, error) {
 	var out []r2.Object
-	for k, v := range f.objects {
+	for k, v := range f.bucket(bucket) {
 		if strings.HasPrefix(k, prefix) {
 			out = append(out, r2.Object{Key: k, Size: int64(len(v))})
 		}
@@ -258,8 +272,8 @@ func (f *fakeStore) List(_ context.Context, _, prefix string) ([]r2.Object, erro
 	return out, nil
 }
 
-func (f *fakeStore) Remove(_ context.Context, _, key string) error {
-	delete(f.objects, key)
+func (f *fakeStore) Remove(_ context.Context, bucket, key string) error {
+	delete(f.bucket(bucket), key)
 	f.removes++
 	return nil
 }

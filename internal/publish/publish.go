@@ -395,14 +395,22 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		if err := recordPack(ctx, st, opts, *pf.Pack, discardWorld); err != nil {
 			return res, err
 		}
-	case opts.WorldBucket != "":
-		// A hand-rolled pack has no identity to record, and the marker from an
-		// earlier fetched pack would still claim assets that are no longer there.
-		// Removing it means the next packed publish has to be told what to do with
-		// a world this publish cannot describe, instead of trusting a stale label.
-		_, marker := worldKeys(opts.ProfileOf())
-		if err := st.Remove(ctx, opts.WorldBucket, marker); err != nil {
-			return res, fmt.Errorf("clear the pack marker: %w", err)
+	default:
+		// A hand-rolled pack has no identity to record, so both halves of an earlier
+		// fetched publish have to go: the marker in the world bucket, or the next
+		// packed publish trusts a label that no longer describes the assets, and the
+		// manifest in the asset bucket, or the page keeps naming a pack that is not
+		// installed any more.
+		if opts.AssetBucket != "" {
+			if err := st.Remove(ctx, opts.AssetBucket, profilePrefix(opts.ProfileOf())+PackFile); err != nil {
+				return res, fmt.Errorf("clear the pack manifest: %w", err)
+			}
+		}
+		if opts.WorldBucket != "" {
+			_, marker := worldKeys(opts.ProfileOf())
+			if err := st.Remove(ctx, opts.WorldBucket, marker); err != nil {
+				return res, fmt.Errorf("clear the pack marker: %w", err)
+			}
 		}
 	}
 	return res, nil
