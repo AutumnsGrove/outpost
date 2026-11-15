@@ -302,41 +302,41 @@ func openMrpack(ctx context.Context, rawURL, wantSHA512, cachePath string) (f *o
 		return nil, noop, err
 	}
 	cached := cachePath != ""
-	// Close before removing: the pack is up to a few hundred MB and the caller
-	// defers this, so a leaked descriptor would live as long as the process. A
-	// cached archive is kept, since the install is going to read it.
-	cleanup = func() {
+	// discard is for every exit that is not a verified archive: a partial or
+	// mismatched download must never reach the cache, because a bare .mrpack URL
+	// has no hash to check it against later, so a truncated file would be read as
+	// valid for ever.
+	discard := func() {
 		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	// Close before removing: the pack is up to a few hundred MB and the caller
+	// defers this, so a leaked descriptor would live as long as the process.
+	cleanup = func() {
 		if !cached {
-			os.Remove(tmp.Name())
+			discard()
 			return
 		}
-		if err := os.Rename(tmp.Name(), cachePath); err != nil {
-			os.Remove(tmp.Name())
-		}
+		tmp.Close()
 	}
 	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		tmp.Close()
-		cleanup()
+		discard()
 		return nil, func() {}, fmt.Errorf("download %s: %w", rawURL, err)
 	}
 	// The temp file is at EOF, and both the hash and the caller read it from the
 	// start.
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		tmp.Close()
-		cleanup()
+		discard()
 		return nil, noop, err
 	}
 	if wantSHA512 != "" {
 		h := sha512.New()
 		if _, err := io.Copy(h, tmp); err != nil {
-			tmp.Close()
-			cleanup()
+			discard()
 			return nil, func() {}, fmt.Errorf("hash %s: %w", rawURL, err)
 		}
 		if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, wantSHA512) {
-			tmp.Close()
-			cleanup()
+			discard()
 			return nil, func() {}, fmt.Errorf("downloaded %s does not match the hash Modrinth published for it", rawURL)
 		}
 	}
@@ -349,7 +349,7 @@ func openMrpack(ctx context.Context, rawURL, wantSHA512, cachePath string) (f *o
 	// run finds it.
 	if cached {
 		if err := os.Rename(tmp.Name(), cachePath); err != nil {
-			os.Remove(tmp.Name())
+			discard()
 			return nil, noop, err
 		}
 		reopened, err := os.Open(cachePath)

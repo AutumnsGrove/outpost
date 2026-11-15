@@ -25,6 +25,7 @@ import (
 	"outpost/internal/config"
 	"outpost/internal/dns"
 	"outpost/internal/hetzner"
+	"outpost/internal/pack"
 	"outpost/internal/publish"
 	"outpost/internal/r2"
 	"outpost/internal/rcon"
@@ -391,6 +392,14 @@ func (o *Orchestrator) Start(ctx context.Context, region string) (store.ServerSt
 	reg, err := o.cfg.Region(region)
 	if err != nil {
 		return st, err
+	}
+
+	// A start that lands in the middle of an install would pull a profile whose
+	// keys are half old and half new — the same failure as a missing profile, only
+	// harder to see, so it is refused the same way.
+	if profile, since, busy := pack.InstallingNow(o.cfg.Server.PackDir); busy {
+		return st, fmt.Errorf("profile %q is being installed (%s); wait for it to finish before starting",
+			profile, since.Local().Format("15:04"))
 	}
 
 	// Fixed for the whole session: the boot pulls this profile's assets and the
