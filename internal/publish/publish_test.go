@@ -758,3 +758,18 @@ func TestRunDoesNotRepublishAnEmptyRoster(t *testing.T) {
 		t.Fatalf("expected a whitelist refusal for an empty roster, got %v", err)
 	}
 }
+
+func TestAllowsNobodyCoversTheRosterStatesThatRefuseEveryJoin(t *testing.T) {
+	cases := map[string]bool{
+		`[]`:                            true,
+		``:                              true,
+		`not json`:                      true,
+		`[{"uuid":"x","name":"Notch"}]`: false,
+	}
+	for raw, want := range cases {
+		set := &PlayerSet{Whitelist: []byte(raw), Ops: []byte("[]")}
+		if got := set.AllowsNobody(); got != want {
+			t.Errorf("AllowsNobody(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
