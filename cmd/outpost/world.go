@@ -12,6 +12,7 @@ import (
 	"outpost/internal/publish"
 	"outpost/internal/r2"
 	"outpost/internal/store"
+	"outpost/internal/trash"
 	"outpost/internal/world"
 )
 
@@ -24,7 +25,7 @@ func (a *app) worldCmd() *cobra.Command {
 			"from before profiles is still at current/world.tar.gz, where nothing reads\n" +
 			"it and no amount of playing will bring it back.\n\n" +
 			"Deleting copies the world to trash/ first and removes it second, and the\n" +
-			"trash keeps it for " + fmt.Sprint(world.TrashRetentionDays) + " days. Nothing here deletes the only\n" +
+			"trash keeps it for " + fmt.Sprint(trash.RetentionDays) + " days. Nothing here deletes the only\n" +
 			"copy of a world in one step.",
 	}
 	cmd.AddCommand(a.worldListCmd(), a.worldImportCmd(), a.worldDeleteCmd())
