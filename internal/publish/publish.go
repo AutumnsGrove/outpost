@@ -172,6 +172,17 @@ type Options struct {
 	// the bucket is the authoritative copy anyway (PLAN 18).
 	Players *PlayerSet
 
+	// ReusePlayers publishes the player list already in the asset bucket when
+	// nothing else supplies one: no Players, no Whitelist/Ops, no --open, and no
+	// player file in the pack directory. Re-publishing an installed pack is
+	// exactly that case, and the roster is the authority on those two keys, so
+	// resolving the same names again through Mojang only adds a 429.
+	//
+	// A pack that ships its own server/whitelist.json is taken at its word: it
+	// was authored with a list in mind, and the bucket's list is for packs that
+	// were not.
+	ReusePlayers bool
+
 	// Open publishes a server with white-list=false. Needs saying out loud,
 	// because the default is the opposite.
 	Open bool
@@ -322,6 +333,24 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		}
 	}
 
+	// The player list, when nobody named one. Build cannot do this itself: it
+	// never sees the bucket, and the whole point is not to ask Mojang again.
+	reusedPlayers := false
+	if opts.ReusePlayers && !opts.Open && opts.Players == nil &&
+		len(opts.Whitelist) == 0 && len(opts.Ops) == 0 && !packShipsPlayers(opts.Dir) {
+		players, err := ReadPlayers(ctx, st, opts.AssetBucket)
+		switch {
+		case err == nil:
+			opts.Players = players
+			reusedPlayers = true
+		case errors.Is(err, ErrNotFound):
+			// No list anywhere: Build refuses below, and its message names the
+			// three ways to supply one.
+		default:
+			return res, err
+		}
+	}
+
 	objects, warnings, err := Build(ctx, opts)
 	if err != nil {
 		return res, err
@@ -329,6 +358,11 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 
 	res.Warnings = append(res.Warnings, warnings...)
 	res.Players = whitelistNames(objects)
+	if reusedPlayers {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"reused the player list already in %s (%d name(s), operators included) instead of resolving them again",
+			opts.AssetBucket, len(res.Players)))
+	}
 
 	// Verify every key exists at the expected size once it is up. A modpack that
 	// uploads 187 of 188 jars is a server that fails to boot in a way nobody can
@@ -637,6 +671,14 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
 	return objects, warnings, nil
+}
+
+// packShipsPlayers reports whether the pack directory carries its own
+// whitelist.json. Checking one file rather than the objects Build has not built
+// yet is what lets the caller decide before Build who owns the list.
+func packShipsPlayers(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "server", "whitelist.json"))
+	return err == nil
 }
 
 // prune removes stale mods, config and root files. It never touches server/ (that

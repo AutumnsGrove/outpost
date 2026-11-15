@@ -36,7 +36,14 @@ func (a *app) publishCmd() *cobra.Command {
 			"`outpost pack fetch` supplies the Minecraft version, the loader version and\n" +
 			"the RAM the pack needs, so those flags are only for hand-rolled packs.\n" +
 			"A launcher jar can be fetched from Fabric Meta, and Minecraft names are\n" +
-			"resolved to UUIDs through Mojang, so the whitelist never goes stale.",
+			"resolved to UUIDs through Mojang, so the whitelist never goes stale.\n" +
+			"\n" +
+			"The player list comes from the first of these that exists: --whitelist\n" +
+			"(resolved through Mojang, and --op with it), a server/whitelist.json in\n" +
+			"the pack, or the list already in R2. The third is what re-publishing an\n" +
+			"installed pack does: no lookups, the bytes go back up unchanged, and any\n" +
+			"operators already recorded stay operators. --open skips all three and\n" +
+			"turns white-list off instead.",
 		Args:        cobra.MaximumNArgs(1),
 		Annotations: map[string]string{requiresCloud: "r2"},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -69,6 +76,10 @@ func (a *app) publishCmd() *cobra.Command {
 				FabricLoader: loader,
 				Whitelist:    whitelist,
 				Ops:          ops,
+				// Without this, re-publishing an installed pack demands the names
+				// again and resolves each one through Mojang, when R2 has held the
+				// answer since the last session.
+				ReusePlayers: true,
 				Open:         open,
 				DryRun:       dryRun,
 				Prune:        prune,
@@ -114,7 +125,7 @@ func (a *app) publishCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&fabricMC, "fabric", "", "fetch a Fabric server launcher for this Minecraft version (e.g. 1.20.1)")
 	f.StringVar(&loader, "loader", "", "pin the Fabric loader (default: newest stable)")
-	f.StringSliceVar(&whitelist, "whitelist", nil, "Minecraft names to allow, resolved to UUIDs")
+	f.StringSliceVar(&whitelist, "whitelist", nil, "Minecraft names to allow, resolved to UUIDs (default: the list already in R2)")
 	f.StringSliceVar(&ops, "op", nil, "Minecraft names to make operators (must be on the whitelist)")
 	f.BoolVar(&open, "open", false, "publish with white-list=false (anyone who finds the address can join)")
 	f.StringVar(&profile, "profile", "", "profile to publish into: a pack and its world (default: the pack's slug, or \"default\" for a hand-rolled pack)")
