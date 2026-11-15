@@ -560,3 +560,27 @@ func TestAHandRolledPublishOwnsModsButNotConfigs(t *testing.T) {
 		t.Fatal("a hand-rolled publish pruned a config it did not write")
 	}
 }
+
+func TestVanillaIsAPackThisServerCanBoot(t *testing.T) {
+	pk := VanillaPack()
+	// It goes through the same door every pack does: the same Minecraft version
+	// check, the same loader check, the same world guard, the same prune.
+	if err := CheckPack(pk); err != nil {
+		t.Fatalf("vanilla is refused by the check every pack passes: %v", err)
+	}
+	if pk.MC != SupportedMC || pk.Loader != "fabric" {
+		t.Fatalf("vanilla = %+v", pk)
+	}
+	// An identity, not a hand-rolled directory: without source and slug the world
+	// guard cannot tell a vanilla world from one nothing knows the origin of, and
+	// every publish into the profile would have to ask.
+	if pk.Source == "" || pk.Slug == "" {
+		t.Fatal("vanilla has no identity")
+	}
+	if !pk.SamePack(VanillaPack()) {
+		t.Fatal("a vanilla world is not claimed by a vanilla pack")
+	}
+	if pk.SamePack(Pack{Source: "modrinth", Slug: "cobblemon-fabric"}) {
+		t.Fatal("a vanilla pack claims a Modrinth pack's world")
+	}
+}
