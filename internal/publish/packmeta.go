@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // SupportedMC is the only Minecraft version Outpost can boot today.
@@ -120,6 +121,30 @@ func WritePack(dir string, p Pack) error {
 		return fmt.Errorf("write %s: %w", PackFile, err)
 	}
 	return nil
+}
+
+// VanillaPack is the identity of a server with no mods: Fabric, an empty
+// mods/, the Minecraft version this image can boot.
+//
+// It is a pack.json like any other, with source "outpost" instead of
+// "modrinth", which is what makes vanilla a first-class profile rather than a
+// special case: the world guard, the pruning, the RAM check, the marker and
+// `world import` all treat it as one thing — a pack. It is deliberately *not* the
+// vanilla server jar from Mojang's manifest. A zero-mod Fabric server plays as
+// vanilla and accepts vanilla clients, so a second jar name and a second
+// start.sh would buy a difference no player can see, at the cost of a second
+// boot path that nothing else in the system knows about.
+func VanillaPack() Pack {
+	return Pack{
+		Source:        "outpost",
+		Slug:          "vanilla",
+		Name:          "Vanilla",
+		VersionID:     SupportedMC,
+		VersionNumber: SupportedMC,
+		MC:            SupportedMC,
+		Loader:        "fabric",
+		FetchedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
 }
 
 // CheckPack refuses a pack this server cannot run, before it rents or uploads

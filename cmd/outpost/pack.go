@@ -5,7 +5,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -27,7 +29,7 @@ func (a *app) packCmd() *cobra.Command {
 			"Source can be a Modrinth slug, a modrinth.com modpack link (Prism's \"open\n" +
 			"in browser\" gives you one), a .mrpack URL, or a .mrpack on disk.",
 	}
-	cmd.AddCommand(a.packFetchCmd(), a.packListCmd(), a.packUseCmd())
+	cmd.AddCommand(a.packFetchCmd(), a.packVanillaCmd(), a.packListCmd(), a.packUseCmd())
 	return cmd
 }
 
@@ -48,6 +50,58 @@ func (a *app) packManager(rost *roster.Roster) (*pack.Manager, error) {
 		Activate:    func(_ context.Context, profile string) error { return a.orch.SetActiveProfile(profile) },
 	}
 	return m, nil
+}
+
+func (a *app) packVanillaCmd() *cobra.Command {
+	var dir string
+
+	cmd := &cobra.Command{
+		Use:   "vanilla",
+		Short: "Write a server with no mods: Fabric, 1.20.1, an empty mods/",
+		Long: "Writes the pack.json that makes a directory a modless server, which is what\n" +
+			"\"vanilla\" means at Outpost: Fabric with nothing loaded. `outpost publish`\n" +
+			"fetches the launcher for it, so the next command is the only one left.\n\n" +
+			"It is a pack like any other — a profile, a world, a name in the panel — and\n" +
+			"the page's Vanilla button does exactly this.",
+		Example: "  outpost pack vanilla && outpost publish packs/vanilla",
+		Args:    cobra.NoArgs,
+		// Modrinth is not involved and neither is R2: this writes one file.
+		Annotations: map[string]string{noConfig: "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pk := publish.VanillaPack()
+			if dir == "" {
+				dir = filepath.Join("packs", pk.Slug)
+			}
+			// Refuse to write into a directory that holds another pack: `publish`
+			// uploads what is in the directory, so old jars in here would go up as a
+			// vanilla server's mods.
+			entries, err := os.ReadDir(dir)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			for _, e := range entries {
+				if e.Name() != publish.PackFile {
+					return fmt.Errorf("%s holds another pack (%s); remove it, or pass --dir for a fresh directory", dir, e.Name())
+				}
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+			if err := publish.WritePack(dir, pk); err != nil {
+				return err
+			}
+			fmt.Printf("wrote %s: %s, no mods\n", filepath.Join(dir, publish.PackFile), pk.Describe())
+			fmt.Printf("next: outpost publish %s\n", dir)
+			// `publish` refuses a server nobody could join, and the roster in R2 is
+			// what it falls back to. Saying so here beats a refusal that looks like
+			// the vanilla directory is wrong.
+			fmt.Println("      (that reuses the player list in R2; on an empty bucket pass --whitelist <names>)")
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&dir, "dir", "", "where to write it (default packs/vanilla)")
+	return cmd
 }
 
 func (a *app) packListCmd() *cobra.Command {

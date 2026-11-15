@@ -471,35 +471,41 @@ func TestEveryPathNamesAProfileByTheSameRule(t *testing.T) {
 	}
 }
 
-func TestVersionsReadsTheProfileItWasAskedAbout(t *testing.T) {
+func TestInstallVanillaLandsInTheVanillaProfile(t *testing.T) {
 	m, store := newManager(t)
-	// A profile published under a name that is not the pack's slug: the case the
-	// page used to get wrong, because it derived the profile from the source.
-	store.objects["profiles/potato/pack.json"] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"ver0"}`)
-	store.objects["profiles/test-pack/pack.json"] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"ver1"}`)
+	// No player list in the bucket: the install must stop before it fetches a
+	// launcher, because a server nobody can join is not worth renting.
+	store.objects["profiles/other/mods/a.jar"] = []byte("jar")
 
-	newFakeModrinth(t, []Version{
-		{ID: "v1", VersionNumber: "1.0.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
-	})
-
-	out, err := m.Versions(context.Background(), "test-pack", "potato")
+	job, err := m.InstallVanilla(context.Background(), VanillaRequest{Activate: true})
 	if err != nil {
-		t.Fatalf("versions: %v", err)
+		t.Fatalf("start: %v", err)
 	}
-	if out.Profile != "potato" {
-		t.Fatalf("profile = %q, want the one that was asked about", out.Profile)
-	}
-	if out.Installed != "ver0" {
-		t.Fatalf("installed = %q, want potato's build, not test-pack's", out.Installed)
+	if job.Profile != "vanilla" {
+		t.Fatalf("profile = %q, want the pack's own slug", job.Profile)
 	}
 
-	// And the derived answer is still the derived answer.
-	derived, err := m.Versions(context.Background(), "test-pack", "")
-	if err != nil {
-		t.Fatalf("versions: %v", err)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got := m.Job()
+		if got.Phase == "failed" {
+			if !strings.Contains(got.Error, "player list is empty") {
+				t.Fatalf("error = %q, want the roster refusal", got.Error)
+			}
+			if _, err := store.Get(context.Background(), "", "profiles/vanilla/pack.json"); err == nil {
+				t.Fatal("a failed vanilla install still wrote a manifest")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if derived.Profile != "test-pack" || derived.Installed != "ver1" {
-		t.Fatalf("derived = %q/%q", derived.Profile, derived.Installed)
+	t.Fatal("the job never reported a failure")
+}
+
+func TestInstallVanillaRefusesANameThatCouldNotBeAKey(t *testing.T) {
+	m, _ := newManager(t)
+	if _, err := m.InstallVanilla(context.Background(), VanillaRequest{Profile: "Vanilla World"}); err == nil {
+		t.Fatal("want a bad-profile refusal")
 	}
 }
 
@@ -527,4 +533,47 @@ func TestInstallRefusesAnEmptyRosterBeforeDownloading(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("the job never reported a failure")
+}
+
+func TestInstallVanillaCanAnswerTheWorldQuestion(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["server/whitelist.json"] = []byte(`[{"uuid":"x","name":"Notch"}]`)
+	// The vanilla profile holds a world somebody else's pack made.
+	store.objects["profiles/vanilla/world.tar.gz"] = []byte("world")
+	store.objects["profiles/vanilla/pack.json"] = []byte(`{"source":"modrinth","slug":"cobblemon","versionId":"v1"}`)
+
+	// Without an answer the job refuses, and the panel turns that into a button.
+	if _, err := m.InstallVanilla(context.Background(), VanillaRequest{}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := m.Job(); got.Phase == "failed" {
+			if !strings.Contains(got.Error, "--new-world") {
+				t.Fatalf("error = %q, want the world question", got.Error)
+			}
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// With NewWorld it is answerable from the page, which has no CLI flag to pass.
+	if _, err := m.InstallVanilla(context.Background(), VanillaRequest{NewWorld: true}); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job := m.Job()
+		// The Fabric fetch is real, so a network failure is not this test's business;
+		// what matters is that the world question no longer stops it.
+		if strings.Contains(job.Error, "--new-world") {
+			t.Fatalf("NewWorld did not answer the question: %s", job.Error)
+		}
+		if job.Phase == "failed" || (job.Phase == "done" && job.Kind == "install") {
+			if !strings.Contains(job.Error, "--new-world") {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }

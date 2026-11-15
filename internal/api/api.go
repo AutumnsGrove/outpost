@@ -109,6 +109,7 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 	mux.HandleFunc("POST /api/pack/versions", s.packHandler(s.packVersions))
 	mux.HandleFunc("POST /api/pack/preview", s.packHandler(s.packPreview))
 	mux.HandleFunc("POST /api/pack/install", s.packHandler(s.packInstall))
+	mux.HandleFunc("POST /api/pack/vanilla", s.packHandler(s.packVanilla))
 	mux.HandleFunc("POST /api/pack/use", s.packHandler(s.packUse))
 	// Machine callers (Meridian's control plane, curl, cron) keep the bearer
 	// token path; the page uses /api/action with a form token instead.
