@@ -7,11 +7,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"outpost/internal/pack"
 	"outpost/internal/publish"
 	"outpost/internal/store"
+	"outpost/internal/world"
 )
 
 // packOverview is what GET /api/pack answers.
@@ -194,4 +197,115 @@ func (s *Server) packUse(w http.ResponseWriter, r *http.Request, raw []byte) {
 	}
 	_ = s.store.Log("pack", "profile %s is now the active one (by page)", body.Profile)
 	writeJSON(w, http.StatusOK, map[string]string{"active": body.Profile})
+}
+
+// packWorldDelete moves one profile's world to the trash.
+//
+// Inline rather than a job: it is a server-side copy and two key operations, and
+// a page that has to poll for a delete is a page that makes deleting feel bigger
+// than it is. The world is recoverable for two weeks either way.
+func (s *Server) packWorldDelete(w http.ResponseWriter, r *http.Request, raw []byte) {
+	var body struct {
+		Profile string `json:"profile"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
+		return
+	}
+	if err := s.offlineOnly(w); err != nil {
+		return
+	}
+
+	res, err := world.Delete(r.Context(), s.packs.Store, world.DeleteOptions{
+		WorldBucket: s.packs.WorldBucket,
+		Profile:     body.Profile,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if res.Missing {
+		writeJSON(w, http.StatusOK, map[string]string{"message": body.Profile + " had no world saved"})
+		return
+	}
+	_ = s.store.Log("pack", "world of profile %s trashed to %s (%d bytes, by page)", body.Profile, res.Trash, res.Bytes)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": fmt.Sprintf("world of %s (%s) moved to %s — recoverable until %s",
+			body.Profile, humanBytes(res.Bytes), res.Trash, res.Expires.Format("2 Jan 15:04")),
+	})
+}
+
+// packDelete removes a whole profile. It refuses the active one: the caller knows
+// which that is, and deleting what Start boots is a confusing way to find out.
+func (s *Server) packDelete(w http.ResponseWriter, r *http.Request, raw []byte) {
+	var body struct {
+		Profile string `json:"profile"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
+		return
+	}
+	if err := s.offlineOnly(w); err != nil {
+		return
+	}
+
+	active, err := s.orch.ActiveProfile()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if body.Profile == active {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "wrong? " + body.Profile + " is the profile Start boots; switch to another one first, or delete just its world",
+		})
+		return
+	}
+
+	res, err := s.packs.DeleteProfile(r.Context(), body.Profile, nil)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.store.Log("pack", "profile %s deleted (by page): %d asset key(s), world trashed to %s", body.Profile, res.Assets, res.World.Trash)
+
+	msg := "profile " + body.Profile + " is gone"
+	if res.Trashed {
+		msg += fmt.Sprintf("; its world (%s) is in %s until %s",
+			humanBytes(res.World.Bytes), res.World.Trash, res.World.Expires.Format("2 Jan 15:04"))
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
+}
+
+// offlineOnly is the guard every destructive pack action shares.
+func (s *Server) offlineOnly(w http.ResponseWriter) error {
+	st, err := s.store.GetState()
+	if err != nil {
+		s.fail(w, err)
+		return err
+	}
+	if st.State != store.Offline {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "the server is " + string(st.State) + "; save and stop it first — a live session uploads over its own profile's world",
+		})
+		return errors.New("not offline")
+	}
+	return nil
+}
+
+// humanBytes is a one-decimal size for a sentence. publish has the CLI's version;
+// this one is for messages and does not need to agree to the byte.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	size := float64(n)
+	for _, u := range units {
+		size /= unit
+		if size < unit {
+			return fmt.Sprintf("%.1f %s", size, u)
+		}
+	}
+	return fmt.Sprintf("%.1f PB", size)
 }

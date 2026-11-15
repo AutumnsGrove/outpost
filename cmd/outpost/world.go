@@ -22,9 +22,12 @@ func (a *app) worldCmd() *cobra.Command {
 		Long: "A world is one tarball in the world bucket, beside a marker that says which\n" +
 			"pack made it. Profiles made the world something a pack keeps, so the world\n" +
 			"from before profiles is still at current/world.tar.gz, where nothing reads\n" +
-			"it and no amount of playing will bring it back.",
+			"it and no amount of playing will bring it back.\n\n" +
+			"Deleting copies the world to trash/ first and removes it second, and the\n" +
+			"trash keeps it for " + world.TrashRetention.String() + ". Nothing here deletes the only\n" +
+			"copy of a world in one step.",
 	}
-	cmd.AddCommand(a.worldListCmd(), a.worldImportCmd())
+	cmd.AddCommand(a.worldListCmd(), a.worldImportCmd(), a.worldDeleteCmd())
 	return cmd
 }
 
@@ -145,6 +148,80 @@ func (a *app) worldImportCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&from, "from", "", "the world key to adopt (default: the pre-profile "+world.LegacyKey+")")
+	return cmd
+}
+
+func (a *app) worldDeleteCmd() *cobra.Command {
+	var key string
+
+	cmd := &cobra.Command{
+		Use:   "delete <profile>",
+		Short: "Move a world to the trash, where it waits 14 days",
+		Long: "Copies the world to trash/ and only then removes it, so a copy that fails\n" +
+			"leaves the world exactly where it was. The trash expires on its own.\n\n" +
+			"Pass --key to delete a world no profile claims, using the key `outpost\n" +
+			"world list` printed. That includes the world from before profiles, which\n" +
+			"is the only copy of it: the trash is the only way back.\n\n" +
+			"Deleting the active profile's world is allowed — Start makes a fresh one —\n" +
+			"and refused while a server is rented, because the session uploads over its\n" +
+			"own world when it shuts down.",
+		Example: "  outpost world delete cobblemon-fabric\n" +
+			"  outpost world delete --key current/world.tar.gz",
+		Args:        cobra.MaximumNArgs(1),
+		Annotations: map[string]string{requiresCloud: "r2"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := ""
+			if len(args) == 1 {
+				profile = args[0]
+			}
+			if (profile == "") == (key == "") {
+				return fmt.Errorf("name a profile or pass --key: one of them says what to delete")
+			}
+
+			st, err := a.store.GetState()
+			if err != nil {
+				return err
+			}
+			if st.State != store.Offline {
+				return fmt.Errorf("the server is %s; stop it before deleting a world — it would upload over the delete", st.State)
+			}
+
+			if profile != "" {
+				active, err := a.orch.ActiveProfile()
+				if err != nil {
+					return err
+				}
+				if profile == active {
+					fmt.Printf("note: %s is the active profile, so the next start boots it with a fresh world\n", profile)
+				}
+			}
+
+			client, err := a.r2Client()
+			if err != nil {
+				return err
+			}
+			res, err := world.Delete(cmd.Context(), client, world.DeleteOptions{
+				WorldBucket: a.cfg.Server.WorldBucket,
+				Profile:     profile,
+				Key:         key,
+			})
+			if err != nil {
+				return err
+			}
+			for _, s := range res.Swept {
+				fmt.Printf("swept   %s (past its retention)\n", s)
+			}
+			if res.Missing {
+				fmt.Printf("%s is not there — nothing to delete\n", res.Key)
+				return nil
+			}
+			fmt.Printf("trashed %s (%s) to %s\n", res.Key, humanSize(res.Bytes), res.Trash)
+			fmt.Printf("recoverable until %s, then it goes\n", res.Expires.Format("2006-01-02 15:04 MST"))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&key, "key", "", "delete this exact world key instead of a profile's world")
 	return cmd
 }
 

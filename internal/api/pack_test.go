@@ -61,6 +61,15 @@ func (m *memStore) Remove(_ context.Context, _, key string) error {
 	return nil
 }
 
+func (m *memStore) Copy(_ context.Context, _, srcKey, dstKey string) (int64, error) {
+	b, ok := m.objects[srcKey]
+	if !ok {
+		return 0, r2.ErrNotFound
+	}
+	m.objects[dstKey] = append([]byte(nil), b...)
+	return int64(len(b)), nil
+}
+
 // newPackFixture wires the pack panel into the usual fixture.
 func newPackFixture(t *testing.T) (*fixture, *pack.Manager, *memStore) {
 	t.Helper()
@@ -198,5 +207,62 @@ func TestPackVersionsNeedsTheFormTokenAndReportsBadSources(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "nothing to choose") {
 		t.Fatalf("the refusal should explain itself: %s", rec.Body.String())
+	}
+}
+
+func TestPackWorldDeleteMovesTheWorldToTrash(t *testing.T) {
+	f, _, blobs := newPackFixture(t)
+
+	rec := f.do("POST", "/api/pack/world/delete", `{"token":"`+f.formToken(t)+`","profile":"cobblemon-fabric"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := blobs.objects["profiles/cobblemon-fabric/world.tar.gz"]; ok {
+		t.Fatal("the world is still there")
+	}
+	found := false
+	for key := range blobs.objects {
+		if strings.HasPrefix(key, "trash/cobblemon-fabric-") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no trash copy: %v", blobs.objects)
+	}
+	// The message has to name the piece of the answer people care about.
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body["message"], "recoverable until") {
+		t.Fatalf("message = %q", body["message"])
+	}
+}
+
+func TestPackDeleteRefusesTheActiveProfile(t *testing.T) {
+	f, _, blobs := newPackFixture(t)
+	// Make it the profile Start boots.
+	_ = f.store.MetaSet("profile", "cobblemon-fabric")
+
+	rec := f.do("POST", "/api/pack/delete", `{"token":"`+f.formToken(t)+`","profile":"cobblemon-fabric"}`, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete of the active profile = %d, want a refusal", rec.Code)
+	}
+	if _, ok := blobs.objects["profiles/cobblemon-fabric/mods/create-1.0.jar"]; !ok {
+		t.Fatal("the refusal still removed files")
+	}
+}
+
+func TestPackDeleteRemovesAnInactiveProfile(t *testing.T) {
+	f, _, blobs := newPackFixture(t)
+	// The fixture's active profile is "default", so the pack profile is fair game.
+	rec := f.do("POST", "/api/pack/delete", `{"token":"`+f.formToken(t)+`","profile":"cobblemon-fabric"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d: %s", rec.Code, rec.Body.String())
+	}
+	for key := range blobs.objects {
+		if strings.HasPrefix(key, "profiles/cobblemon-fabric/") {
+			t.Fatalf("%s survived", key)
+		}
 	}
 }
