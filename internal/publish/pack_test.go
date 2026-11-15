@@ -528,3 +528,35 @@ func TestBuildUploadsTheManifestSoThePageCanNameTheProfile(t *testing.T) {
 		}
 	}
 }
+
+func TestAHandRolledPublishOwnsModsButNotConfigs(t *testing.T) {
+	st := newFakeStore()
+	// A former pack profile: forty-nine jars and a config written by hand.
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         writeModpack(t, testPack()),
+		AssetBucket: "mc-assets",
+	}); err != nil {
+		t.Fatalf("packed publish: %v", err)
+	}
+	st.objects[key("config/hand-written.toml")] = []byte("mine")
+
+	// Now the same profile gets a hand-rolled directory with no mods.
+	if _, err := Run(context.Background(), st, Options{
+		Dir:         writePack(t),
+		AssetBucket: "mc-assets",
+	}); err != nil {
+		t.Fatalf("hand-rolled publish: %v", err)
+	}
+
+	// mods/ is the publish's to own: a leftover jar is a second copy of a mod.
+	for k := range st.objects {
+		if strings.HasPrefix(k, key("mods/")) && strings.Contains(k, "sodium") {
+			t.Fatalf("a former pack's mod survived: %s", k)
+		}
+	}
+	// configs are not, because the first hand-rolled publish into a profile may be
+	// the moment someone's own config lands there.
+	if _, ok := st.objects[key("config/hand-written.toml")]; !ok {
+		t.Fatal("a hand-rolled publish pruned a config it did not write")
+	}
+}

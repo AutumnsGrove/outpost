@@ -374,8 +374,15 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		res.TotalSize += obj.Size
 	}
 
-	if opts.Prune {
-		removed, err := prune(ctx, st, opts, objects)
+	// mods/ always belongs to the publish: the directory (or the pack) *is* the
+	// list of jars the server loads, so anything left from an earlier publish is a
+	// second copy of a mod, which is a crash rather than a stale file. A hand-rolled
+	// publish over a former pack profile is the case that needs it — without this a
+	// "vanilla" profile keeps forty-nine jars. config/ and root/ are only pruned on
+	// request, because a hand-rolled directory may be the first publish into a
+	// profile whose configs somebody wrote by hand.
+	if packed := pf.Pack != nil; opts.Prune || !packed {
+		removed, err := prune(ctx, st, opts, objects, opts.Prune || packed)
 		if err != nil {
 			return res, err
 		}
@@ -636,15 +643,20 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 // is where a person's own files live) or the world bucket. root/ is pruned
 // because a fetched pack owns every file in it: a config the new pack version
 // dropped would otherwise stay in R2 and load with the next boot.
-func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]string, error) {
+func prune(ctx context.Context, st Store, opts Options, objects []Object, everything bool) ([]string, error) {
 	want := map[string]bool{}
 	for _, o := range objects {
 		want[o.Key] = true
 	}
 
 	base := profilePrefix(opts.ProfileOf())
+	prefixes := []string{base + "mods/"}
+	if everything {
+		prefixes = append(prefixes, base+"config/", base+"root/")
+	}
+
 	var removed []string
-	for _, prefix := range []string{base + "mods/", base + "config/", base + "root/"} {
+	for _, prefix := range prefixes {
 		existing, err := st.List(ctx, opts.AssetBucket, prefix)
 		if err != nil {
 			return nil, err
