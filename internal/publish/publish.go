@@ -112,6 +112,14 @@ type PlayerSet struct {
 	Ops       []byte
 }
 
+// AllowsNobody reports whether these two files let nobody in: the roster after
+// the last player was removed (`[]`), a zero-byte file, or one that cannot be
+// parsed. A server in that state refuses every join, which is why both publish
+// doors refuse to make one rather than boot a working server nobody can use.
+func (p *PlayerSet) AllowsNobody() bool {
+	return len(whitelistNamesIn(p.Whitelist)) == 0
+}
+
 // ReadPlayers reads the server-wide whitelist and ops files. A missing ops.json is
 // an empty list, because a server that has been played on but never opped anybody
 // is the normal state.

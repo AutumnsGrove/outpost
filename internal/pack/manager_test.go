@@ -470,3 +470,29 @@ func TestEveryPathNamesAProfileByTheSameRule(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallRefusesAnEmptyRosterBeforeDownloading(t *testing.T) {
+	m, store := newManager(t)
+	// The roster exists but holds nobody: what removing the last player leaves.
+	store.objects["server/whitelist.json"] = []byte("[]")
+	store.objects["server/ops.json"] = []byte("[]")
+
+	// No Modrinth fake is installed, so anything that reached the network would
+	// fail differently: the roster refusal has to come first.
+	if _, err := m.Install(context.Background(), InstallRequest{Source: "test-pack"}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job := m.Job()
+		if job.Phase == "failed" {
+			if !strings.Contains(job.Error, "player list is empty") {
+				t.Fatalf("error = %q, want the roster refusal", job.Error)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the job never reported a failure")
+}
