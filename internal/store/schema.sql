@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS server_state (
     players       INTEGER NOT NULL DEFAULT 0,
     dns_value     TEXT    NOT NULL DEFAULT '',
     last_error    TEXT    NOT NULL DEFAULT '',
-    updated_at    TEXT    NOT NULL DEFAULT ''
+    updated_at    TEXT    NOT NULL DEFAULT '',
+    profile       TEXT    NOT NULL DEFAULT ''
 );
 
 INSERT OR IGNORE INTO server_state (id) VALUES (1);

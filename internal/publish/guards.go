@@ -12,13 +12,17 @@ import (
 	"outpost/internal/hetzner"
 )
 
-// The world keys. publish reads both and writes the marker; the VPS writes the
-// world itself with rclone at shutdown, which is why the marker sits next to it
-// rather than inside it.
-const (
-	worldKey      = "current/world.tar.gz"
-	packMarkerKey = "current/pack.json"
-)
+// worldKeys are one profile's world and its pack marker. publish reads both and
+// writes the marker; the VPS writes the world itself with rclone at shutdown,
+// which is why the marker sits next to it rather than inside it.
+//
+// Scoped by profile because the world is: two profiles are two games, and the
+// question "was this world made by this pack" is now only ever asked inside one
+// profile that both belong to.
+func worldKeys(profile string) (world, marker string) {
+	base := profilePrefix(profile)
+	return base + "world.tar.gz", base + "pack.json"
+}
 
 // checkPackMemory refuses a pack that no configured region can hold, and warns
 // about the regions that cannot while others can.
@@ -103,6 +107,7 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 	if opts.WorldBucket == "" {
 		return false, nil, nil
 	}
+	worldKey, packMarkerKey := worldKeys(opts.ProfileOf())
 
 	if _, err := st.Stat(ctx, opts.WorldBucket, worldKey); err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -163,7 +168,9 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 // recordPack writes the marker after a successful publish. Without it the next
 // publish cannot tell whether the world belongs to the pack it is about to
 // upload.
-func recordPack(ctx context.Context, st Store, bucket string, p Pack, discard bool) error {
+func recordPack(ctx context.Context, st Store, opts Options, p Pack, discard bool) error {
+	bucket := opts.WorldBucket
+	worldKey, packMarkerKey := worldKeys(opts.ProfileOf())
 	if discard {
 		if err := st.Remove(ctx, bucket, worldKey); err != nil {
 			return fmt.Errorf("discard world: %w", err)

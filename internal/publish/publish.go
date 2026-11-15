@@ -33,6 +33,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -43,6 +44,35 @@ import (
 // ErrNotFound is re-exported so a Store implementation can answer "no such key"
 // without importing r2.
 var ErrNotFound = r2.ErrNotFound
+
+// DefaultProfile is what a publish without --profile writes to, and what a
+// database that has never been told otherwise boots. It has to stay a valid
+// name so the migration from the single-profile layout is a no-op.
+const DefaultProfile = "default"
+
+// profileName is what a profile id may look like. It lands in shell commands
+// (the cloud-init pulls and the shutdown upload) and in R2 keys, so this is an
+// allowlist rather than a check for "obviously bad".
+var profileName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// ValidateProfile refuses a name that could not be a key or a shell argument.
+func ValidateProfile(name string) error {
+	if !profileName.MatchString(name) {
+		return fmt.Errorf("profile %q is not a name (lowercase letters, digits, - and _, up to 32)", name)
+	}
+	return nil
+}
+
+// ProfileOf returns the profile a run is scoped to.
+func (o Options) ProfileOf() string {
+	if o.Profile == "" {
+		return DefaultProfile
+	}
+	return o.Profile
+}
+
+// profilePrefix is where one profile's files live in both buckets.
+func profilePrefix(profile string) string { return "profiles/" + profile + "/" }
 
 //go:embed client-only-mods.txt
 var defaultClientOnlyList string
@@ -63,6 +93,12 @@ type Options struct {
 	Dir         string
 	AssetBucket string
 	WorldBucket string
+
+	// Profile scopes every key in both buckets as profiles/<Profile>/... A
+	// profile is one pack and one world, so a second profile is a second game to
+	// switch to without either world landing in the other. Empty means
+	// "default", which is also what hand-rolled packs use.
+	Profile string
 
 	// FabricMC, when set (e.g. "1.20.1"), fetches a Fabric server launcher for
 	// that Minecraft version and uploads it as server/fabric-server-launch.jar.
@@ -240,7 +276,7 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// here too, never before the upload.
 	switch {
 	case packed:
-		if err := recordPack(ctx, st, opts.WorldBucket, pk, discardWorld); err != nil {
+		if err := recordPack(ctx, st, opts, pk, discardWorld); err != nil {
 			return res, err
 		}
 	case opts.WorldBucket != "":
@@ -248,7 +284,8 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 		// earlier fetched pack would still claim assets that are no longer there.
 		// Removing it means the next packed publish has to be told what to do with
 		// a world this publish cannot describe, instead of trusting a stale label.
-		if err := st.Remove(ctx, opts.WorldBucket, packMarkerKey); err != nil {
+		_, marker := worldKeys(opts.ProfileOf())
+		if err := st.Remove(ctx, opts.WorldBucket, marker); err != nil {
 			return res, fmt.Errorf("clear the pack marker: %w", err)
 		}
 	}
@@ -260,6 +297,10 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 // prints the plan before asking R2 anything.
 func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	var warnings []string
+
+	if err := ValidateProfile(opts.ProfileOf()); err != nil {
+		return nil, nil, err
+	}
 
 	root, err := os.Stat(opts.Dir)
 	if err != nil {
@@ -425,6 +466,15 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 		return nil, nil, errors.New("no whitelist: pass --whitelist name1,name2 (resolved through Mojang), put server/whitelist.json in the pack, or pass --open for a server anyone can join")
 	}
 
+	// Every key is scoped by profile last, after all the key checks above, so the
+	// rules ("a launcher is required", "our server.properties wins") are written
+	// once against the layout inside a profile and the prefix is not repeated at
+	// every call site.
+	prefix := profilePrefix(opts.ProfileOf())
+	for i := range objects {
+		objects[i].Key = prefix + objects[i].Key
+	}
+
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
 	return objects, warnings, nil
 }
@@ -439,8 +489,9 @@ func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]str
 		want[o.Key] = true
 	}
 
+	base := profilePrefix(opts.ProfileOf())
 	var removed []string
-	for _, prefix := range []string{"mods/", "config/", "root/"} {
+	for _, prefix := range []string{base + "mods/", base + "config/", base + "root/"} {
 		existing, err := st.List(ctx, opts.AssetBucket, prefix)
 		if err != nil {
 			return nil, err
@@ -467,7 +518,7 @@ func prune(ctx context.Context, st Store, opts Options, objects []Object) ([]str
 // whether it came from the pack or was generated from --whitelist.
 func whitelistNames(objects []Object) []string {
 	for _, obj := range objects {
-		if obj.Key != "server/whitelist.json" {
+		if !strings.HasSuffix(obj.Key, "/server/whitelist.json") {
 			continue
 		}
 		raw := obj.Content
