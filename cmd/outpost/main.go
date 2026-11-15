@@ -81,6 +81,7 @@ func rootCmd() *cobra.Command {
 		a.consoleCmd(),
 		a.playerCmd(),
 		a.packCmd(),
+		a.worldCmd(),
 	)
 	return root
 }

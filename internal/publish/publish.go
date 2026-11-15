@@ -96,7 +96,18 @@ func (o Options) ProfileOf() string {
 }
 
 // profilePrefix is where one profile's files live in both buckets.
-func profilePrefix(profile string) string { return "profiles/" + profile + "/" }
+func profilePrefix(profile string) string { return ProfilePrefix(profile) }
+
+// ProfilePrefix is where one profile's files live in both buckets: assets in
+// mc-assets, the world and its marker in mc-worlds. Exported because the world
+// commands move whole keys by prefix, and the naming rule should not be written
+// twice.
+func ProfilePrefix(profile string) string {
+	if profile == "" {
+		profile = DefaultProfile
+	}
+	return "profiles/" + profile + "/"
+}
 
 // playerKeys are the two files that belong to the server rather than to a
 // profile. internal/roster writes them; cloud-init copies them last, over

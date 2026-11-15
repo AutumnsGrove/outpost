@@ -499,7 +499,33 @@ A pack's RAM figure is still a judgement (`--memory`, default 4 GB); the manager
 it to the same `Inspect` the CLI uses, so the refusal and the warning are the same
 sentence in both places.
 
-### 33. Not done, on purpose, on this branch
+### 33. A world is copied, never read, and never moved
+
+`outpost world import` adopts a world that no profile claims, and everything about its
+shape follows from one number: `r2.Get` stops at 8 MiB. The pre-profile world is 11.7 MB,
+so a copy written as a read and a write silently wrote 8,388,608 bytes and reported
+success — caught only by a `Stat` afterwards.
+
+So `r2.Client.Copy` is a server-side `CopyObject`, and it measures the destination against
+the source before returning. The bytes never cross the potato, there is no size ceiling,
+and a partial copy is an error rather than a world. `world.Import` never calls `Get` on a
+world at all; the tests point the fake store's `Get` at the world key to prove it.
+
+The source is never deleted, and the import is idempotent: a profile that already holds a
+world is left alone. That is the same rule as "never delete a world you could not back
+up", stated for the other direction — the copy you did not make is the one you still have.
+
+The marker written beside the import is the profile's installed `pack.json` when there is
+one, because that is the pack that will boot this world, and the guard then sees a perfect
+match instead of an unknown. With no pack installed, the marker says hand-rolled (no
+source, no slug), which is compatible with any hand-rolled publish and is something to be
+asked about before a Modrinth pack claims a world it did not make.
+
+The import is refused while a server is rented, for the reason installing is: a live
+session uploads over its own profile's world at shutdown, so a copy placed underneath it
+is a copy that disappears when they log off.
+
+### 34. Not done, on purpose, on this branch
 
 - Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
   a second profile id (`--profile cobblemon-second`), which the page has no field for yet.
@@ -509,4 +535,6 @@ sentence in both places.
 - The world itself is not versioned inside a profile: a pack update keeps the world,
   which is right for 1.5.1 → 1.5.2 and wrong for a pack that changes world generation.
   The backups in `profiles/<id>/backups/` are the answer for now.
-- The old single-profile keys are left in place (see 30).
+- The old single-profile keys are left in place (see 30). `outpost world import` is the door
+to `mc-worlds/current/`, but nothing imports it on its own: a world moved without being
+asked for is a world moved by surprise.

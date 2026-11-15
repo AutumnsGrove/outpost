@@ -170,22 +170,30 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 // publish cannot tell whether the world belongs to the pack it is about to
 // upload.
 func recordPack(ctx context.Context, st Store, opts Options, p Pack, discard bool) error {
-	bucket := opts.WorldBucket
-	worldKey, packMarkerKey := worldKeys(opts.ProfileOf())
 	if discard {
-		if err := st.Remove(ctx, bucket, worldKey); err != nil {
+		worldKey, _ := worldKeys(opts.ProfileOf())
+		if err := st.Remove(ctx, opts.WorldBucket, worldKey); err != nil {
 			return fmt.Errorf("discard world: %w", err)
 		}
 	}
+	return WriteMarker(ctx, st, opts.WorldBucket, opts.ProfileOf(), p)
+}
+
+// WriteMarker writes the pack marker that sits beside a world: what made the
+// world a session will find next to it. `publish` writes one after an upload and
+// `outpost world import` writes one after adopting a world, and both have to
+// produce the same bytes for the guard to read them the same way.
+func WriteMarker(ctx context.Context, st Store, worldBucket, profile string, p Pack) error {
+	_, markerKey := worldKeys(profile)
 	raw, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
 	}
 	raw = append(raw, '\n')
-	obj := textObject(packMarkerKey, string(raw))
+	obj := textObject(markerKey, string(raw))
 	sum, err := sum(obj)
 	if err != nil {
 		return err
 	}
-	return put(ctx, st, bucket, obj, sum)
+	return put(ctx, st, worldBucket, obj, sum)
 }
