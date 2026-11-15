@@ -44,6 +44,10 @@ func writePack(t *testing.T) string {
 	return dir
 }
 
+// key is the R2 key for a path inside a profile. Every key publish writes is
+// scoped by profile, so the tests say it once here instead of on every line.
+func key(rel string) string { return profilePrefix(DefaultProfile) + rel }
+
 func keys(objects []Object) []string {
 	out := make([]string, len(objects))
 	for i, o := range objects {
@@ -67,14 +71,15 @@ func TestBuildMapsTheLayoutTheTemplateReads(t *testing.T) {
 		got[k] = true
 	}
 	for _, want := range []string{
-		"server/fabric-server-launch.jar",
+		key("server/fabric-server-launch.jar"),
+		// The player list is global: same people, every profile.
 		"server/whitelist.json",
 		"server/ops.json",
-		"server/eula.txt",          // generated
-		"server/server.properties", // generated
-		"mods/create-0.5.1.jar",
-		"config/create-common.toml",
-		"scripts/start.sh",
+		key("server/eula.txt"),          // generated
+		key("server/server.properties"), // generated
+		key("mods/create-0.5.1.jar"),
+		key("config/create-common.toml"),
+		key("scripts/start.sh"),
 	} {
 		if !got[want] {
 			t.Errorf("missing key %s (have %v)", want, keys(objects))
@@ -83,7 +88,7 @@ func TestBuildMapsTheLayoutTheTemplateReads(t *testing.T) {
 
 	// The client-only mod must not reach the server: Sodium on a dedicated
 	// server is a crash, not a performance win.
-	if got["mods/sodium-0.5.13.jar"] {
+	if got[key("mods/sodium-0.5.13.jar")] {
 		t.Error("a client-only mod was uploaded")
 	}
 	// The filter list itself is local bookkeeping, not a server file.
@@ -166,13 +171,13 @@ func TestBuildGeneratesABootableServerFromNothing(t *testing.T) {
 	for _, o := range objects {
 		have[o.Key] = string(o.Content)
 	}
-	for _, want := range []string{"server/eula.txt", "server/server.properties", "scripts/start.sh"} {
+	for _, want := range []string{key("server/eula.txt"), key("server/server.properties"), key("scripts/start.sh")} {
 		if _, ok := have[want]; !ok {
 			t.Fatalf("missing generated %s (have %v)", want, keys(objects))
 		}
 	}
-	if !strings.Contains(have["scripts/start.sh"], "fabric-server-launch.jar") {
-		t.Fatalf("start.sh does not start the server:\n%s", have["scripts/start.sh"])
+	if !strings.Contains(have[key("scripts/start.sh")], "fabric-server-launch.jar") {
+		t.Fatalf("start.sh does not start the server:\n%s", have[key("scripts/start.sh")])
 	}
 	if !warningsContain(warnings, "start.sh") {
 		t.Errorf("warnings should mention the generated script: %v", warnings)
@@ -271,7 +276,7 @@ func TestRunUploadsThenLeavesItAlone(t *testing.T) {
 	if len(first.Uploaded) == 0 {
 		t.Fatal("nothing uploaded")
 	}
-	if _, ok := st.objects["server/eula.txt"]; !ok {
+	if _, ok := st.objects[key("server/eula.txt")]; !ok {
 		t.Fatal("eula.txt was not uploaded")
 	}
 
@@ -292,27 +297,27 @@ func TestRunPrunesStaleModsOnly(t *testing.T) {
 	st := newFakeStore()
 	ctx := context.Background()
 
-	st.objects["mods/removed-mod-1.0.jar"] = []byte("old")
-	st.objects["config/old.toml"] = []byte("old")
-	st.objects["root/kubejs/old.js"] = []byte("old")
-	st.objects["server/somebody-elses-file.txt"] = []byte("mine")
+	st.objects[key("mods/removed-mod-1.0.jar")] = []byte("old")
+	st.objects[key("config/old.toml")] = []byte("old")
+	st.objects[key("root/kubejs/old.js")] = []byte("old")
+	st.objects[key("server/somebody-elses-file.txt")] = []byte("mine")
 
 	res, err := Run(ctx, st, Options{Dir: pack, AssetBucket: "mc-assets", Prune: true})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	if _, ok := st.objects["mods/removed-mod-1.0.jar"]; ok {
+	if _, ok := st.objects[key("mods/removed-mod-1.0.jar")]; ok {
 		t.Fatal("a stale mod survived --prune")
 	}
-	if _, ok := st.objects["config/old.toml"]; ok {
+	if _, ok := st.objects[key("config/old.toml")]; ok {
 		t.Fatal("a stale config survived --prune")
 	}
-	if _, ok := st.objects["root/kubejs/old.js"]; ok {
+	if _, ok := st.objects[key("root/kubejs/old.js")]; ok {
 		t.Fatal("a stale file in root/ survived --prune")
 	}
 	// server/ is never pruned: it is where a person's own files live.
-	if _, ok := st.objects["server/somebody-elses-file.txt"]; !ok {
+	if _, ok := st.objects[key("server/somebody-elses-file.txt")]; !ok {
 		t.Fatal("--prune deleted a file from server/")
 	}
 	if len(res.Removed) != 3 {
@@ -508,8 +513,8 @@ func TestRunUploadsAFileThatChangedWithoutChangingSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(st.objects["server/server.properties"]) != "max-players=30\n" {
-		t.Fatalf("the edit never reached R2: %q (uploaded %v)", st.objects["server/server.properties"], res.Uploaded)
+	if string(st.objects[key("server/server.properties")]) != "max-players=30\n" {
+		t.Fatalf("the edit never reached R2: %q (uploaded %v)", st.objects[key("server/server.properties")], res.Uploaded)
 	}
 }
 

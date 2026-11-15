@@ -313,11 +313,12 @@ is set.
 
 ## Decisions from the modpack branch (2026-11-15)
 
-Issue #12. Phase 1: Modrinth packs on Fabric, done at publish time. The first branch
-taken off `main` after the in-game commands work was parked, because `/outpost` needs
-mods installed to be reachable and a pack is what installs them.
+Issue #12. Phase 1: Modrinth packs on Fabric, done at publish time. This went first,
+before the in-game commands work that is still parked in its own branch, because
+`/outpost` is unreachable until a server has mods installed — and a pack is what
+installs them.
 
-### 27. `pack fetch` produces a directory, and `publish` stays dumb
+### 23. `pack fetch` produces a directory, and `publish` stays dumb
 
 `outpost pack fetch <slug|url>` downloads the pack's server files into an ordinary pack
 directory and `outpost publish` uploads it. That is the whole seam: `internal/pack` is
@@ -333,7 +334,7 @@ an error — a directory of hand-picked jars is still a pack — which is what k
 the `noConfig` annotation, so it works on a fresh clone before anything has been set
 up, which is the state a person is in when they have just decided what to play.
 
-### 28. `env.server` replaces client-only-mods.txt, for packs only
+### 24. `env.server` replaces client-only-mods.txt, for packs only
 
 A `.mrpack` marks every indexed file with `env.client` and `env.server`, where
 `unsupported` means "this side must not load it". That is the pack author saying it,
@@ -349,7 +350,7 @@ The corollary is stated rather than papered over: a pack that marks *nothing*, l
 Fabulously Optimized, gets every file installed on the server. `pack fetch` warns about
 that instead of guessing from filenames.
 
-### 29. A pack's non-mod files live in `root/`, and it is pulled before `server/`
+### 25. A pack's non-mod files live in `root/`, and it is pulled before `server/`
 
 Overrides put `config/`, `kubejs/`, `defaultconfigs/` and friends at the *server root*,
 which the v1 key layout had no prefix for. Rather than teach cloud-init a list of
@@ -363,7 +364,7 @@ lines then force the session's RCON password over the top. A pack's other
 `server.properties` settings are therefore lost, and `pack fetch` says so in its
 warnings — a merge is a follow-up, not a guess to make here.
 
-### 30. RAM is a person's judgement, and the fallback list does not cover it
+### 26. RAM is a person's judgement, and the fallback list does not cover it
 
 The `.mrpack` manifest has no memory figure, so `pack fetch --memory` (default 4 GB,
 the `cx23`) writes one into `pack.json` and sizes `start.sh` from it: two GB stay with
@@ -380,7 +381,11 @@ Plan memory is a table in `internal/hetzner/plans.go` rather than an API call, s
 `--dry-run` works with no network and `publish` keeps needing only R2 credentials. A
 plan the table does not know skips the check: a stale table must not refuse a rental.
 
-### 31. The saved world is tagged with the pack that made it
+### 27. The saved world is tagged with the pack that made it
+
+*(Superseded by 30: the marker now sits at `mc-worlds/profiles/<id>/pack.json` and the
+comparison is by pack rather than by build. What follows is how it worked with one
+world, which is why the profiles layout was worth the change.)*
 
 `publish` writes `mc-worlds/current/pack.json` next to `current/world.tar.gz`. The
 world itself is pushed up by rclone from the VPS and knows nothing about packs, but the
@@ -396,7 +401,7 @@ The marker is written, and the old world removed, only *after* every asset is up
 and verified. A failed publish must not leave a bucket that claims a pack it does not
 have, and must not leave no world to boot.
 
-### 32. Modrinth only, in phase 1. CurseForge and Forge are deliberate nos
+### 28. Modrinth only, in phase 1. CurseForge and Forge are deliberate nos
 
 Modrinth's API needs no key, its packs are open files with checksums, and the same
 `.mrpack` is what Prism installs — so "hand over a link" is the entire workflow.
@@ -408,12 +413,12 @@ smuggle into this branch. FTB stays out: no clean public API for server files.
 
 `pack fetch` says which of those it hit rather than downloading something surprising.
 
-### 33. Not done, on purpose, on this branch
+### 29. Not done, on purpose, on this branch
 
 - A pack's `start.sh` flags (Aikar, `-XX:+UseZGC`) are ignored; the script is generated
   from the memory figure. Packs that need specific flags will need a way to pass them.
-- A pack's `server.properties` is replaced wholesale by ours (see 29).
-- Client-only detection is entirely the pack's word (see 28), and packs do get it
+- A pack's `server.properties` is replaced wholesale by ours (see 25).
+- Client-only detection is entirely the pack's word (see 24), and packs do get it
   wrong: Cobblemon's official pack marks FancyMenu, CraftPresence and InvMove as
   server-required, which drags 122 MB of FancyMenu UI assets into `config/` and onto
   R2. Following the pack is still the right default — the alternative is a filename
@@ -421,3 +426,87 @@ smuggle into this branch. FTB stays out: no clean public API for server files.
   is heavier than it needs to be, not a broken one.
 - No live session yet. A real Fabric pack booting on a real VPS with a Prism client on
   the same pack version is the test that counts, and it is the next thing to run.
+
+## Decisions from the profiles branch (2026-11-15, after the pack panel)
+
+The ask: paste a Modrinth link into the page, see what is in it, install it — and
+be able to keep **a world per pack** and swap between them. "A world on Cobblemon,
+then one on Homestead, hit a button, and swap the whole thing."
+
+### 30. A profile is a pack and its world, and the whole layout is scoped by it
+
+```
+mc-assets/profiles/<id>/{pack.json,server/,mods/,config/,scripts/,root/}
+mc-worlds/profiles/<id>/{world.tar.gz,pack.json,backups/...}
+```
+
+The active profile is a row in `meta`, not in `config.yaml`: it is state ("what am I
+playing"), and the page switches it. The profile is fixed at rent time and recorded on
+the session row, so the boot pulls one profile's assets and the shutdown uploads to that
+same profile even if the active one changes an hour later. Switching is refused while
+anything is rented, and `Start` refuses a profile with no server files in R2 rather than
+renting a VPS that pulls nothing, generates a vanilla world, never answers RCON, and
+times out fifteen minutes later with a bill.
+
+This also retired a question the single-world layout could not answer: with one world,
+"which pack made this" was guesswork at publish time. With profiles it is structural —
+the world belongs to the profile, and the profile is the pack. The guard survives
+*inside* a profile, where re-publishing is still possible, and it now compares the pack
+rather than the build: 1.5.1 → 1.5.2 is an update that keeps the world, which is the
+normal reason to re-publish. Only a different pack is a question, and the page asks it
+with a checkbox while the CLI asks for `--new-world` or `--keep-world`.
+
+The profile id comes from the pack's slug (`cobblemon-fabric`), so pasting a link needs
+no naming step. `--profile` overrides it, and a hand-rolled pack directory defaults to
+`default`, which is also what a database that has never been told otherwise boots.
+
+**What this costs:** disk in R2, deliberately. Two profiles in R2 is two copies of ~300
+MB of mods that never change. That is inside the free tier, and it is the price of a
+swap that takes one click instead of a re-upload.
+
+**What it does not do:** the old single-profile keys (`mc-assets/server/`, `mc-assets/mods/`,
+`mc-worlds/current/`) are not migrated and not deleted. They stop being read. Re-publishing
+the current pack with `outpost publish --profile default` is the one command that brings
+the old assets forward, and the old world is left where it is as an archive rather than
+guessed at.
+
+### 31. The player list stays global, and cloud-init copies it last
+
+Whitelist and ops are one file for the whole server: adding a friend should add them to
+every world, not once per pack. So `server/whitelist.json` and `server/ops.json` are the
+two keys `publish` does **not** scope by profile, `internal/roster` keeps being their only
+writer, and cloud-init copies them after the profile's files — so a pack that ships its
+own whitelist does not get to decide who may play.
+
+The one file whose absence is legitimate is exactly these two. The template says so out
+loud rather than swallowing the error.
+
+### 32. Installing and switching are daemon jobs, because the page is the only client
+
+`outpost pack fetch` runs on the Mac and needs no config; the page cannot. So the daemon
+grew a `pack.Manager` — profiles from R2, a preview that downloads only the `.mrpack`,
+and an install that fetches into `packs/<profile>/` and publishes from there — and the
+CLI uses the same manager for `pack list`. Two front doors, one implementation, and the
+rules live where they can be tested: one job at a time, nothing while a server is rented,
+the archive cached so preview-then-install downloads it once.
+
+The job outlives the request that started it (`context.WithoutCancel`), for the same
+reason renting does: a browser tab closed mid-install must not leave half a profile.
+Progress is a phase plus two counters, which is enough for "downloading mods — 86 of 231"
+and no more.
+
+A pack's RAM figure is still a judgement (`--memory`, default 4 GB); the manager passes
+it to the same `Inspect` the CLI uses, so the refusal and the warning are the same
+sentence in both places.
+
+### 33. Not done, on purpose, on this branch
+
+- Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
+  a second profile id (`--profile cobblemon-second`), which the page has no field for yet.
+- Deleting a profile from the page: `mc-assets/profiles/<id>/` and its world have to be
+  removed with rclone, and a button that deletes a world deserves more care than a
+  button that creates one.
+- The world itself is not versioned inside a profile: a pack update keeps the world,
+  which is right for 1.5.1 → 1.5.2 and wrong for a pack that changes world generation.
+  The backups in `profiles/<id>/backups/` are the answer for now.
+- The old single-profile keys are left in place (see 30).

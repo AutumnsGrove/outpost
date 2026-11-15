@@ -9,8 +9,16 @@ outpost.db.lock
 # also matched cmd/outpost/ and silently ignored new files there.
 /outpost
 /outpost-arm64
-# A fetched modpack (`outpost pack fetch` writes here by default).
+# Fetched modpacks: one directory per profile, plus the .mrpack cache. Both the
+# CLI and the page write here.
 /pack/
+/packs/
+
+# Gradle's caches and outputs. The mod's sources are tracked; a decompiled
+# Minecraft jar and 70 MB of remapped loom cache are not, and were committed by
+# accident once.
+/mod/.gradle/
+/mod/build/
 node_modules/
 .wrangler/
 web/node_modules/

@@ -107,11 +107,25 @@ runcmd:
   # The server/ pull after it means our server.properties (port, RCON, whitelist)
   # wins over a pack's copy, which is the order that has to hold: a pack's
   # server.properties cannot know this session's RCON password.
-  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/root/ /opt/minecraft/ --exclude "world/**"
-  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/server/ /opt/minecraft/ --exclude "world/**"
-  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/mods/ /opt/minecraft/mods/
-  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/config/ /opt/minecraft/config/
-  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/scripts/ /opt/minecraft/
+  # Everything is scoped by profile: this VPS boots exactly one pack and restores
+  # exactly that profile's world, so two profiles on the box are two games.
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/profiles/{{ .Profile }}/root/ /opt/minecraft/ --exclude "world/**"
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/profiles/{{ .Profile }}/server/ /opt/minecraft/ --exclude "world/**"
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/profiles/{{ .Profile }}/mods/ /opt/minecraft/mods/
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/profiles/{{ .Profile }}/config/ /opt/minecraft/config/
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/profiles/{{ .Profile }}/scripts/ /opt/minecraft/
+
+  # --- the player list is server-wide, not per profile: the same people should be
+  # able to join every pack. It is copied after the profile so a pack that shipped
+  # its own whitelist does not get to decide who may play.
+  - |
+    for f in whitelist.json ops.json; do
+      if sudo -u minecraft rclone copyto "r2:{{ .AssetBucket }}/server/$f" "/opt/minecraft/$f"; then
+        echo "players: $f copied from R2"
+      else
+        echo "players: no $f in R2"
+      fi
+    done
 
   # --- restore the world (a single tarball, laid out by v1)
   #
@@ -138,8 +152,8 @@ runcmd:
     if ! LISTING=$(sudo -u minecraft rclone lsf -R r2:{{ .WorldBucket }}); then
       echo "COULD NOT LIST THE WORLD BUCKET - not starting Minecraft over a world that may exist"
       touch /run/outpost-no-start
-    elif echo "$LISTING" | grep -qx 'current/world.tar.gz'; then
-      if sudo -u minecraft rclone copyto r2:{{ .WorldBucket }}/current/world.tar.gz /tmp/world/world.tar.gz && tar -xzf /tmp/world/world.tar.gz -C /opt/minecraft/; then
+    elif echo "$LISTING" | grep -qx 'profiles/{{ .Profile }}/world.tar.gz'; then
+      if sudo -u minecraft rclone copyto r2:{{ .WorldBucket }}/profiles/{{ .Profile }}/world.tar.gz /tmp/world/world.tar.gz && tar -xzf /tmp/world/world.tar.gz -C /opt/minecraft/; then
         echo "world restored"
       else
         echo "WORLD EXISTS IN R2 BUT COULD NOT BE RESTORED - not starting Minecraft"
@@ -147,7 +161,7 @@ runcmd:
         touch /run/outpost-no-start
       fi
     else
-      echo "no world in R2, Minecraft will generate one"
+      echo "no world in R2 for profile {{ .Profile }}, Minecraft will generate one"
     fi
     rm -rf /tmp/world
 

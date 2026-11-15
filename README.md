@@ -96,6 +96,8 @@ three-minute rebuild.
 outpost serve            # the reconcile loop + JSON API (this is the daemon)
 outpost publish [dir]    # upload a server pack to R2
 outpost pack fetch <src> # resolve a Modrinth modpack into a pack directory
+outpost pack list        # the installed profiles, and which one is active
+outpost pack use <id>    # switch which pack+world the next start boots
 outpost start [region]   # rent a server (default region: eu)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
@@ -167,14 +169,47 @@ follows from that file:
   `scripts/start.sh` — two GB stay with the OS — and `publish` refuses a pack that no
   configured region's plan can hold. `fallback_types` do not cover it: Hetzner only
   falls back when a plan is sold out, not when it is too small.
-- **`publish` tags the saved world with the pack.** `mc-worlds/current/pack.json` is
-  what lets the next publish say "this world was made by Cobblemon 1.5.2, not 1.4.0".
-  A world from another pack is refused; `--new-world` discards it, `--keep-world`
-  loads it anyway, and neither is assumed.
+- **`publish` tags the saved world with the pack.** The marker next to the world is what
+  lets the next publish say "this world was made by Cobblemon, not Homestead". The same
+  pack at a newer version is an update and keeps the world; a different pack is a
+  question — `--new-world` discards it, `--keep-world` loads it anyway, and neither is
+  assumed.
 
 Two things a fetched pack does not carry over: its own `start.sh` JVM flags, and the
 settings in its `server.properties` — Outpost writes both. CurseForge and FTB packs are
 not supported; `pack fetch` says so instead of half-trying.
+
+### Profiles: a pack and its world, swapped from the page
+
+Every pack lives in a **profile**, and a profile is one pack and one world:
+
+```
+mc-assets/profiles/cobblemon-fabric/{pack.json,server/,mods/,config/,scripts/,root/}
+mc-worlds/profiles/cobblemon-fabric/{world.tar.gz,pack.json,backups/...}
+```
+
+So you can keep a Cobblemon world and a Homestead world and switch between them. The
+page's **Modpack** panel is the whole of it: paste a Modrinth link, press **Resolve** to
+see exactly what is in the pack — versions, file counts, download size, the mod list
+itself, what was skipped as client-only — and **Install** to write it to R2, where it
+becomes the active profile. **Use** on another profile switches back, world included.
+
+```bash
+outpost pack list        # profiles, mod counts, which has a world, which is active
+outpost pack use homestead
+outpost publish --profile homestead ./packs/homestead   # from the Mac
+```
+
+The active profile is fixed for the length of a session: `outpost pack use` and the
+page's Install/Use buttons are both refused while a server is rented, because a running
+server already pulled one profile's assets and will upload its world to that profile.
+The player list is deliberately *not* per profile — adding someone adds them to every
+world — and a `start` with no server files installed for the active profile is refused
+before anything is rented.
+
+The old single-profile keys (`mc-assets/server/`, `mc-worlds/current/`) are not read any
+more and not deleted: `outpost publish --profile default` is the one command that brings
+those assets forward if you want them.
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --https=8896` in front of it gives you a page at
@@ -182,7 +217,8 @@ not supported; `pack fetch` says so instead of half-trying.
 what the session has cost, **Start / Save and stop / Update** buttons, a console,
 and the player list. It polls `GET /api/overview` once every five seconds;
 `GET /api/status` is a separate, narrower contract kept for Meridian's tile, so
-add new things to `/api/overview` rather than to `status`.
+add new things to `/api/overview` rather than to `status`. The Modpack panel is its own
+`GET /api/pack`, polled every two seconds only while a preview or install is running.
 
 The page is a SvelteKit app built to static files and embedded with `go:embed`
 (the same shape as bwmon and Polaris), so the box needs no Node at runtime and

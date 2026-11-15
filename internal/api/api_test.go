@@ -58,6 +58,7 @@ func (m *memBlobs) Put(_ context.Context, _, key string, r io.Reader, _ int64, _
 
 type fixture struct {
 	h       http.Handler
+	orch    *orchestrator.Orchestrator
 	store   *store.Store
 	servers *noServers
 	blobs   *memBlobs
@@ -98,6 +99,7 @@ func newFixture(t *testing.T, token string) *fixture {
 	rost := roster.New(f.blobs, "mc-assets", func(_ context.Context, name string) (publish.Player, error) {
 		return publish.Player{UUID: "11111111-1111-1111-1111-111111111111", Name: name}, nil
 	})
+	f.orch = orch
 	f.h = New(orch, st, Options{Token: token, Roster: rost})
 	return f
 }

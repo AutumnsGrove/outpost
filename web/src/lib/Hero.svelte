@@ -17,6 +17,7 @@
 		elapsed,
 		pending,
 		confirmStop,
+		installing,
 		onstart,
 		onstop
 	}: {
@@ -24,6 +25,8 @@
 		elapsed: number;
 		pending: string | null;
 		confirmStop: boolean;
+		/** A pack is being installed: a start would pull a half-written profile. */
+		installing: boolean;
 		onstart: () => void;
 		onstop: () => void;
 	} = $props();
@@ -185,7 +188,13 @@
 
 	<div class="actions">
 		{#if canStart}
-			<button class="btn primary big" onclick={onstart} disabled={pending !== null} aria-busy={pending === 'start'}>
+			<button
+				class="btn primary big"
+				onclick={onstart}
+				disabled={pending !== null || installing}
+				title={installing ? 'A pack is being installed — wait for it to finish' : undefined}
+				aria-busy={pending === 'start'}
+			>
 				<Play aria-hidden="true" />
 				{pending === 'start' ? 'Renting…' : 'Start server'}
 			</button>

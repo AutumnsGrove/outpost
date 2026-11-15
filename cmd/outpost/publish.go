@@ -22,6 +22,7 @@ func (a *app) publishCmd() *cobra.Command {
 		ops       []string
 		open      bool
 		prune     bool
+		profile   string
 		newWorld  bool
 		keepWorld bool
 		dryRun    bool
@@ -46,6 +47,13 @@ func (a *app) publishCmd() *cobra.Command {
 			if newWorld && keepWorld {
 				return fmt.Errorf("--new-world and --keep-world ask for opposite things")
 			}
+			if profile == "" {
+				// A fetched pack knows its own name; a directory of hand-picked jars
+				// does not, and those go to "default".
+				if pk, ok, err := publish.LoadPack(dir); err == nil && ok {
+					profile = publish.ProfileFromSlug(pk.Slug)
+				}
+			}
 
 			client, err := r2.New(a.cfg.R2.AccountID, a.cfg.Secrets.R2AccessKey, a.cfg.Secrets.R2SecretKey)
 			if err != nil {
@@ -56,6 +64,7 @@ func (a *app) publishCmd() *cobra.Command {
 				Dir:          dir,
 				AssetBucket:  a.cfg.Server.AssetBucket,
 				WorldBucket:  a.cfg.Server.WorldBucket,
+				Profile:      profile,
 				FabricMC:     fabricMC,
 				FabricLoader: loader,
 				Whitelist:    whitelist,
@@ -108,6 +117,7 @@ func (a *app) publishCmd() *cobra.Command {
 	f.StringSliceVar(&whitelist, "whitelist", nil, "Minecraft names to allow, resolved to UUIDs")
 	f.StringSliceVar(&ops, "op", nil, "Minecraft names to make operators (must be on the whitelist)")
 	f.BoolVar(&open, "open", false, "publish with white-list=false (anyone who finds the address can join)")
+	f.StringVar(&profile, "profile", "", "profile to publish into: a pack and its world (default: the pack's slug, or \"default\" for a hand-rolled pack)")
 	f.BoolVar(&prune, "prune", false, "delete mods/ and config/ keys that are not in the pack (always on when the pack has a pack.json)")
 	f.BoolVar(&newWorld, "new-world", false, "discard the saved world when it was made by another pack")
 	f.BoolVar(&keepWorld, "keep-world", false, "load a world saved by another pack anyway")
