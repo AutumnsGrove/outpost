@@ -98,6 +98,8 @@ outpost publish [dir]    # upload a server pack to R2
 outpost pack fetch <src> # resolve a Modrinth modpack into a pack directory
 outpost pack list        # the installed profiles, and which one is active
 outpost pack use <id>    # switch which pack+world the next start boots
+outpost world list       # every profile's world, and any world no profile claims
+outpost world import <id>  # adopt an existing world into a profile, by copy
 outpost start [region]   # rent a server (default region: eu)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
@@ -213,8 +215,34 @@ world — and a `start` with no server files installed for the active profile is
 before anything is rented.
 
 The old single-profile keys (`mc-assets/server/`, `mc-worlds/current/`) are not read any
-more and not deleted: `outpost publish --profile default` is the one command that brings
-those assets forward if you want them.
+more and not deleted: `outpost publish --profile default` brings the assets forward, and
+`outpost world import <profile>` adopts the world (below).
+
+### Worlds, and the one from before profiles
+
+```bash
+outpost world list        # every profile's world, plus any world no profile claims
+outpost world import <id> # adopt one into a profile
+```
+
+```
+* cobblemon-fabric           84.1 MB  Cobblemon Fabric 1.5.1 (modrinth/cobblemon-fabric)
+  homestead                 11.2 MB  hand-rolled world
+no profile claims these — `outpost world import <profile> --from <key>`:
+  current/world.tar.gz      11.2 MB  no marker — nothing knows what made it
+```
+
+The `current/world.tar.gz` line is the world from before profiles, and it is the only
+copy of six months of play: it is imported, never moved, and no command deletes it.
+`world import` is a server-side `CopyObject` whose destination size is checked against
+the source before it reports success — `r2.Get` stops at 8 MiB, so a read-and-write copy
+would have written two thirds of the world and called it done.
+
+It is idempotent, and a profile that already holds a world is left alone rather than
+overwritten. The copy is refused while a server is rented, because a running session
+uploads over its own profile's world when it shuts down. The marker written beside the
+import is the profile's installed `pack.json` when there is one — so the next boot of
+that pack loads the world without asking — and a hand-rolled marker otherwise.
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --https=8896` in front of it gives you a page at

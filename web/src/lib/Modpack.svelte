@@ -12,6 +12,7 @@
 		packUse,
 		packVersions,
 		type PackJob,
+		type PackMeta,
 		type PackOverview,
 		type PackVersions
 	} from './api';
@@ -41,11 +42,18 @@
 	let showVersions = $state(false);
 	let loadingVersions = $state(false);
 
+	// "5.4.1 available" without anyone pressing Resolve: one call per installed
+	// Modrinth pack, once. Keyed by profile id, and empty for a pack that is
+	// already on its newest runnable build.
+	let newer = $state<Record<string, string>>({});
+	let checkedNewer = $state(false);
+
 	// A pack can only be installed or swapped while nothing is rented: a running
 	// server already pulled one profile's assets and will upload its world to that
 	// profile.
 	const editable = $derived(serverState === 'OFFLINE' && (pack?.editable ?? true));
 	const running = $derived(!!job && !['done', 'failed'].includes(job.phase));
+	const activeProfile = $derived(pack?.profiles.find((p) => p.active));
 
 	// Tell the page when a job is in flight: Start has to be disabled, because a
 	// start mid-install rents a server that pulls a half-rewritten profile.
@@ -64,11 +72,55 @@
 				versions = null;
 				chosen = null;
 				showVersions = false;
+				// The profile just moved, so what is "newer" has changed too.
+				checkedNewer = false;
+				newer = {};
 			}
+			if (pack && !checkedNewer) checkNewer();
 		} catch (err) {
 			message = err instanceof Error ? err.message : String(err);
 			failed = true;
 		}
+	}
+
+	// identity is the line you match against your own Prism instance. A profile is
+	// only useful if you know which client can join it, and two profiles on the
+	// same Minecraft version are not interchangeable.
+	function identity(p: PackMeta): string {
+		const loader = p.loader ? `${p.loader} ${p.loaderVersion}`.trim() : 'vanilla';
+		return p.mc ? `minecraft ${p.mc} · ${loader}` : loader;
+	}
+
+	async function checkNewer() {
+		const known = pack?.profiles ?? [];
+		if (checkedNewer || !known.length) return;
+		checkedNewer = true;
+		const installed = known.filter((p) => p.pack?.source === 'modrinth' && p.pack.slug);
+		await Promise.all(
+			installed.map(async (p) => {
+				try {
+					const vs = await packVersions(p.pack!.slug, token);
+					// Newer is already "the newest runnable that is not the installed
+					// one", so an absent Installed means there is nothing to compare.
+					if (vs.installed && vs.newer) newer[p.id] = vs.newer;
+				} catch {
+					// Modrinth being unreachable is not this panel's problem, and saying so
+					// on every load would be noise.
+				}
+			})
+		);
+	}
+
+	// Clicking the update hint is the shortcut to updating: paste the pack back
+	// into the field and load its versions, with the named one already picked, so
+	// the button says Update rather than making someone hunt for the version.
+	async function showUpdate(id: string, p: PackMeta) {
+		if (!p.slug || busy || running) return;
+		const want = newer[id];
+		source = p.slug;
+		await loadVersions();
+		const next = versions?.choices.find((c) => c.number === want);
+		if (next?.bootable) chosen = { id: next.id, number: next.number };
 	}
 
 	async function loadVersions() {
@@ -216,22 +268,45 @@
 </script>
 
 <section class="card" aria-labelledby="pack-h">
-	<h2 id="pack-h"><Package aria-hidden="true" />Modpack</h2>
+	<h2 id="pack-h">
+		<Package aria-hidden="true" />Modpack
+		{#if activeProfile}
+			<span class="hsub mono">
+				{activeProfile.id}{#if activeProfile.pack}
+					· {identity(activeProfile.pack)}{/if}
+			</span>
+		{/if}
+	</h2>
 
 	{#if pack && pack.profiles.length > 0}
 		<ul class="profiles">
 			{#each pack.profiles as p (p.id)}
+				{@const meta = p.pack}
 				<li class:active={p.active}>
 					<span class="who">
 						<span class="name mono">{p.id}</span>
 						{#if p.active}<span class="badge" title="the next start boots this profile">active</span>{/if}
 						<span class="meta muted">
-							{p.pack ? `${p.pack.name} ${p.pack.versionNumber}` : 'hand-rolled pack'}
+							{meta ? `${meta.name} ${meta.versionNumber}` : 'hand-rolled pack'}
+							{#if meta?.mc}· <span class="mono">{identity(meta)}</span>{/if}
 							· {p.mods} mod{p.mods === 1 ? '' : 's'}
 							{#if p.bytes > 0}· {bytes(p.bytes)}{/if}
 							· {p.hasWorld ? 'has a world' : 'no world yet'}
 						</span>
 					</span>
+					<span class="row-actions">
+						{#if meta && newer[p.id]}
+							<button
+								class="btn quiet small upd"
+								disabled={busy || running || !editable}
+								title={editable
+									? `Update to ${newer[p.id]} — this keeps the world`
+									: 'Save and stop the server first'}
+								onclick={() => showUpdate(p.id, meta)}
+							>
+								{newer[p.id]} available
+							</button>
+						{/if}
 					{#if !p.active}
 						<button
 							class="btn quiet small"
@@ -242,6 +317,7 @@
 							Use
 						</button>
 					{/if}
+					</span>
 				</li>
 			{/each}
 		</ul>
@@ -464,6 +540,36 @@
 	}
 	.meta {
 		font-size: 0.8rem;
+	}
+	/* The active profile's identity sits beside the heading, where it is read
+	   before anything is clicked. */
+	.hsub {
+		min-width: 0;
+		font-size: 0.72rem;
+		letter-spacing: 0;
+		text-transform: none;
+		font-weight: 400;
+		color: var(--faint);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.row-actions {
+		display: flex;
+		gap: 0.4rem;
+		align-items: center;
+		flex: none;
+	}
+	/* An update is information, not a warning: moss rather than the gold the
+	   active badge uses, so the two do not read as the same kind of thing. */
+	.upd {
+		color: var(--moss);
+		border-color: color-mix(in srgb, var(--moss) 40%, transparent);
+	}
+	.upd:hover:not(:disabled) {
+		color: var(--moss);
+		border-color: var(--moss);
+		background: color-mix(in srgb, var(--moss) 10%, transparent);
 	}
 	form {
 		display: flex;
