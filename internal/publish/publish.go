@@ -63,6 +63,30 @@ func ValidateProfile(name string) error {
 	return nil
 }
 
+// ProfileFromSlug is the profile a pack is installed into when nobody says: its
+// own slug, so `outpost publish` after `outpost pack fetch` lands in
+// profiles/cobblemon-fabric/ without anyone having to name it twice.
+func ProfileFromSlug(slug string) string {
+	clean := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '-'
+		}
+	}, slug)
+	clean = strings.Trim(clean, "-_")
+	if len(clean) > 32 {
+		clean = strings.TrimRight(clean[:32], "-_")
+	}
+	if clean == "" {
+		return DefaultProfile
+	}
+	return clean
+}
+
 // ProfileOf returns the profile a run is scoped to.
 func (o Options) ProfileOf() string {
 	if o.Profile == "" {

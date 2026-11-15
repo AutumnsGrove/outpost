@@ -69,6 +69,12 @@ type Server struct {
 	// TickInterval is the reconcile period.
 	TickInterval Duration `yaml:"tick_interval"`
 
+	// PackDir is where `outpost pack fetch` and the modpack panel keep pack
+	// directories: one per profile, plus the .mrpack cache. Relative paths are
+	// relative to the daemon's working directory, which is the checkout on the
+	// Potato.
+	PackDir string `yaml:"pack_dir"`
+
 	// RCONFailureLimit is how many consecutive failed probes a live server is
 	// allowed before it is assumed wedged and taken down. At the default tick
 	// interval each failure is one tick, so 15 is five minutes: long enough to
@@ -176,6 +182,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Server.MCPort == 0 {
 		c.Server.MCPort = 25565
+	}
+	if c.Server.PackDir == "" {
+		c.Server.PackDir = "packs"
 	}
 	if c.Server.IdleGrace == 0 {
 		c.Server.IdleGrace = Duration(10 * time.Minute)

@@ -134,7 +134,7 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 			// when the world belongs to the pack being published, because a world of
 			// this build can still be the one you want to throw away.
 			return true, &saved, nil, nil
-		} else if saved.SameBuild(p) {
+		} else if saved.SamePack(p) {
 			return false, &saved, nil, nil
 		} else {
 			known = true
@@ -156,7 +156,7 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 			"pass --new-world to discard it and start fresh, or --keep-world to load it anyway", opts.ProfileOf())
 	}
 
-	msg := fmt.Sprintf("publish: the saved world was made by %s and this is %s", saved.Describe(), p.Describe())
+	msg := fmt.Sprintf("publish: profile %q holds a world made by %s and this is %s", opts.ProfileOf(), saved.Describe(), p.Describe())
 	switch {
 	case opts.NewWorld:
 		return true, &saved, nil, nil

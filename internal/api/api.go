@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"outpost/internal/orchestrator"
+	"outpost/internal/pack"
 	"outpost/internal/roster"
 	"outpost/internal/store"
 	"outpost/internal/updater"
@@ -47,6 +48,10 @@ type Server struct {
 
 	roster *roster.Roster
 	cache  rosterCache
+
+	// packs drives the modpack panel. Nil when the daemon has no R2 client, which
+	// hides the panel rather than offering buttons that fail.
+	packs *pack.Manager
 }
 
 // Options is what the API needs that the orchestrator does not provide.
@@ -63,7 +68,10 @@ type Options struct {
 	Restart func()
 	// Roster enables the player list and its controls. Nil hides them.
 	Roster *roster.Roster
-	Log    *slog.Logger
+	// Packs enables the modpack panel: profiles, resolving links and installing
+	// them. Nil hides it.
+	Packs *pack.Manager
+	Log   *slog.Logger
 }
 
 // New returns the handler.
@@ -81,6 +89,7 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 		update:    opts.Update,
 		restart:   opts.Restart,
 		roster:    opts.Roster,
+		packs:     opts.Packs,
 	}
 
 	mux := http.NewServeMux()
@@ -96,6 +105,10 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 	mux.HandleFunc("POST /api/action", s.page(s.action))
 	mux.HandleFunc("POST /api/console", s.page(s.console))
 	mux.HandleFunc("POST /api/players", s.page(s.players))
+	mux.HandleFunc("GET /api/pack", s.auth(s.packGet))
+	mux.HandleFunc("POST /api/pack/preview", s.packHandler(s.packPreview))
+	mux.HandleFunc("POST /api/pack/install", s.packHandler(s.packInstall))
+	mux.HandleFunc("POST /api/pack/use", s.packHandler(s.packUse))
 	// Machine callers (Meridian's control plane, curl, cron) keep the bearer
 	// token path; the page uses /api/action with a form token instead.
 	mux.HandleFunc("POST /api/start", s.auth(s.start))

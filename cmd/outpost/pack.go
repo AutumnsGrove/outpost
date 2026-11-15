@@ -4,11 +4,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	"outpost/internal/pack"
+	"outpost/internal/publish"
+	"outpost/internal/r2"
+	"outpost/internal/roster"
 )
 
 func (a *app) packCmd() *cobra.Command {
@@ -22,8 +26,100 @@ func (a *app) packCmd() *cobra.Command {
 			"Source can be a Modrinth slug, a modrinth.com modpack link (Prism's \"open\n" +
 			"in browser\" gives you one), a .mrpack URL, or a .mrpack on disk.",
 	}
-	cmd.AddCommand(a.packFetchCmd())
+	cmd.AddCommand(a.packFetchCmd(), a.packListCmd(), a.packUseCmd())
 	return cmd
+}
+
+// packManager wires the same Manager the page uses: R2, the buckets, the plans,
+// the player list and the switch. One implementation, two front doors.
+func (a *app) packManager(rost *roster.Roster) (*pack.Manager, error) {
+	client, err := r2.New(a.cfg.R2.AccountID, a.cfg.Secrets.R2AccessKey, a.cfg.Secrets.R2SecretKey)
+	if err != nil {
+		return nil, err
+	}
+	m := &pack.Manager{
+		AssetBucket: a.cfg.Server.AssetBucket,
+		WorldBucket: a.cfg.Server.WorldBucket,
+		Dir:         a.cfg.Server.PackDir,
+		Store:       client,
+		Regions:     a.cfg.Regions,
+		Log:         a.log,
+		Activate:    func(_ context.Context, profile string) error { return a.orch.SetActiveProfile(profile) },
+	}
+	if rost != nil {
+		m.Whitelist = func(ctx context.Context) ([]string, error) {
+			list, err := rost.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return list.Whitelist, nil
+		}
+	}
+	return m, nil
+}
+
+func (a *app) packListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:         "list",
+		Short:       "List the installed profiles, and which one is active",
+		Annotations: map[string]string{requiresCloud: "r2"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			m, err := a.packManager(nil)
+			if err != nil {
+				return err
+			}
+			active, err := a.orch.ActiveProfile()
+			if err != nil {
+				return err
+			}
+			profiles, err := m.Profiles(cmd.Context(), active)
+			if err != nil {
+				return err
+			}
+			if len(profiles) == 0 {
+				fmt.Println("no profiles yet: `outpost pack fetch <link>` then `outpost publish --profile <name> <dir>`")
+				return nil
+			}
+			for _, p := range profiles {
+				marker := " "
+				if p.Active {
+					marker = "*"
+				}
+				name := p.ID
+				if p.Pack != nil {
+					name = fmt.Sprintf("%-22s %-26s", p.ID, p.Pack.Describe())
+				}
+				world := "no world"
+				if p.HasWorld {
+					world = "world"
+				}
+				fmt.Printf("%s %s %4d mod(s) %8s  %s\n", marker, name, p.Mods, humanSize(p.Bytes), world)
+			}
+			return nil
+		},
+	}
+}
+
+func (a *app) packUseCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "use <profile>",
+		Short: "Switch which pack and world the next session boots",
+		Long: "Switches the active profile. Refused while a server is rented: a running server\n" +
+			"already pulled one profile's assets and will upload its world to that profile.",
+		Args:        cobra.ExactArgs(1),
+		Annotations: map[string]string{requiresCloud: "none"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profile := args[0]
+			if err := publish.ValidateProfile(profile); err != nil {
+				return err
+			}
+			if err := a.orch.SetActiveProfile(profile); err != nil {
+				return err
+			}
+			fmt.Printf("profile %s is now active: `outpost start` boots it\n", profile)
+			return nil
+		},
+	}
 }
 
 func (a *app) packFetchCmd() *cobra.Command {
