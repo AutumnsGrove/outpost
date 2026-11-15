@@ -22,6 +22,8 @@ func (a *app) publishCmd() *cobra.Command {
 		ops       []string
 		open      bool
 		prune     bool
+		newWorld  bool
+		keepWorld bool
 		dryRun    bool
 	)
 
@@ -29,15 +31,20 @@ func (a *app) publishCmd() *cobra.Command {
 		Use:   "publish [dir]",
 		Short: "Upload a server pack to R2",
 		Long: "Uploads a pack directory to the asset bucket in the layout the VPS expects:\n" +
-			"server/, mods/, config/ and scripts/. A launcher jar can be fetched from\n" +
-			"Fabric Meta, and Minecraft names are resolved to UUIDs through Mojang, so\n" +
-			"the whitelist never goes stale.",
+			"server/, mods/, config/, scripts/ and root/. A pack.json left by\n" +
+			"`outpost pack fetch` supplies the Minecraft version, the loader version and\n" +
+			"the RAM the pack needs, so those flags are only for hand-rolled packs.\n" +
+			"A launcher jar can be fetched from Fabric Meta, and Minecraft names are\n" +
+			"resolved to UUIDs through Mojang, so the whitelist never goes stale.",
 		Args:        cobra.MaximumNArgs(1),
 		Annotations: map[string]string{requiresCloud: "r2"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "pack"
 			if len(args) == 1 {
 				dir = args[0]
+			}
+			if newWorld && keepWorld {
+				return fmt.Errorf("--new-world and --keep-world ask for opposite things")
 			}
 
 			client, err := r2.New(a.cfg.R2.AccountID, a.cfg.Secrets.R2AccessKey, a.cfg.Secrets.R2SecretKey)
@@ -48,6 +55,7 @@ func (a *app) publishCmd() *cobra.Command {
 			opts := publish.Options{
 				Dir:          dir,
 				AssetBucket:  a.cfg.Server.AssetBucket,
+				WorldBucket:  a.cfg.Server.WorldBucket,
 				FabricMC:     fabricMC,
 				FabricLoader: loader,
 				Whitelist:    whitelist,
@@ -55,6 +63,9 @@ func (a *app) publishCmd() *cobra.Command {
 				Open:         open,
 				DryRun:       dryRun,
 				Prune:        prune,
+				Regions:      a.cfg.Regions,
+				NewWorld:     newWorld,
+				KeepWorld:    keepWorld,
 				Log:          a.log,
 			}
 
@@ -97,7 +108,9 @@ func (a *app) publishCmd() *cobra.Command {
 	f.StringSliceVar(&whitelist, "whitelist", nil, "Minecraft names to allow, resolved to UUIDs")
 	f.StringSliceVar(&ops, "op", nil, "Minecraft names to make operators (must be on the whitelist)")
 	f.BoolVar(&open, "open", false, "publish with white-list=false (anyone who finds the address can join)")
-	f.BoolVar(&prune, "prune", false, "delete mods/ and config/ keys that are not in the pack")
+	f.BoolVar(&prune, "prune", false, "delete mods/ and config/ keys that are not in the pack (always on when the pack has a pack.json)")
+	f.BoolVar(&newWorld, "new-world", false, "discard the saved world when it was made by another pack")
+	f.BoolVar(&keepWorld, "keep-world", false, "load a world saved by another pack anyway")
 	f.BoolVar(&dryRun, "dry-run", false, "show what would change without touching R2")
 
 	return cmd

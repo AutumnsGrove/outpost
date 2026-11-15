@@ -95,6 +95,7 @@ three-minute rebuild.
 ```bash
 outpost serve            # the reconcile loop + JSON API (this is the daemon)
 outpost publish [dir]    # upload a server pack to R2
+outpost pack fetch <src> # resolve a Modrinth modpack into a pack directory
 outpost start [region]   # rent a server (default region: eu)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
@@ -121,6 +122,8 @@ pack/
   mods/*.jar    with client-only-mods.txt listing what the server must not load
   config/       mod config
   scripts/      start.sh, stop.sh
+  root/         anything else, to /opt/minecraft (a pack's config/, kubejs/, defaultconfigs/)
+  pack.json     written by `outpost pack fetch`; see below
 ```
 
 The shortest useful first publish generates the rest:
@@ -136,8 +139,42 @@ everything, and verifies each key's size in R2 before claiming success. Add
 `--prune` to delete mods and config files the pack no longer has, and `--dry-run`
 to see the plan without writing anything.
 
-Vanilla is `--fabric 1.20.1` with an empty `mods/`. A modpack is the same command
-with jars in `mods/` and a `start.sh` sized for the instance you rent.
+Vanilla is `--fabric 1.20.1` with an empty `mods/`.
+
+## Modpacks
+
+A modpack is fetched, not assembled:
+
+```bash
+outpost pack fetch https://modrinth.com/modpack/cobblemon-fabric --memory 4
+outpost publish pack --whitelist AutumnsAdventure --op AutumnsAdventure
+```
+
+`pack fetch` takes a Modrinth slug, a modpack URL (the one Prism's "open in browser"
+gives you), a `.mrpack` URL, or a `.mrpack` on disk. `--version` pins a pack version;
+the default is the newest release for Minecraft 1.20.1, and a pack that has moved on to
+1.21 is refused rather than downloaded, because cloud-init installs Java 17. Files the
+pack marks `env.server: unsupported` are not fetched at all, so no client mod reaches
+the server.
+
+What it writes is an ordinary pack directory plus `pack.json`, and everything else
+follows from that file:
+
+- **The launcher comes from the pack.** Its Minecraft and loader versions win over
+  `--fabric` and `--loader`, and `--prune` is implied: two versions of one mod in
+  `mods/` is a server that crashes, not a warning.
+- **`--memory` is the RAM of the box you will rent** (default 4, the `cx23`). It sizes
+  `scripts/start.sh` — two GB stay with the OS — and `publish` refuses a pack that no
+  configured region's plan can hold. `fallback_types` do not cover it: Hetzner only
+  falls back when a plan is sold out, not when it is too small.
+- **`publish` tags the saved world with the pack.** `mc-worlds/current/pack.json` is
+  what lets the next publish say "this world was made by Cobblemon 1.5.2, not 1.4.0".
+  A world from another pack is refused; `--new-world` discards it, `--keep-world`
+  loads it anyway, and neither is assumed.
+
+Two things a fetched pack does not carry over: its own `start.sh` JVM flags, and the
+settings in its `server.properties` — Outpost writes both. CurseForge and FTB packs are
+not supported; `pack fetch` says so instead of half-trying.
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --https=8896` in front of it gives you a page at

@@ -101,6 +101,13 @@ runcmd:
   - chown -R minecraft:minecraft /home/minecraft/.config
 
   # --- pull the prebuilt server, modpack and scripts from R2
+  #
+  # root/ goes first and lands at the server root, because that is where a
+  # fetched modpack keeps what is not a mod: config/, kubejs/, defaultconfigs/.
+  # The server/ pull after it means our server.properties (port, RCON, whitelist)
+  # wins over a pack's copy, which is the order that has to hold: a pack's
+  # server.properties cannot know this session's RCON password.
+  - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/root/ /opt/minecraft/ --exclude "world/**"
   - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/server/ /opt/minecraft/ --exclude "world/**"
   - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/mods/ /opt/minecraft/mods/
   - sudo -u minecraft rclone copy r2:{{ .AssetBucket }}/config/ /opt/minecraft/config/

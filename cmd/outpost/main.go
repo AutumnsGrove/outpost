@@ -37,6 +37,11 @@ func main() {
 // a box where nothing has been exported yet.
 const requiresCloud = "outpost/requires-cloud"
 
+// noConfig marks a command that needs no config.yaml and no database at all.
+// `outpost pack fetch` is the only one: it downloads a modpack and writes files,
+// and it should work on a fresh clone where nothing has been set up.
+const noConfig = "outpost/no-config"
+
 type app struct {
 	cfgPath string
 	verbose bool
@@ -75,6 +80,7 @@ func rootCmd() *cobra.Command {
 		a.updateCmd(),
 		a.consoleCmd(),
 		a.playerCmd(),
+		a.packCmd(),
 	)
 	return root
 }
@@ -85,6 +91,10 @@ func (a *app) setup(cmd *cobra.Command) error {
 		level = slog.LevelDebug
 	}
 	a.log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	if cmd.Annotations[noConfig] == "true" {
+		return nil
+	}
 
 	cfg, err := config.Load(a.cfgPath)
 	if err != nil {
