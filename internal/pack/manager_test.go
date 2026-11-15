@@ -3,6 +3,7 @@ package pack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"outpost/internal/publish"
 	"outpost/internal/r2"
 )
 
@@ -319,5 +321,152 @@ func TestProgressRefreshesTheInstallMarker(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the job never finished")
+	}
+}
+
+func TestVersionsSaysWhatThisServerCanRun(t *testing.T) {
+	m, store := newManager(t)
+
+	// The fake Modrinth answers with four versions spanning three game versions.
+	srv := newFakeModrinth(t, []Version{
+		{ID: "v4", VersionNumber: "15.0.0-beta.4", VersionType: "beta", GameVersions: []string{"26.3"}, Loaders: []string{"fabric"}},
+		{ID: "v3", VersionNumber: "14.1.2", VersionType: "release", GameVersions: []string{"26.2"}, Loaders: []string{"fabric"}},
+		{ID: "v2", VersionNumber: "5.4.1", VersionType: "alpha", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		{ID: "v1", VersionNumber: "5.2.8", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		{ID: "v0", VersionNumber: "0.9.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"forge"}},
+	})
+	_ = srv
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"v1"}`)
+
+	out, err := m.Versions(context.Background(), "https://modrinth.com/modpack/test-pack")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if out.Total != 5 || len(out.Choices) != 5 {
+		t.Fatalf("choices = %d of %d", len(out.Choices), out.Total)
+	}
+	if out.Installed != "v1" {
+		t.Fatalf("installed = %q, want v1", out.Installed)
+	}
+	if out.Newer != "5.4.1" {
+		t.Fatalf("newer = %q, want the newest bootable one that is not installed", out.Newer)
+	}
+
+	byNumber := map[string]VersionChoice{}
+	for _, c := range out.Choices {
+		byNumber[c.Number] = c
+	}
+	if !byNumber["5.2.8"].Bootable || !byNumber["5.2.8"].Installed {
+		t.Fatalf("5.2.8 = %+v", byNumber["5.2.8"])
+	}
+	if !byNumber["5.4.1"].Bootable {
+		t.Fatalf("an alpha for the supported Minecraft version is still runnable: %+v", byNumber["5.4.1"])
+	}
+	// The reason has to name the blocker, not just say no.
+	if c := byNumber["14.1.2"]; c.Bootable || !strings.Contains(c.Reason, "Java 17") {
+		t.Fatalf("14.1.2 = %+v", c)
+	}
+	if c := byNumber["0.9.0"]; c.Bootable || !strings.Contains(c.Reason, "Fabric") {
+		t.Fatalf("0.9.0 = %+v", c)
+	}
+}
+
+func TestVersionsFindsTheRunnableOnesUnderHundredsOfNewerOnes(t *testing.T) {
+	m, store := newManager(t)
+
+	// Fabulously Optimized as it actually is: 300 versions for game versions this
+	// server cannot run, then the Fabric/1.20.1 line. A plain "newest 40" window
+	// would show forty grey rows and nothing selectable.
+	var versions []Version
+	for i := 0; i < 300; i++ {
+		versions = append(versions, Version{
+			ID: fmt.Sprintf("new-%d", i), VersionNumber: fmt.Sprintf("90.%d.0", 300-i),
+			VersionType: "release", GameVersions: []string{"26.2"}, Loaders: []string{"fabric"},
+		})
+	}
+	for i := 0; i < 5; i++ {
+		versions = append(versions, Version{
+			ID: fmt.Sprintf("old-%d", i), VersionNumber: fmt.Sprintf("5.%d.0", 5-i),
+			VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"},
+		})
+	}
+	newFakeModrinth(t, versions)
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"old-1"}`)
+
+	out, err := m.Versions(context.Background(), "test-pack")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+
+	runnable := 0
+	for _, c := range out.Choices {
+		if c.Bootable {
+			runnable++
+		}
+	}
+	if runnable != 5 {
+		t.Fatalf("runnable rows = %d, want all five: %+v", runnable, out.Choices)
+	}
+	if out.Skipped != 300-1 {
+		t.Fatalf("skipped = %d, want the unrunable ones beyond the newest per game version", out.Skipped)
+	}
+	// The installed one is 5.4.0 and the newest runnable is 5.5.0, so there is an
+	// update; from the newest runnable itself there would not be.
+	if out.Newer != "5.5.0" {
+		t.Fatalf("newer = %q, want 5.5.0", out.Newer)
+	}
+}
+
+func TestVersionsDoesNotCallAnOlderVersionAnUpdate(t *testing.T) {
+	m, store := newManager(t)
+	newFakeModrinth(t, []Version{
+		{ID: "newest", VersionNumber: "5.5.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		{ID: "older", VersionNumber: "5.4.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+	})
+	// The profile already holds the newest runnable one.
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"newest"}`)
+
+	out, err := m.Versions(context.Background(), "test-pack")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if out.Newer != "" {
+		t.Fatalf("newer = %q: an older version is a downgrade, not an update", out.Newer)
+	}
+}
+
+func TestVersionsRefusesASourceThatNamesOneVersion(t *testing.T) {
+	m, _ := newManager(t)
+	_, err := m.Versions(context.Background(), "https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack")
+	if !errors.Is(err, ErrNoVersions) {
+		t.Fatalf("err = %v, want ErrNoVersions", err)
+	}
+}
+
+func TestEveryPathNamesAProfileByTheSameRule(t *testing.T) {
+	m, _ := newManager(t)
+	newFakeModrinth(t, []Version{
+		{ID: "v1", VersionNumber: "1.0.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+	})
+
+	// A slug with characters the two derivations used to disagree about, and one
+	// long enough to need truncating.
+	for _, slug := range []string{"cobblemon_fabric", strings.Repeat("a", 40)} {
+		src := "https://modrinth.com/modpack/" + slug
+		fromSource, err := m.profileFor(src, "")
+		if err != nil {
+			t.Fatalf("profileFor(%q): %v", src, err)
+		}
+		listed, err := m.Versions(context.Background(), src)
+		if err != nil {
+			t.Fatalf("versions(%q): %v", src, err)
+		}
+		if listed.Profile != fromSource {
+			t.Errorf("slug %q: picker says %q, install says %q — one of them reads the wrong profile",
+				slug, listed.Profile, fromSource)
+		}
+		if err := publish.ValidateProfile(listed.Profile); err != nil {
+			t.Errorf("slug %q produced an invalid profile %q: %v", slug, listed.Profile, err)
+		}
 	}
 }

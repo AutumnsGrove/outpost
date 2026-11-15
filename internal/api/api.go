@@ -106,6 +106,7 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 	mux.HandleFunc("POST /api/console", s.page(s.console))
 	mux.HandleFunc("POST /api/players", s.page(s.players))
 	mux.HandleFunc("GET /api/pack", s.auth(s.packGet))
+	mux.HandleFunc("POST /api/pack/versions", s.packHandler(s.packVersions))
 	mux.HandleFunc("POST /api/pack/preview", s.packHandler(s.packPreview))
 	mux.HandleFunc("POST /api/pack/install", s.packHandler(s.packInstall))
 	mux.HandleFunc("POST /api/pack/use", s.packHandler(s.packUse))

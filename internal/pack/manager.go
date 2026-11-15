@@ -97,7 +97,10 @@ type JobResult struct {
 
 // PreviewRequest is "tell me what is in this link".
 type PreviewRequest struct {
-	Source       string `json:"source"`
+	Source string `json:"source"`
+	// Version pins a pack version by id or number. Empty takes the newest one this
+	// server can run, which is what the panel does when nobody has chosen.
+	Version      string `json:"version"`
 	Profile      string `json:"profile"`
 	MemoryGB     int    `json:"memoryGB"`
 	SkipOptional bool   `json:"skipOptional"`
@@ -105,7 +108,10 @@ type PreviewRequest struct {
 
 // InstallRequest is "make this the profile".
 type InstallRequest struct {
-	Source       string `json:"source"`
+	Source string `json:"source"`
+	// Version pins the version, so the install lands on the one that was previewed
+	// rather than on whatever is newest by the time it starts.
+	Version      string `json:"version"`
 	Profile      string `json:"profile"`
 	MemoryGB     int    `json:"memoryGB"`
 	SkipOptional bool   `json:"skipOptional"`
@@ -195,6 +201,7 @@ func (m *Manager) Preview(ctx context.Context, req PreviewRequest) (*Job, error)
 
 	opts := Options{
 		Source:       req.Source,
+		Version:      req.Version,
 		Dir:          m.profileDir(profile),
 		MemoryGB:     req.MemoryGB,
 		SkipOptional: req.SkipOptional,
@@ -253,6 +260,7 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 
 	opts := Options{
 		Source:       req.Source,
+		Version:      req.Version,
 		Dir:          m.profileDir(profile),
 		MemoryGB:     req.MemoryGB,
 		SkipOptional: req.SkipOptional,

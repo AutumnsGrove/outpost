@@ -42,6 +42,7 @@ type Version struct {
 	VersionType   string        `json:"version_type"` // release, beta, alpha
 	GameVersions  []string      `json:"game_versions"`
 	Loaders       []string      `json:"loaders"`
+	PublishedAt   string        `json:"date_published"`
 	Files         []VersionFile `json:"files"`
 }
 
@@ -394,9 +395,12 @@ func SourceProfile(src string) (string, error) {
 	case sourceFile:
 		name = strings.TrimSuffix(filepath.Base(parsed.path), ".mrpack")
 	}
-	name = slugify(name)
-	if name == "" {
+	if slugify(name) == "" {
 		return "", fmt.Errorf("cannot derive a profile name from %q; name one", src)
 	}
-	return name, nil
+	// The same rule publish uses for a pack's own slug, so the panel, the CLI and
+	// the version picker all name a profile identically. `slugify` is for file
+	// names: it turns an underscore into a dash, which would make "my_pack" a
+	// different profile here than at install time.
+	return publish.ProfileFromSlug(name), nil
 }
