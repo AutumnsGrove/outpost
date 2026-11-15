@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -132,6 +133,11 @@ func (a *app) packFetchCmd() *cobra.Command {
 		// Modrinth and writes files, and it has to work on a fresh clone.
 		Annotations: map[string]string{noConfig: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dir == "" {
+				// The same place the page installs into, so a CLI fetch and a page
+				// install of the same pack do not end up as two directories.
+				dir = filepath.Join("packs", profileOr(args[0]))
+			}
 			res, err := pack.Fetch(cmd.Context(), pack.Options{
 				Source:       args[0],
 				Version:      version,
@@ -161,11 +167,20 @@ func (a *app) packFetchCmd() *cobra.Command {
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&dir, "dir", "pack", "where to write the pack directory")
+	f.StringVar(&dir, "dir", "", `where to write the pack directory (default "packs/<profile>")`)
 	f.StringVar(&version, "version", "", "pin a pack version (id or version number; default: newest release for Minecraft 1.20.1)")
 	f.IntVar(&memoryGB, "memory", 4, "RAM in GB of the box you will rent; sizes start.sh and is checked by publish")
 	f.BoolVar(&skipOptional, "skip-optional", false, "leave out files the pack marks optional for the server")
 	f.BoolVar(&force, "force", false, "re-download files that already match their checksum")
 
 	return cmd
+}
+
+// profileOr is the profile id a link implies, for the default directory. A source
+// that names no pack falls back to "pack".
+func profileOr(source string) string {
+	if profile, err := pack.SourceProfile(source); err == nil {
+		return profile
+	}
+	return "pack"
 }
