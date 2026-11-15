@@ -155,7 +155,7 @@ func (a *app) packDeleteCmd() *cobra.Command {
 		Use:   "delete <profile>",
 		Short: "Remove a profile: its world, its backups, and its files",
 		Long: "Removes mc-assets/profiles/<id>/ and mc-worlds/profiles/<id>/. The world is\n" +
-			"copied to trash/ first and stays recoverable for " + world.TrashRetention.String() + "; the\n" +
+			"copied to trash/ first and stays recoverable for " + fmt.Sprint(world.TrashRetentionDays) + " days; the\n" +
 			"backups under the profile go with it.\n\n" +
 			"Needs --yes, because it is the one command here that removes something you\n" +
 			"cannot publish again from a link. Refused while a server is rented, and\n" +
@@ -186,8 +186,8 @@ func (a *app) packDeleteCmd() *cobra.Command {
 				return fmt.Errorf("the server is %s; stop it before deleting a profile", st.State)
 			}
 			if !yes {
-				return fmt.Errorf("this removes profile %q, its backups and its files (the world is kept in trash for %s); pass --yes if that is what you want",
-					profile, world.TrashRetention)
+				return fmt.Errorf("this removes profile %q, its backups and its files (the world is kept in trash for %d days); pass --yes if that is what you want",
+					profile, world.TrashRetentionDays)
 			}
 
 			m, err := a.packManager(nil)
@@ -204,7 +204,7 @@ func (a *app) packDeleteCmd() *cobra.Command {
 			} else {
 				fmt.Printf("world   none saved, nothing to trash\n")
 			}
-			fmt.Printf("removed %d asset key(s), %d world key(s) left under the prefix\n", res.Assets, res.Leftovers)
+			fmt.Printf("removed %d asset key(s) and %d world key(s) (marker, backups)\n", res.Assets, res.Leftovers)
 			fmt.Printf("profile %s is gone\n", profile)
 			return nil
 		},

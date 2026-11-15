@@ -654,3 +654,27 @@ func keysOf(m *memStore) []string {
 	}
 	return out
 }
+
+func TestDeleteProfileRefusesWhileAJobIsRunning(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["profiles/typo/mods/a.jar"] = []byte("jar")
+
+	job, err := m.begin("install", "cobblemon", "typo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.DeleteProfile(context.Background(), "typo", nil); !errors.Is(err, ErrBusy) {
+		t.Fatalf("delete during an install = %v, want ErrBusy", err)
+	}
+	if _, ok := store.objects["profiles/typo/mods/a.jar"]; !ok {
+		t.Fatal("the refusal still removed files")
+	}
+
+	// Once the job is finished the slot is free again.
+	m.mu.Lock()
+	job.running = false
+	m.mu.Unlock()
+	if _, err := m.DeleteProfile(context.Background(), "typo", nil); err != nil {
+		t.Fatalf("delete after the job: %v", err)
+	}
+}

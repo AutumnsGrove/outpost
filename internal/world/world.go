@@ -39,11 +39,14 @@ const (
 	// path uses for `backups/`.
 	TrashPrefix = "trash/"
 
-	// TrashRetention is how long a deleted world can be brought back, and it
-	// matches the `--min-age 14d` the shutdown upload uses for backups. The trash
-	// is swept on the next delete rather than on a timer: it grows exactly when
-	// something is deleted, which is exactly when it needs emptying.
-	TrashRetention = 14 * 24 * time.Hour
+	// TrashRetentionDays is how long a deleted world can be brought back. It
+	// matches the `--min-age 14d` the shutdown upload uses for backups.
+	TrashRetentionDays = 14
+
+	// TrashRetention is TrashRetentionDays as a duration. The trash is swept on the
+	// next delete rather than on a timer: it grows exactly when something is
+	// deleted, which is exactly when it needs emptying.
+	TrashRetention = time.Duration(TrashRetentionDays) * 24 * time.Hour
 
 	// trashStamp is the time format in a trash key. Fixed-width and UTC, so the
 	// keys sort and parse without asking R2 for a modification time.
@@ -102,9 +105,11 @@ func List(ctx context.Context, st Store, bucket string) ([]World, error) {
 				}
 			}
 			worlds = append(worlds, w)
-		case !inside && strings.HasSuffix(o.Key, ".tar.gz"):
-			// Not under profiles/: the pre-profile world, or something an older
-			// build left behind. Worth naming, because nothing else will. Its marker
+		case !inside && strings.HasSuffix(o.Key, ".tar.gz") && !strings.HasPrefix(o.Key, TrashPrefix):
+			// Not under profiles/ and not in the trash: the pre-profile world, or
+			// something an older build left behind. Worth naming, because nothing
+			// else will — but a trashed world is not a candidate for anything, and
+			// listing it would advertise the thing just deleted. Its marker
 			// sits beside it — `current/pack.json` next to `current/world.tar.gz` is
 			// what publish wrote before profiles — so say what made it when that key
 			// is still there.
