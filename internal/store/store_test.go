@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -185,4 +186,58 @@ func TestLockStartExcludesASecondProcess(t *testing.T) {
 		t.Fatalf("lock should be free after release: %v ok=%v", err, ok)
 	}
 	releaseAgain()
+}
+
+// TestOpenAddsTheProfileColumnToAnExistingDatabase is the migration that matters:
+// the Potato's outpost.db was written before profiles existed, and
+// CREATE TABLE IF NOT EXISTS does nothing to a table that is already there.
+func TestOpenAddsTheProfileColumnToAnExistingDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE server_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			state TEXT NOT NULL DEFAULT 'OFFLINE',
+			vps_id TEXT NOT NULL DEFAULT '', vps_ip TEXT NOT NULL DEFAULT '',
+			tailnet_host TEXT NOT NULL DEFAULT '', region TEXT NOT NULL DEFAULT '',
+			server_type TEXT NOT NULL DEFAULT '', rcon_password TEXT NOT NULL DEFAULT '',
+			started_at TEXT NOT NULL DEFAULT '', idle_since TEXT NOT NULL DEFAULT '',
+			players INTEGER NOT NULL DEFAULT 0, dns_value TEXT NOT NULL DEFAULT '',
+			last_error TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO server_state (id, state, vps_id) VALUES (1, 'OFFLINE', '42');
+	`); err != nil {
+		t.Fatalf("old schema: %v", err)
+	}
+	db.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open old database: %v", err)
+	}
+	defer s.Close()
+
+	st, err := s.GetState()
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if st.VPSID != "42" {
+		t.Fatalf("the existing row was lost: %+v", st)
+	}
+	if st.Profile != "" {
+		t.Fatalf("profile = %q, want empty", st.Profile)
+	}
+
+	// And it can be written to.
+	st.Profile = "homestead"
+	if err := s.SetState(st); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got, _ := s.GetState(); got.Profile != "homestead" {
+		t.Fatalf("profile did not round-trip: %+v", got)
+	}
 }
