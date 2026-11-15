@@ -230,7 +230,9 @@ func (m *Manager) Preview(ctx context.Context, req PreviewRequest) (*Job, error)
 		}
 		return result, nil
 	})
-	return job, nil
+	// The job goroutine is already writing to that struct under the manager's
+	// lock; the caller only ever gets a copy.
+	return m.Job(), nil
 }
 
 // Install fetches a pack into a profile and publishes it to R2.
@@ -246,6 +248,13 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 	if err != nil {
 		return nil, err
 	}
+	// Tell other processes (a shell running `outpost start`) to wait. The marker
+	// lives exactly as long as the work, so it is cleared in the goroutine.
+	clear, err := MarkInstalling(m.Dir, profile)
+	if err != nil {
+		clear = func() {}
+		m.Log.Warn("could not mark the install in progress; a start may race it", "err", err)
+	}
 
 	opts := Options{
 		Source:       req.Source,
@@ -259,6 +268,8 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 	}
 
 	m.run(ctx, job, func(ctx context.Context) (*JobResult, error) {
+		defer clear()
+
 		res, err := Fetch(ctx, opts)
 		if err != nil {
 			return nil, err
@@ -377,6 +388,9 @@ func (m *Manager) run(ctx context.Context, job *Job, fn func(ctx context.Context
 				m.Log.Error("pack job failed", "kind", job.Kind, "profile", job.Profile, "err", err)
 			}
 			return
+		}
+		if result == nil {
+			result = &JobResult{Profile: job.Profile}
 		}
 		job.Phase = "done"
 		job.Done, job.Total = 1, 1

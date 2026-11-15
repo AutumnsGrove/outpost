@@ -14,12 +14,15 @@
 	} from './api';
 
 	// `state` would shadow the $state rune, so the prop is named for what it is.
-	let { token, serverState }: { token: string; serverState: string } = $props();
+	let {
+		token,
+		serverState,
+		busy = $bindable(false)
+	}: { token: string; serverState: string; busy: boolean } = $props();
 
 	let pack = $state<PackOverview | null>(null);
 	let source = $state('');
 	let memory = $state(4);
-	let busy = $state(false);
 	let message = $state('');
 	let failed = $state(false);
 	// The preview is held here rather than read back off the job so it survives the
@@ -34,6 +37,12 @@
 	// profile.
 	const editable = $derived(serverState === 'OFFLINE' && (pack?.editable ?? true));
 	const running = $derived(!!job && !['done', 'failed'].includes(job.phase));
+
+	// Tell the page when a job is in flight: Start has to be disabled, because a
+	// start mid-install rents a server that pulls a half-rewritten profile.
+	$effect(() => {
+		busy = running;
+	});
 
 	async function refresh() {
 		try {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -176,4 +178,47 @@ func TestAFailedJobSaysWhy(t *testing.T) {
 // testLogger is a quiet logger for the manager's own noise.
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestAnInstallMarksItselfSoAStartWaits(t *testing.T) {
+	m, _ := newManager(t)
+
+	if _, _, busy := InstallingNow(m.Dir); busy {
+		t.Fatal("nothing is installing yet")
+	}
+
+	job, err := m.begin("install", "cobblemon", "cobblemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear, err := MarkInstalling(m.Dir, "cobblemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, _, busy := InstallingNow(m.Dir)
+	if !busy || profile != "cobblemon" {
+		t.Fatalf("marker = %q %v", profile, busy)
+	}
+
+	clear()
+	m.run(context.Background(), job, func(context.Context) (*JobResult, error) { return nil, nil })
+	if _, _, busy := InstallingNow(m.Dir); busy {
+		t.Fatal("the marker outlived the install")
+	}
+}
+
+func TestAStaleInstallMarkerDoesNotBlockAStart(t *testing.T) {
+	m, _ := newManager(t)
+	if err := os.MkdirAll(m.Dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A daemon killed mid-install leaves the marker behind. An hour later it must
+	// not stop a rental for ever.
+	old := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	if err := os.WriteFile(filepath.Join(m.Dir, installMarker), []byte("cobblemon\n"+old+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, busy := InstallingNow(m.Dir); busy {
+		t.Fatal("a stale marker blocked a start")
+	}
 }

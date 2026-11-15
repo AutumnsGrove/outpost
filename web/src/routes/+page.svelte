@@ -17,6 +17,8 @@
 	let confirmStop = $state(false);
 	let confirmTimer: ReturnType<typeof setTimeout>;
 	let copied = $state(false);
+	// Kept here so the Start button knows to wait: see Modpack.svelte.
+	let packBusy = $state(false);
 
 	// The server's numbers are a snapshot from `receivedAt`; the page advances them
 	// once a second in between so countdowns do not jump in five-second steps.
@@ -59,6 +61,10 @@
 
 	async function run(action: ActionKind) {
 		if (!o || pending) return;
+		if (packBusy) {
+			error = 'a pack is being installed — wait for it to finish before starting a server';
+			return;
+		}
 		pending = action;
 		notice = '';
 		error = '';
@@ -160,10 +166,18 @@
 	{#if o}
 		<div class="layout">
 			<div class="main">
-				<Hero {o} {elapsed} {pending} {confirmStop} onstart={() => run('start')} onstop={askStop} />
+				<Hero
+					{o}
+					{elapsed}
+					{pending}
+					{confirmStop}
+					installing={packBusy}
+					onstart={() => run('start')}
+					onstop={askStop}
+				/>
 				<Console {live} token={o.status.formToken} />
 				<Players players={o.players} token={o.status.formToken} onchanged={refresh} />
-				<Modpack token={o.status.formToken} serverState={o.status.state} />
+				<Modpack token={o.status.formToken} serverState={o.status.state} bind:busy={packBusy} />
 			</div>
 			<aside class="side">
 				<Side {o} {now} />
