@@ -495,7 +495,9 @@ func tokenScript(t *testing.T, d Data) (string, []string) {
 		case strings.Contains(cmd, "outpost.json"):
 			script = cmd
 			order = append(order, "token")
-		case strings.Contains(cmd, "rclone copy r2:mc-assets/config/"):
+		case strings.Contains(cmd, "rclone copy") && strings.Contains(cmd, "/config/"):
+			// The pack's config pull, now scoped by profile: whatever the path, the
+			// token has to be written after it.
 			order = append(order, "pull")
 		}
 	}
