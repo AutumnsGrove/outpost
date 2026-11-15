@@ -72,7 +72,13 @@ type Versions struct {
 var ErrNoVersions = errors.New("a .mrpack link names one version; there is nothing to choose — paste the Modrinth project instead")
 
 // Versions lists a pack's versions, newest first, with what this server can run.
-func (m *Manager) Versions(ctx context.Context, source string) (Versions, error) {
+//
+// profile is the one the list is about, and empty means "derive it from the
+// source". The page passes the id of the row it is checking, because a profile
+// published as `--profile potato` holds a Cobblemon pack and is not named after
+// it: deriving would read a different profile's manifest, mark the wrong version
+// installed, and offer an update for a row that is not behind.
+func (m *Manager) Versions(ctx context.Context, source, profile string) (Versions, error) {
 	src, err := parseSource(source)
 	if err != nil {
 		return Versions{}, err
@@ -94,11 +100,9 @@ func (m *Manager) Versions(ctx context.Context, source string) (Versions, error)
 	if slug == "" {
 		slug = src.slug
 	}
-	// The profile has to come from the same place install will: deriving it from
-	// the project's slug here while `profileFor` derives it from the source is how
-	// the picker ends up reading a different profile's manifest and reporting the
-	// wrong "installed" marker.
-	profile, err := m.profileFor(source, "")
+	// The profile has to come from the same place install will, or the picker
+	// reads one profile's manifest and installs into another.
+	profile, err = m.profileFor(source, profile)
 	if err != nil {
 		return Versions{}, err
 	}

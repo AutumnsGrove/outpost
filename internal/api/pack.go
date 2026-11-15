@@ -95,12 +95,16 @@ func (s *Server) packPreview(w http.ResponseWriter, r *http.Request, raw []byte)
 func (s *Server) packVersions(w http.ResponseWriter, r *http.Request, raw []byte) {
 	var body struct {
 		Source string `json:"source"`
+		// Profile is the row the list is about; empty derives it from the source.
+		// A profile published as --profile potato is not named after its pack, so
+		// deriving would answer about a different profile.
+		Profile string `json:"profile"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
 		return
 	}
-	versions, err := s.packs.Versions(r.Context(), body.Source)
+	versions, err := s.packs.Versions(r.Context(), body.Source, body.Profile)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
