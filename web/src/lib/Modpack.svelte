@@ -60,6 +60,13 @@
 	const editable = $derived(serverState === 'OFFLINE' && (pack?.editable ?? true));
 	const running = $derived(!!job && !['done', 'failed'].includes(job.phase));
 	const activeProfile = $derived(pack?.profiles.find((p) => p.active));
+	// Vanilla has no preview, so the world question arrives as a refusal naming a
+	// CLI flag. When it does, offer the answer the preview's checkbox would have.
+	const worldQuestion = $derived(
+		job?.kind === 'install' && job.phase === 'failed' && job.error?.includes('--new-world')
+			? job.error.replace(/^publish: /, '').split(';')[0] + '.'
+			: ''
+	);
 
 	// Tell the page when a job is in flight: Start has to be disabled, because a
 	// start mid-install rents a server that pulls a half-rewritten profile.
@@ -214,14 +221,14 @@
 	// Vanilla is an install with no project behind it: the daemon writes the
 	// pack.json and publishes from it, so there is nothing to preview and no
 	// version to pick.
-	async function installVanilla() {
+	async function installVanilla(newWorld = false) {
 		if (busy || running) return;
 		busy = true;
 		message = '';
 		failed = false;
 		preview = null;
 		try {
-			job = await packVanilla(token);
+			job = await packVanilla(token, '', newWorld);
 			await refresh();
 		} catch (err) {
 			message = err instanceof Error ? err.message : String(err);
@@ -406,11 +413,20 @@
 			class="btn quiet small"
 			disabled={!pack || !editable || running || busy}
 			title="Fabric with an empty mods/ — the plain game, with nothing to resolve"
-			onclick={installVanilla}
+			onclick={() => installVanilla()}
 		>
 			Install Vanilla {pack?.supportedMc}
 		</button>
 	</p>
+
+	{#if worldQuestion}
+		<p class="worldq">
+			<span class="muted">{worldQuestion}</span>
+			<button class="btn danger small" disabled={busy || running || !editable} onclick={() => installVanilla(true)}>
+				Replace its world and install
+			</button>
+		</p>
+	{/if}
 
 	{#if versions && showVersions}
 		<div class="versionbox">
@@ -627,6 +643,14 @@
 		flex: none;
 		width: 4.2rem;
 		text-align: center;
+	}
+	.worldq {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin: 0.5rem 0 0;
+		font-size: 0.82rem;
 	}
 	/* The second way in: a pack with no project behind it. */
 	.vanilla {

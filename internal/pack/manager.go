@@ -127,6 +127,11 @@ type VanillaRequest struct {
 	// rule a fetched pack follows, so the default is "vanilla".
 	Profile  string `json:"profile"`
 	Activate bool   `json:"activate"`
+	// NewWorld and KeepWorld answer the world question the preview checkbox answers
+	// for a fetched pack. Vanilla skips the preview, so without these the button
+	// dead-ends on a CLI flag nobody on the page can pass.
+	NewWorld  bool `json:"newWorld"`
+	KeepWorld bool `json:"keepWorld"`
 }
 
 // Profiles lists what is installed in both buckets, with the active one marked.
@@ -388,6 +393,8 @@ func (m *Manager) InstallVanilla(ctx context.Context, req VanillaRequest) (*Job,
 		pub := m.publishOptions(profile)
 		pub.Dir = dir
 		pub.Players = players
+		pub.NewWorld = req.NewWorld
+		pub.KeepWorld = req.KeepWorld
 		pub.Progress = m.uploadProgress(job)
 		uploaded, err := publish.Run(ctx, m.Store, pub)
 		if err != nil {
