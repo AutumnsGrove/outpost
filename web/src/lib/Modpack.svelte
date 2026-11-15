@@ -47,6 +47,11 @@
 	// already on its newest runnable build.
 	let newer = $state<Record<string, string>>({});
 	let checkedNewer = $state(false);
+	// Which profile the field is aimed at. Empty means "derive it from the link",
+	// which is right for a pasted project; clicking an update hint on a row aims
+	// it at that row, because a profile published as --profile potato is not named
+	// after its pack and deriving would install into a different one.
+	let targetProfile = $state('');
 
 	// A pack can only be installed or swapped while nothing is rented: a running
 	// server already pulled one profile's assets and will upload its world to that
@@ -75,6 +80,7 @@
 				// The profile just moved, so what is "newer" has changed too.
 				checkedNewer = false;
 				newer = {};
+				targetProfile = '';
 			}
 			if (pack && !checkedNewer) checkNewer();
 		} catch (err) {
@@ -99,10 +105,12 @@
 		await Promise.all(
 			installed.map(async (p) => {
 				try {
-					const vs = await packVersions(p.pack!.slug, token);
+					const vs = await packVersions(p.pack!.slug, token, p.id);
 					// Newer is already "the newest runnable that is not the installed
 					// one", so an absent Installed means there is nothing to compare.
-					if (vs.installed && vs.newer) newer[p.id] = vs.newer;
+					// The profile check is the belt: an answer about another profile's
+					// build must never be shown against this row.
+					if (vs.profile === p.id && vs.installed && vs.newer) newer[p.id] = vs.newer;
 				} catch {
 					// Modrinth being unreachable is not this panel's problem, and saying so
 					// on every load would be noise.
@@ -118,6 +126,7 @@
 		if (!p.slug || busy || running) return;
 		const want = newer[id];
 		source = p.slug;
+		targetProfile = id;
 		await loadVersions();
 		const next = versions?.choices.find((c) => c.number === want);
 		if (next?.bootable) chosen = { id: next.id, number: next.number };
@@ -129,7 +138,7 @@
 		message = '';
 		failed = false;
 		try {
-			versions = await packVersions(source.trim(), token);
+			versions = await packVersions(source.trim(), token, targetProfile);
 			chosen = null;
 			// Default to the version this profile already holds when it holds one:
 			// resolving "what I have" is what someone checking versions wants most.
@@ -159,7 +168,7 @@
 		preview = null;
 		replaceWorld = false;
 		try {
-			job = await packPreview(source.trim(), token, memory, chosen?.id ?? '');
+			job = await packPreview(source.trim(), token, memory, chosen?.id ?? '', targetProfile);
 			await refresh();
 		} catch (err) {
 			message = err instanceof Error ? err.message : String(err);
@@ -339,6 +348,7 @@
 			class="field mono"
 			placeholder="https://modrinth.com/modpack/…"
 			bind:value={source}
+			oninput={() => (targetProfile = '')}
 			disabled={!editable || running}
 			autocomplete="off"
 			autocapitalize="off"

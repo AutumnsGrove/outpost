@@ -338,7 +338,7 @@ func TestVersionsSaysWhatThisServerCanRun(t *testing.T) {
 	_ = srv
 	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"v1"}`)
 
-	out, err := m.Versions(context.Background(), "https://modrinth.com/modpack/test-pack")
+	out, err := m.Versions(context.Background(), "https://modrinth.com/modpack/test-pack", "")
 	if err != nil {
 		t.Fatalf("versions: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestVersionsFindsTheRunnableOnesUnderHundredsOfNewerOnes(t *testing.T) {
 	newFakeModrinth(t, versions)
 	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"old-1"}`)
 
-	out, err := m.Versions(context.Background(), "test-pack")
+	out, err := m.Versions(context.Background(), "test-pack", "")
 	if err != nil {
 		t.Fatalf("versions: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestVersionsDoesNotCallAnOlderVersionAnUpdate(t *testing.T) {
 	// The profile already holds the newest runnable one.
 	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"newest"}`)
 
-	out, err := m.Versions(context.Background(), "test-pack")
+	out, err := m.Versions(context.Background(), "test-pack", "")
 	if err != nil {
 		t.Fatalf("versions: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestVersionsDoesNotCallAnOlderVersionAnUpdate(t *testing.T) {
 
 func TestVersionsRefusesASourceThatNamesOneVersion(t *testing.T) {
 	m, _ := newManager(t)
-	_, err := m.Versions(context.Background(), "https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack")
+	_, err := m.Versions(context.Background(), "https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack", "")
 	if !errors.Is(err, ErrNoVersions) {
 		t.Fatalf("err = %v, want ErrNoVersions", err)
 	}
@@ -457,7 +457,7 @@ func TestEveryPathNamesAProfileByTheSameRule(t *testing.T) {
 		if err != nil {
 			t.Fatalf("profileFor(%q): %v", src, err)
 		}
-		listed, err := m.Versions(context.Background(), src)
+		listed, err := m.Versions(context.Background(), src, "")
 		if err != nil {
 			t.Fatalf("versions(%q): %v", src, err)
 		}
@@ -468,6 +468,38 @@ func TestEveryPathNamesAProfileByTheSameRule(t *testing.T) {
 		if err := publish.ValidateProfile(listed.Profile); err != nil {
 			t.Errorf("slug %q produced an invalid profile %q: %v", slug, listed.Profile, err)
 		}
+	}
+}
+
+func TestVersionsReadsTheProfileItWasAskedAbout(t *testing.T) {
+	m, store := newManager(t)
+	// A profile published under a name that is not the pack's slug: the case the
+	// page used to get wrong, because it derived the profile from the source.
+	store.objects["profiles/potato/pack.json"] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"ver0"}`)
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"ver1"}`)
+
+	newFakeModrinth(t, []Version{
+		{ID: "v1", VersionNumber: "1.0.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+	})
+
+	out, err := m.Versions(context.Background(), "test-pack", "potato")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if out.Profile != "potato" {
+		t.Fatalf("profile = %q, want the one that was asked about", out.Profile)
+	}
+	if out.Installed != "ver0" {
+		t.Fatalf("installed = %q, want potato's build, not test-pack's", out.Installed)
+	}
+
+	// And the derived answer is still the derived answer.
+	derived, err := m.Versions(context.Background(), "test-pack", "")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if derived.Profile != "test-pack" || derived.Installed != "ver1" {
+		t.Fatalf("derived = %q/%q", derived.Profile, derived.Installed)
 	}
 }
 

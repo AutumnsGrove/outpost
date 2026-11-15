@@ -234,11 +234,19 @@ export const playerAction = (action: PlayerAction, name: string, token: string) 
 export const getPack = async (): Promise<PackOverview> =>
 	json<PackOverview>(await fetch('/api/pack', { headers: { accept: 'application/json' } }));
 
-export const packVersions = (source: string, token: string) =>
-	post<PackVersions>('/api/pack/versions', { source, token });
+/** profile scopes the list to a row: a profile named --profile potato is not
+ *  named after its pack, so deriving it from the source would answer about a
+ *  different profile. Empty derives. */
+export const packVersions = (source: string, token: string, profile = '') =>
+	post<PackVersions>('/api/pack/versions', { source, token, profile });
 
-export const packPreview = (source: string, token: string, memoryGB: number, version = '') =>
-	post<PackJob>('/api/pack/preview', { source, version, token, memoryGB });
+export const packPreview = (
+	source: string,
+	token: string,
+	memoryGB: number,
+	version = '',
+	profile = ''
+) => post<PackJob>('/api/pack/preview', { source, version, token, memoryGB, profile });
 
 export const packInstall = (
 	req: {
