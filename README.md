@@ -367,10 +367,17 @@ make build      # local
 make potato     # linux/arm64, the binary that goes to the Le Potato
 make test
 make web        # rebuild web/build after touching web/src, then commit it
+make web-check  # rebuild and fail if the committed bundle is stale
 ```
 
 `make build` does not touch the frontend: `web/build` is committed, so a plain
 `go build` on the box produces a complete binary.
+
+The build is reproducible — `version.name` in `web/vite.config.ts` is a hash of
+`web/src`, not the `Date.now()` SvelteKit defaults to, so two builds of one tree
+are byte-identical and a backend commit does not dirty `web/build`.
+`.github/workflows/web.yml` rebuilds and diffs on every PR, and builds twice to
+prove it.
 
 Pure Go SQLite, no cgo, so the cross-compile works from the Mac with no toolchain
 gymnastics.
