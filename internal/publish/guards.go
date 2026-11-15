@@ -38,14 +38,19 @@ func checkPackMemory(p Pack, regions map[string]config.Region) (warnings []strin
 	}
 	sort.Strings(names)
 
-	var tooSmall []string
-	fits := false
+	var (
+		tooSmall  []string
+		unchecked []string
+		fits      bool
+	)
 	for _, name := range names {
 		region := regions[name]
 		gb, known := hetzner.PlanRAM(region.ServerType)
 		if !known {
-			// A plan this table does not have is not a refusal. Saying nothing is
-			// better than refusing a rental over a stale list.
+			// A plan this table does not have is not a refusal, and it is not
+			// silence either: the table is a snapshot, Hetzner renames plans, and a
+			// region that might fit must not be counted as one that does not.
+			unchecked = append(unchecked, fmt.Sprintf("%s: %s is not a plan this knows", name, region.ServerType))
 			continue
 		}
 		if gb >= p.MemoryGB {
@@ -66,16 +71,23 @@ func checkPackMemory(p Pack, regions map[string]config.Region) (warnings []strin
 		tooSmall = append(tooSmall, summary)
 	}
 
-	if len(tooSmall) == 0 {
+	if len(tooSmall) == 0 && len(unchecked) == 0 {
 		return nil, nil
 	}
-	if fits {
-		return []string{fmt.Sprintf("%s asks for %d GB; %s — that region will not fit the pack",
-			p.Describe(), p.MemoryGB, strings.Join(tooSmall, "; "))}, nil
+
+	// Refuse only when every region was checked and none of them fits. A plan the
+	// table does not know leaves a region unproven, and an unproven region is
+	// rented, not blocked.
+	if !fits && len(unchecked) == 0 {
+		return nil, fmt.Errorf("publish: %s asks for %d GB and no configured region has a plan that big (%s); "+
+			"raise server_type, add a region that has one, or pass a lower --memory to `outpost pack fetch` if that figure is wrong",
+			p.Describe(), p.MemoryGB, strings.Join(tooSmall, "; "))
 	}
-	return nil, fmt.Errorf("publish: %s asks for %d GB and no configured region has a plan that big (%s); "+
-		"raise server_type, add a region that has one, or pass a lower --memory to `outpost pack fetch` if that figure is wrong",
-		p.Describe(), p.MemoryGB, strings.Join(tooSmall, "; "))
+
+	notes := tooSmall
+	notes = append(notes, unchecked...)
+	return []string{fmt.Sprintf("%s asks for %d GB; %s",
+		p.Describe(), p.MemoryGB, strings.Join(notes, "; "))}, nil
 }
 
 // worldGuard answers the one question that decides whether a session loads the
@@ -111,6 +123,11 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 	case err == nil:
 		if err := json.Unmarshal(raw, &current); err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s/%s is unreadable (%v), so this pack cannot be checked against the world", opts.WorldBucket, packMarkerKey, err))
+		} else if opts.NewWorld {
+			// Checked first on purpose: "start a fresh world" has to mean that even
+			// when the world belongs to the pack being published, because a world of
+			// this build can still be the one you want to throw away.
+			return true, nil, nil
 		} else if current.SameBuild(p) {
 			return false, nil, nil
 		} else {
