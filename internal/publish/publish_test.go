@@ -72,8 +72,9 @@ func TestBuildMapsTheLayoutTheTemplateReads(t *testing.T) {
 	}
 	for _, want := range []string{
 		key("server/fabric-server-launch.jar"),
-		key("server/whitelist.json"),
-		key("server/ops.json"),
+		// The player list is global: same people, every profile.
+		"server/whitelist.json",
+		"server/ops.json",
 		key("server/eula.txt"),          // generated
 		key("server/server.properties"), // generated
 		key("mods/create-0.5.1.jar"),

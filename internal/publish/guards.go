@@ -102,67 +102,68 @@ func checkPackMemory(p Pack, regions map[string]config.Region) (warnings []strin
 // claiming a pack that never reached the bucket.
 //
 // discard reports that the caller asked for a fresh world and there is an old
-// one to remove.
-func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bool, warnings []string, err error) {
+// one to remove; current is the pack the saved world was made by, when the marker
+// says so, which is what the page shows before someone commits to a download.
+func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bool, current *Pack, warnings []string, err error) {
 	if opts.WorldBucket == "" {
-		return false, nil, nil
+		return false, nil, nil, nil
 	}
 	worldKey, packMarkerKey := worldKeys(opts.ProfileOf())
 
 	if _, err := st.Stat(ctx, opts.WorldBucket, worldKey); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			// No world at all: nothing can be broken by this pack.
-			return false, nil, nil
+			return false, nil, nil, nil
 		}
-		return false, nil, err
+		return false, nil, nil, err
 	}
 
 	// What the world was made by, if R2 says so. A missing marker and an
 	// unreadable one are the same answer here — "no idea" — because --new-world
 	// has to work in both cases, and a corrupt marker is not something a person
 	// can repair without a shell.
-	var current Pack
+	var saved Pack
 	known := false
 	raw, err := st.Get(ctx, opts.WorldBucket, packMarkerKey)
 	switch {
 	case err == nil:
-		if err := json.Unmarshal(raw, &current); err != nil {
+		if err := json.Unmarshal(raw, &saved); err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s/%s is unreadable (%v), so this pack cannot be checked against the world", opts.WorldBucket, packMarkerKey, err))
 		} else if opts.NewWorld {
 			// Checked first on purpose: "start a fresh world" has to mean that even
 			// when the world belongs to the pack being published, because a world of
 			// this build can still be the one you want to throw away.
-			return true, nil, nil
-		} else if current.SameBuild(p) {
-			return false, nil, nil
+			return true, &saved, nil, nil
+		} else if saved.SameBuild(p) {
+			return false, &saved, nil, nil
 		} else {
 			known = true
 		}
 	case errors.Is(err, ErrNotFound):
 		// A world saved before packs had a marker, or by a hand-rolled pack.
 	default:
-		return false, nil, err
+		return false, nil, nil, err
 	}
 
 	if !known {
 		switch {
 		case opts.NewWorld:
-			return true, warnings, nil
+			return true, nil, warnings, nil
 		case opts.KeepWorld:
-			return false, append(warnings, "keeping a world whose pack could not be identified: it may predate packs, or the marker may be corrupt"), nil
+			return false, nil, append(warnings, "keeping a world whose pack could not be identified: it may predate packs, or the marker may be corrupt"), nil
 		}
-		return false, warnings, fmt.Errorf("publish: %s has a saved world with no readable pack marker, so this pack cannot be checked against it; "+
-			"pass --new-world to discard it and start fresh, or --keep-world to load it anyway", opts.WorldBucket)
+		return false, nil, warnings, fmt.Errorf("publish: %s has a saved world with no readable pack marker, so this pack cannot be checked against it; "+
+			"pass --new-world to discard it and start fresh, or --keep-world to load it anyway", opts.ProfileOf())
 	}
 
-	msg := fmt.Sprintf("publish: the saved world was made by %s and this is %s", current.Describe(), p.Describe())
+	msg := fmt.Sprintf("publish: the saved world was made by %s and this is %s", saved.Describe(), p.Describe())
 	switch {
 	case opts.NewWorld:
-		return true, nil, nil
+		return true, &saved, nil, nil
 	case opts.KeepWorld:
-		return false, []string{msg + ": loading it anyway because of --keep-world (missing mods and block ids read as corrupted chunks)"}, nil
+		return false, &saved, []string{msg + ": loading it anyway because of --keep-world (missing mods and block ids read as corrupted chunks)"}, nil
 	}
-	return false, nil, fmt.Errorf("%s; pass --new-world to start a fresh world, or --keep-world to load it anyway", msg)
+	return false, &saved, nil, fmt.Errorf("%s; pass --new-world to start a fresh world, or --keep-world to load it anyway", msg)
 }
 
 // recordPack writes the marker after a successful publish. Without it the next

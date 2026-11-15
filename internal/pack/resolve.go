@@ -254,7 +254,26 @@ func contains(list []string, want string) bool {
 // when there is one: the pack's mod jars get verified one by one as they land,
 // but overrides/ carries no hashes at all, so the archive is the only thing that
 // vouches for those bytes before they are extracted and run.
-func openMrpack(ctx context.Context, rawURL, wantSHA512 string) (f *os.File, cleanup func(), err error) {
+func openMrpack(ctx context.Context, rawURL, wantSHA512, cachePath string) (f *os.File, cleanup func(), err error) {
+	noop := func() {}
+
+	// A cached archive is the whole point of resolving before installing: the
+	// preview downloads it once, the install reads it back.
+	if cachePath != "" {
+		if cached, err := os.Open(cachePath); err == nil {
+			info, statErr := cached.Stat()
+			if statErr == nil && info.Size() > 0 {
+				if wantSHA512 == "" {
+					return cached, func() { cached.Close() }, nil
+				}
+				if ok, _ := matches(cachePath, "sha512", wantSHA512); ok {
+					return cached, func() { cached.Close() }, nil
+				}
+			}
+			cached.Close()
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, func() {}, err
@@ -271,15 +290,30 @@ func openMrpack(ctx context.Context, rawURL, wantSHA512 string) (f *os.File, cle
 		return nil, func() {}, fmt.Errorf("download %s: %s: %.160s", rawURL, resp.Status, strings.TrimSpace(string(body)))
 	}
 
-	tmp, err := os.CreateTemp("", "outpost-*.mrpack")
-	if err != nil {
-		return nil, func() {}, err
+	dir, name := os.TempDir(), "outpost-*.mrpack"
+	if cachePath != "" {
+		dir, name = filepath.Dir(cachePath), filepath.Base(cachePath)+".part"
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, noop, err
+		}
 	}
+	tmp, err := os.CreateTemp(dir, name)
+	if err != nil {
+		return nil, noop, err
+	}
+	cached := cachePath != ""
 	// Close before removing: the pack is up to a few hundred MB and the caller
-	// defers this, so a leaked descriptor would live as long as the process.
+	// defers this, so a leaked descriptor would live as long as the process. A
+	// cached archive is kept, since the install is going to read it.
 	cleanup = func() {
 		tmp.Close()
-		os.Remove(tmp.Name())
+		if !cached {
+			os.Remove(tmp.Name())
+			return
+		}
+		if err := os.Rename(tmp.Name(), cachePath); err != nil {
+			os.Remove(tmp.Name())
+		}
 	}
 	if _, err := io.Copy(tmp, resp.Body); err != nil {
 		tmp.Close()
@@ -291,7 +325,7 @@ func openMrpack(ctx context.Context, rawURL, wantSHA512 string) (f *os.File, cle
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		tmp.Close()
 		cleanup()
-		return nil, func() {}, err
+		return nil, noop, err
 	}
 	if wantSHA512 != "" {
 		h := sha512.New()
@@ -311,5 +345,58 @@ func openMrpack(ctx context.Context, rawURL, wantSHA512 string) (f *os.File, cle
 		cleanup()
 		return nil, func() {}, err
 	}
+	// A cached archive is renamed into place before it is handed over, so the next
+	// run finds it.
+	if cached {
+		if err := os.Rename(tmp.Name(), cachePath); err != nil {
+			os.Remove(tmp.Name())
+			return nil, noop, err
+		}
+		reopened, err := os.Open(cachePath)
+		if err != nil {
+			return nil, noop, err
+		}
+		tmp.Close()
+		return reopened, func() { reopened.Close() }, nil
+	}
 	return tmp, cleanup, nil
+}
+
+// cachePath is where one version's .mrpack is kept between runs. Empty cache dir
+// means "no cache", which is what a bare .mrpack URL gets when nothing says where
+// to keep it.
+func cachePath(cacheDir, slug, versionID string) string {
+	if cacheDir == "" {
+		return ""
+	}
+	if slug == "" {
+		slug = "pack"
+	}
+	if versionID == "" {
+		versionID = "latest"
+	}
+	return filepath.Join(cacheDir, slugify(slug)+"-"+versionID+".mrpack")
+}
+
+// SourceProfile is the profile id a source would install into when the caller
+// does not name one: the Modrinth slug, or the .mrpack's file name.
+func SourceProfile(src string) (string, error) {
+	parsed, err := parseSource(src)
+	if err != nil {
+		return "", err
+	}
+	var name string
+	switch parsed.kind {
+	case sourceProject:
+		name = parsed.slug
+	case sourceURL:
+		name = parsed.slug
+	case sourceFile:
+		name = strings.TrimSuffix(filepath.Base(parsed.path), ".mrpack")
+	}
+	name = slugify(name)
+	if name == "" {
+		return "", fmt.Errorf("cannot derive a profile name from %q; name one", src)
+	}
+	return name, nil
 }
