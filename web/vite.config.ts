@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import adapter from '@sveltejs/adapter-static';
@@ -17,24 +17,36 @@ import { defineConfig } from 'vite';
 // the committed build in sync with the source?" could only be answered by eye —
 // by reading the bundle and checking which chunk it referenced.
 //
-// A hash of the frontend sources is stable for a given source tree and still
-// changes when the frontend does, and only then: a backend commit no longer
-// dirties `web/build`, and `make web && git diff --exit-code web/build` becomes a
-// check that can fail.
-function sourceVersion(): string {
-	const root = fileURLToPath(new URL('./src', import.meta.url));
+// A hash of everything the bundle is built from — `src/`, `static/`, the
+// lockfile, the configs, anything else that is not output — is stable for a given
+// tree and still changes when the bundle would, and only then: a backend commit
+// no longer dirties `web/build`, and `make web-check` becomes a check that can
+// fail.
+//
+// The inputs have to be a superset of what the output depends on, not just
+// `src/`. Hashing only the sources was wrong: a dependency bump or a new file in
+// `static/` produces different chunks under an identical token, and then an open
+// tab holding the old `app.js` imports a chunk the deploy deleted, gets a 404,
+// and `updated.check()` — comparing against the token that never moved — decides
+// there is nothing to reload.
+function buildVersion(): string {
+	const root = fileURLToPath(new URL('./', import.meta.url));
+	const skip = new Set(['build', 'node_modules', '.svelte-kit', '.DS_Store']);
 	const hash = createHash('sha256');
 
 	const walk = (dir: string) => {
 		// Sorted, so the hash depends on the files rather than on the order the
 		// filesystem hands them back.
 		for (const name of readdirSync(dir).sort()) {
+			if (skip.has(name)) continue;
 			const path = join(dir, name);
 			if (statSync(path).isDirectory()) {
 				walk(path);
 				continue;
 			}
-			hash.update(path.slice(root.length)).update(readFileSync(path));
+			// Slashes, never the platform separator: a Windows build has to agree with
+			// the Linux one about what a tree's token is.
+			hash.update(path.slice(root.length).split(sep).join('/')).update(readFileSync(path));
 		}
 	};
 	walk(root);
@@ -50,7 +62,7 @@ export default defineConfig({
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 			version: {
-				name: sourceVersion()
+				name: buildVersion()
 			},
 			// Static SPA: plain HTML/CSS/JS, no Node at runtime. The Go binary
 			// embeds `build/` with go:embed and serves it, so the Le Potato needs

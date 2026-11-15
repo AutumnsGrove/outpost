@@ -45,7 +45,12 @@ jobs:
         run: make web
       - name: The committed bundle must match the sources
         run: |
-          if ! git diff --exit-code -- web/build; then
+          # `git status`, not `git diff`: a diff ignores untracked files, so a
+          # rebuild that only *adds* output — a new file in web/static/ lands in
+          # web/build as untracked — would sail through the check while the
+          # committed bundle lacks it.
+          if [ -n "$(git status --porcelain -- web/build)" ]; then
+            git status --porcelain -- web/build
             echo
             echo "web/build is out of date. Run \`make web\` and commit web/build with the source change."
             exit 1

@@ -24,11 +24,12 @@ web:
 
 web-check:
 	$(MAKE) web
-	@git diff --exit-code -- web/build || { \
+	@if [ -n "$$(git status --porcelain -- web/build)" ]; then \
+		git status --porcelain -- web/build; \
 		echo; \
 		echo "web/build is out of date: run \`make web\` and commit it with the source change."; \
 		exit 1; \
-	}
+	fi
 
 test:
 	go test ./...
