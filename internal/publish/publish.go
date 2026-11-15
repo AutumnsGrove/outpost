@@ -584,6 +584,18 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	// start.sh is what minecraft.service runs. Generating one means a bare
 	// `outpost publish --fabric 1.20.1` produces a bootable server rather than a
 	// VPS that fails systemd twenty minutes later.
+	// pack.json is not just local bookkeeping: it is how the page names a profile
+	// ("Fabulously Optimized 5.2.8", "minecraft 1.20.1") and how the RAM guard
+	// knows what it is looking at. It is small, and it belongs beside the files it
+	// describes.
+	if packed {
+		raw, err := os.ReadFile(filepath.Join(opts.Dir, PackFile))
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %w", PackFile, err)
+		}
+		add(PackFile, Object{Key: PackFile, Content: raw, Size: int64(len(raw))})
+	}
+
 	if !hasKey(objects, "scripts/start.sh") {
 		add("scripts/start.sh", textObject("scripts/start.sh", defaultStartScript))
 		warnings = append(warnings, "generated scripts/start.sh (2 GB heap; raise it in the pack if the modpack needs more)")
