@@ -250,6 +250,8 @@ that pack loads the world without asking — and a hand-rolled marker otherwise.
 
 ```bash
 outpost pack vanilla && outpost publish packs/vanilla
+# publish reuses the player list already in R2; on an empty bucket, add
+# `--whitelist <names>` or add someone on the page first.
 ```
 
 Or press **Install Vanilla 1.20.1** in the panel. Either way it lands in the profile

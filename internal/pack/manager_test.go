@@ -338,7 +338,7 @@ func TestVersionsSaysWhatThisServerCanRun(t *testing.T) {
 	_ = srv
 	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"v1"}`)
 
-	out, err := m.Versions(context.Background(), "https://modrinth.com/modpack/test-pack")
+	out, err := m.Versions(context.Background(), "https://modrinth.com/modpack/test-pack", "")
 	if err != nil {
 		t.Fatalf("versions: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestVersionsFindsTheRunnableOnesUnderHundredsOfNewerOnes(t *testing.T) {
 	newFakeModrinth(t, versions)
 	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"old-1"}`)
 
-	out, err := m.Versions(context.Background(), "test-pack")
+	out, err := m.Versions(context.Background(), "test-pack", "")
 	if err != nil {
 		t.Fatalf("versions: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestVersionsDoesNotCallAnOlderVersionAnUpdate(t *testing.T) {
 	// The profile already holds the newest runnable one.
 	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"newest"}`)
 
-	out, err := m.Versions(context.Background(), "test-pack")
+	out, err := m.Versions(context.Background(), "test-pack", "")
 	if err != nil {
 		t.Fatalf("versions: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestVersionsDoesNotCallAnOlderVersionAnUpdate(t *testing.T) {
 
 func TestVersionsRefusesASourceThatNamesOneVersion(t *testing.T) {
 	m, _ := newManager(t)
-	_, err := m.Versions(context.Background(), "https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack")
+	_, err := m.Versions(context.Background(), "https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack", "")
 	if !errors.Is(err, ErrNoVersions) {
 		t.Fatalf("err = %v, want ErrNoVersions", err)
 	}
@@ -457,7 +457,7 @@ func TestEveryPathNamesAProfileByTheSameRule(t *testing.T) {
 		if err != nil {
 			t.Fatalf("profileFor(%q): %v", src, err)
 		}
-		listed, err := m.Versions(context.Background(), src)
+		listed, err := m.Versions(context.Background(), src, "")
 		if err != nil {
 			t.Fatalf("versions(%q): %v", src, err)
 		}
