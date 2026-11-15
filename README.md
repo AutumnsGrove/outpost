@@ -103,7 +103,7 @@ outpost world list       # every profile's world, and any world no profile claim
 outpost world import <id>  # adopt an existing world into a profile, by copy
 outpost world delete <id>  # move a world to trash/, where it waits 14 days
 outpost pack delete <id>   # remove a profile: its world, backups and files
-outpost start [region]   # rent a server (default region: eu)
+outpost start [region]   # rent a server (default region: eu; --type for the plan)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
 outpost update           # git pull, rebuild, restart — see "Updating"
@@ -176,10 +176,12 @@ follows from that file:
 - **The launcher comes from the pack.** Its Minecraft and loader versions win over
   `--fabric` and `--loader`, and `--prune` is implied: two versions of one mod in
   `mods/` is a server that crashes, not a warning.
-- **`--memory` is the RAM of the box you will rent** (default 4, the `cx23`). It sizes
-  `scripts/start.sh` — two GB stay with the OS — and `publish` refuses a pack that no
-  configured region's plan can hold. `fallback_types` do not cover it: Hetzner only
-  falls back when a plan is sold out, not when it is too small.
+- **`--memory` is the RAM the pack needs** (default 4, the `cx23`). It sizes
+  `scripts/start.sh` — two GB stay with the OS — and it is what the page's plan picker
+  defaults to: the cheapest plan that holds the pack. `publish` refuses only a pack no
+  rentable plan can hold, and warns when the configured default cannot while a bigger
+  plan can. `fallback_types` do not cover this: Hetzner falls back when a plan is sold
+  out, not when it is too small.
 - **`publish` tags the saved world with the pack.** The marker next to the world is what
   lets the next publish say "this world was made by Cobblemon, not Homestead". The same
   pack at a newer version is an update and keeps the world; a different pack is a
@@ -294,7 +296,6 @@ uploads over its own profile's world when it shuts down.
 
 The page does the same two things from each profile row's **Delete…**: it names the
 world and its size, and the two buttons are "Delete world" and "Delete profile".
->>>>>>> 366da35 (feat(world): delete a world, and a profile, through the trash)
 
 `outpost serve` is the only long-running piece:
 `tailscale serve --https=8896` in front of it gives you a page at
@@ -369,20 +370,35 @@ gymnastics.
 
 ## Costs
 
-The only thing that bills is a running VPS, and Hetzner bills in euros:
-`cx23` (2 vCPU / 4 GB) is €0.0104/hr, so a two-hour session is **€0.021** and a
-heavy month is under a euro. `cx33` (4 vCPU / 8 GB) doubles the RAM for €0.016/hr
-— €0.032 a session — which is the one to switch to if the modpack needs it. R2
-holds the modpack and a world, well inside the free tier.
+The only thing that bills is a running VPS, and Hetzner bills in euros. The page's
+**Start** button has a size beside it, and each one carries its price:
+
+```
+Start  [ cx23 · 2 vCPU · 4 GB · €0.0096/h ▾ ]
+       [ cx33 · 4 vCPU · 8 GB · €0.0144/h   ]
+       [ cax11 · 2 vCPU · 4 GB · ARM · €0.0104/h ]
+```
+
+A `cx23` two-hour session is **€0.019** and a heavy month is under a euro; `cx33`
+doubles the RAM for €0.0144/h, which is the one to pick if the modpack needs it. R2
+holds a modpack and a world, well inside the free tier.
+
+The numbers come from `internal/hetzner/plans.go` — one table of type, vCPU, RAM and
+list price — and nowhere else. The rate is written onto the session row when it is
+rented, so a later repricing or a config edit cannot rewrite what a past session cost.
+`config.yaml` no longer has an `hourly_rate`; it is ignored if your file still carries
+one.
 
 Two caveats worth knowing before trusting any number here:
 
-- **Hetzner repriced its cloud plans in June 2026**, and the `hourly_rate` values
-  in `config.yaml` are estimates that only feed the status readout — never a bill.
-- **Instance size is the lever, not the provider.** Halving the RAM now saves
-  35%, not the threefold it saved in 2025 — Hetzner repriced the 8 GB tier
-  downwards. `config.example.yaml` lists the four plans worth knowing, and `ash`
-  is no longer one of them at six times the price.
+- **The prices include the primary IPv4** (€0.50/month), because a Minecraft server
+  needs one to be reachable. They are Hetzner's list prices for new orders since the
+  **15 June 2026** repricing, excluding VAT. A server keeps the rate it was created at,
+  which is why the session stores it.
+- **Instance size is the lever, not the provider.** Halving the RAM now saves 35%, not
+  the threefold it saved in 2025 — Hetzner repriced the 8 GB tier downwards. The table
+  carries the CX (x86) and CAX (ARM) lines only; CPX and CCX cost several times as much
+  per GB and four players do not need dedicated vCPUs.
 
 ## Layout
 

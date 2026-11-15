@@ -594,7 +594,42 @@ deleting a world asked for.
 Everything here is refused while a server is rented: a live session uploads over its own
 profile's world at shutdown, so a delete underneath it is a delete that undoes itself.
 
-### 36. Not done, on purpose, on this branch
+### 36. The plan is a choice, and the rate belongs to the session
+
+Until now `server_type` lived in `config.yaml` per region and the only thing that moved
+it was an edit and a restart, so a pack that wanted 8 GB could not be started from the
+page at all, and the page could not say why. Three decisions make the size a choice.
+
+**One table, in Go.** `internal/hetzner/plans.go` holds type, vCPU, RAM and EUR/hour for
+the CX and CAX lines; `region.hourly_rate` is gone from the config. Two tables is how
+the readout and the RAM guard start disagreeing, and the guard is the one that matters:
+it refuses a start that would run out of memory. The prices are Hetzner's list prices
+including the IPv4 a server needs, for new orders since the June 2026 repricing, and they
+are a snapshot: a plan the table does not know is "unknown", never "too small".
+
+**`meta.server_type` is the last choice.** The page picks, `outpost start --type` picks,
+and the choice is remembered in the meta table rather than written back into
+`config.yaml`. An empty choice resolves to the remembered type, then to the region's
+`server_type`.
+
+**The rate is recorded on the session.** `sessions.hourly_rate` is written at rent time,
+and every cost the system reports — `Status.SessionCost`, the month, the session row —
+reads it. Hetzner keeps a server on the price it was created at, so looking the rate up
+later would report a number that was never charged. A row written before the column
+existed reads 0 and falls back to the plan table rather than claiming the session was
+free.
+
+Two consequences worth stating:
+
+- **The picker defaults to the cheapest plan that holds the active pack**, from the
+  pack's own `memoryGB`, and a start refuses a plan below it with the plan that would
+  work named in the refusal. `publish` asks the same table: it refuses only a pack no
+  rentable plan can hold, and otherwise warns that the configured default is too small
+  while naming the plan to pick.
+- **`fallback_types` keeps its old meaning** — sold out, not too small — and the example
+  config now says so, because the old comment read like a size menu.
+
+### 37. Not done, on purpose, on this branch
 
 - Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
   a second profile id (`--profile cobblemon-second`), which the page has no field for yet.

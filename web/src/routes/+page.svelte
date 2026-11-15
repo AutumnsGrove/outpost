@@ -19,6 +19,10 @@
 	let copied = $state(false);
 	// Kept here so the Start button knows to wait: see Modpack.svelte.
 	let packBusy = $state(false);
+	// The plan Start rents. It opens on the one the daemon remembers (or the
+	// smallest that holds the pack), and whatever is chosen here is what the
+	// daemon records for next time.
+	let plan = $state('');
 
 	// The server's numbers are a snapshot from `receivedAt`; the page advances them
 	// once a second in between so countdowns do not jump in five-second steps.
@@ -54,6 +58,9 @@
 			receivedAt = Date.now();
 			now = receivedAt;
 			error = '';
+			// Follow the daemon's choice unless the picker has been touched: an
+			// emptied field would otherwise send "" and let the daemon decide anyway.
+			if (!plan) plan = next.selectedType;
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 		}
@@ -69,7 +76,7 @@
 		notice = '';
 		error = '';
 		try {
-			const res = await act(action, o.status.formToken);
+			const res = await act(action, o.status.formToken, action === 'start' ? plan || o.selectedType : '');
 			notice = res.message || 'done';
 			confirmStop = false;
 			await refresh();
@@ -172,6 +179,7 @@
 					{pending}
 					{confirmStop}
 					installing={packBusy}
+					bind:plan
 					onstart={() => run('start')}
 					onstop={askStop}
 				/>

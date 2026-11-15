@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     max_players      INTEGER NOT NULL DEFAULT 0,
     region           TEXT    NOT NULL DEFAULT '',
     server_type      TEXT    NOT NULL DEFAULT '',
+    -- The rate this session was rented at, in EUR per hour. Stored rather than
+    -- looked up, because Hetzner keeps an existing server on the price it was
+    -- created at: a config edit or a plan repricing must not rewrite history.
+    hourly_rate      REAL    NOT NULL DEFAULT 0,
     vps_id           TEXT    NOT NULL DEFAULT ''
 );
 

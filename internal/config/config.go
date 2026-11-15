@@ -34,9 +34,12 @@ func (d Duration) Std() time.Duration { return time.Duration(d) }
 
 // Region is one place Outpost is willing to rent a server.
 type Region struct {
-	Location   string  `yaml:"location"`
-	ServerType string  `yaml:"server_type"`
-	HourlyRate float64 `yaml:"hourly_rate"`
+	Location   string `yaml:"location"`
+	ServerType string `yaml:"server_type"`
+	// There is deliberately no hourly rate here. The price of a session comes
+	// from the plan it rented (internal/hetzner/plans.go) and is recorded on the
+	// session row, so a config edit cannot retroactively change what a past
+	// session cost and two tables cannot disagree about the current one.
 
 	// FallbackTypes are tried in order when the preferred ServerType has no
 	// capacity in Location. Hetzner's stock has been thin since 2026, and a
@@ -214,12 +217,11 @@ func (c *Config) applyDefaults() {
 		c.Cloudflare.RecordName = "mc.example.com"
 	}
 	if len(c.Regions) == 0 {
-		// Estimates only, and Hetzner reprices: the 2026 hikes moved these more
-		// than once. `hourly_rate` feeds the cost readout in `outpost status`,
-		// never the actual bill. Check the console for the real rate and for
-		// stock before trusting the defaults.
+		// The smallest plan worth renting. What it costs comes from
+		// internal/hetzner/plans.go, not from here, so there is one price table to
+		// correct when Hetzner reprices.
 		c.Regions = map[string]Region{
-			"eu": {Location: "nbg1", ServerType: "cx23", HourlyRate: 0.0104},
+			"eu": {Location: "nbg1", ServerType: "cx23"},
 		}
 	}
 	// No default tags on purpose. `tailscale up --advertise-tags=tag:outpost`

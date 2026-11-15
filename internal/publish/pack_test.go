@@ -87,9 +87,32 @@ func TestBuildRefusesAPackForAnotherMinecraftVersion(t *testing.T) {
 	}
 }
 
-func TestRunRefusesAPackNoRegionCanHold(t *testing.T) {
+func TestRunWarnsWhenNoRegionHoldsThePackButAPlanDoes(t *testing.T) {
+	// The region's default and its fallbacks are both too small, but the picker can
+	// rent cx33, so this is a "pick a bigger plan" note rather than a refusal.
 	p := testPack()
 	p.MemoryGB = 8
+	dir := writeModpack(t, p)
+	st := newFakeStore()
+
+	res, err := Run(context.Background(), st, Options{
+		Dir:         dir,
+		AssetBucket: "mc-assets",
+		Regions: map[string]config.Region{
+			"eu": {ServerType: "cx23", FallbackTypes: []string{"cax11"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a pack a rentable plan can hold was refused: %v", err)
+	}
+	if !warningsContain(res.Warnings, "cx33") {
+		t.Fatalf("the warning should name the plan that fits: %v", res.Warnings)
+	}
+}
+
+func TestRunRefusesAPackNoPlanCanHold(t *testing.T) {
+	p := testPack()
+	p.MemoryGB = 64 // bigger than every plan in the table
 	dir := writeModpack(t, p)
 	st := newFakeStore()
 
@@ -100,28 +123,13 @@ func TestRunRefusesAPackNoRegionCanHold(t *testing.T) {
 			"eu": {ServerType: "cx23", FallbackTypes: []string{"cax11"}},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "8 GB") {
+	if err == nil || !strings.Contains(err.Error(), "64 GB") {
 		t.Fatalf("want a RAM refusal, got %v", err)
 	}
 	if len(st.objects) != 0 {
 		t.Fatal("the refusal happened after uploading")
 	}
 
-	// A region that has the RAM is enough, and the small one is called out.
-	res, err := Run(context.Background(), st, Options{
-		Dir:         dir,
-		AssetBucket: "mc-assets",
-		Regions: map[string]config.Region{
-			"eu": {ServerType: "cx23", FallbackTypes: []string{"cax11"}},
-			"us": {ServerType: "cx33"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("a region with 8 GB should be allowed: %v", err)
-	}
-	if !warningsContain(res.Warnings, "eu") {
-		t.Fatalf("the too-small region should be named: %v", res.Warnings)
-	}
 }
 
 func TestRunRefusesAWorldFromAnotherPack(t *testing.T) {
