@@ -94,10 +94,18 @@ func (m *Manager) Versions(ctx context.Context, source string) (Versions, error)
 	if slug == "" {
 		slug = src.slug
 	}
+	// The profile has to come from the same place install will: deriving it from
+	// the project's slug here while `profileFor` derives it from the source is how
+	// the picker ends up reading a different profile's manifest and reporting the
+	// wrong "installed" marker.
+	profile, err := m.profileFor(source, "")
+	if err != nil {
+		return Versions{}, err
+	}
 	out := Versions{
 		Slug:    slug,
 		Name:    project.Title,
-		Profile: publish.ProfileFromSlug(slug),
+		Profile: profile,
 		Total:   len(all),
 	}
 
