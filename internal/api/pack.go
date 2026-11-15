@@ -90,6 +90,24 @@ func (s *Server) packPreview(w http.ResponseWriter, r *http.Request, raw []byte)
 	writeJSON(w, http.StatusAccepted, job)
 }
 
+// packVersions lists a pack's versions so the panel can offer them. One API call
+// and no download, so unlike preview and install it answers inline.
+func (s *Server) packVersions(w http.ResponseWriter, r *http.Request, raw []byte) {
+	var body struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad request body"})
+		return
+	}
+	versions, err := s.packs.Versions(r.Context(), body.Source)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, versions)
+}
+
 func (s *Server) packInstall(w http.ResponseWriter, r *http.Request, raw []byte) {
 	var body pack.InstallRequest
 	if err := json.Unmarshal(raw, &body); err != nil {

@@ -321,3 +321,58 @@ func TestProgressRefreshesTheInstallMarker(t *testing.T) {
 		t.Fatal("the job never finished")
 	}
 }
+
+func TestVersionsSaysWhatThisServerCanRun(t *testing.T) {
+	m, store := newManager(t)
+
+	// The fake Modrinth answers with four versions spanning three game versions.
+	srv := newFakeModrinth(t, []Version{
+		{ID: "v4", VersionNumber: "15.0.0-beta.4", VersionType: "beta", GameVersions: []string{"26.3"}, Loaders: []string{"fabric"}},
+		{ID: "v3", VersionNumber: "14.1.2", VersionType: "release", GameVersions: []string{"26.2"}, Loaders: []string{"fabric"}},
+		{ID: "v2", VersionNumber: "5.4.1", VersionType: "alpha", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		{ID: "v1", VersionNumber: "5.2.8", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		{ID: "v0", VersionNumber: "0.9.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"forge"}},
+	})
+	_ = srv
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"v1"}`)
+
+	out, err := m.Versions(context.Background(), "https://modrinth.com/modpack/test-pack")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if out.Total != 5 || len(out.Choices) != 5 {
+		t.Fatalf("choices = %d of %d", len(out.Choices), out.Total)
+	}
+	if out.Installed != "v1" {
+		t.Fatalf("installed = %q, want v1", out.Installed)
+	}
+	if out.Newer != "5.4.1" {
+		t.Fatalf("newer = %q, want the newest bootable one that is not installed", out.Newer)
+	}
+
+	byNumber := map[string]VersionChoice{}
+	for _, c := range out.Choices {
+		byNumber[c.Number] = c
+	}
+	if !byNumber["5.2.8"].Bootable || !byNumber["5.2.8"].Installed {
+		t.Fatalf("5.2.8 = %+v", byNumber["5.2.8"])
+	}
+	if !byNumber["5.4.1"].Bootable {
+		t.Fatalf("an alpha for the supported Minecraft version is still runnable: %+v", byNumber["5.4.1"])
+	}
+	// The reason has to name the blocker, not just say no.
+	if c := byNumber["14.1.2"]; c.Bootable || !strings.Contains(c.Reason, "Java 17") {
+		t.Fatalf("14.1.2 = %+v", c)
+	}
+	if c := byNumber["0.9.0"]; c.Bootable || !strings.Contains(c.Reason, "Fabric") {
+		t.Fatalf("0.9.0 = %+v", c)
+	}
+}
+
+func TestVersionsRefusesASourceThatNamesOneVersion(t *testing.T) {
+	m, _ := newManager(t)
+	_, err := m.Versions(context.Background(), "https://cdn.modrinth.com/data/x/versions/y/Pack.mrpack")
+	if !errors.Is(err, ErrNoVersions) {
+		t.Fatalf("err = %v, want ErrNoVersions", err)
+	}
+}
