@@ -3,6 +3,7 @@ package pack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -366,6 +367,70 @@ func TestVersionsSaysWhatThisServerCanRun(t *testing.T) {
 	}
 	if c := byNumber["0.9.0"]; c.Bootable || !strings.Contains(c.Reason, "Fabric") {
 		t.Fatalf("0.9.0 = %+v", c)
+	}
+}
+
+func TestVersionsFindsTheRunnableOnesUnderHundredsOfNewerOnes(t *testing.T) {
+	m, store := newManager(t)
+
+	// Fabulously Optimized as it actually is: 300 versions for game versions this
+	// server cannot run, then the Fabric/1.20.1 line. A plain "newest 40" window
+	// would show forty grey rows and nothing selectable.
+	var versions []Version
+	for i := 0; i < 300; i++ {
+		versions = append(versions, Version{
+			ID: fmt.Sprintf("new-%d", i), VersionNumber: fmt.Sprintf("90.%d.0", 300-i),
+			VersionType: "release", GameVersions: []string{"26.2"}, Loaders: []string{"fabric"},
+		})
+	}
+	for i := 0; i < 5; i++ {
+		versions = append(versions, Version{
+			ID: fmt.Sprintf("old-%d", i), VersionNumber: fmt.Sprintf("5.%d.0", 5-i),
+			VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"},
+		})
+	}
+	newFakeModrinth(t, versions)
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"old-1"}`)
+
+	out, err := m.Versions(context.Background(), "test-pack")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+
+	runnable := 0
+	for _, c := range out.Choices {
+		if c.Bootable {
+			runnable++
+		}
+	}
+	if runnable != 5 {
+		t.Fatalf("runnable rows = %d, want all five: %+v", runnable, out.Choices)
+	}
+	if out.Skipped != 300-1 {
+		t.Fatalf("skipped = %d, want the unrunable ones beyond the newest per game version", out.Skipped)
+	}
+	// The installed one is 5.4.0 and the newest runnable is 5.5.0, so there is an
+	// update; from the newest runnable itself there would not be.
+	if out.Newer != "5.5.0" {
+		t.Fatalf("newer = %q, want 5.5.0", out.Newer)
+	}
+}
+
+func TestVersionsDoesNotCallAnOlderVersionAnUpdate(t *testing.T) {
+	m, store := newManager(t)
+	newFakeModrinth(t, []Version{
+		{ID: "newest", VersionNumber: "5.5.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		{ID: "older", VersionNumber: "5.4.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+	})
+	// The profile already holds the newest runnable one.
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"newest"}`)
+
+	out, err := m.Versions(context.Background(), "test-pack")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if out.Newer != "" {
+		t.Fatalf("newer = %q: an older version is a downgrade, not an update", out.Newer)
 	}
 }
 

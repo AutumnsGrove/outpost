@@ -164,6 +164,8 @@ export interface PackVersions {
 	installed?: string;
 	choices: PackVersion[];
 	total: number;
+	/** Versions the list leaves out (all runnable ones are always included). */
+	skipped: number;
 	/** Newest runnable version that is not the installed one. */
 	newer?: string;
 }

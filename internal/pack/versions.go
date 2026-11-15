@@ -17,11 +17,16 @@ import (
 	"outpost/internal/publish"
 )
 
-// maxChoices is how many versions the picker shows. Modrinth keeps every version
-// ever published (481 for Fabulously Optimized), and a page does not need four
-// hundred rows to find the one it wants — the newest ones are what anybody
-// updates to.
-const maxChoices = 40
+// How many rows the picker shows. Modrinth keeps every version ever published —
+// 481 for Fabulously Optimized — and the interesting ones are not the newest
+// forty: FO's newest Fabric build for 1.20.1 sits at index 278, with 278 newer
+// versions (26.x, 25.x, …) that this server cannot run. So the list is every
+// runnable version, plus the newest of each game version it cannot run, which is
+// what makes the ceiling visible without burying the usable rows.
+const (
+	maxBootable = 40
+	maxOther    = 12
+)
 
 // VersionChoice is one published version of a pack, as the picker shows it.
 type VersionChoice struct {
@@ -54,6 +59,9 @@ type Versions struct {
 	Installed string          `json:"installed,omitempty"`
 	Choices   []VersionChoice `json:"choices"`
 	Total     int             `json:"total"`
+	// Skipped is how many versions the list leaves out, so the page can say
+	// "showing 40 of 481" without pretending the pack has 40 versions.
+	Skipped int `json:"skipped"`
 	// Newer is the newest bootable version, for "an update is available" without
 	// anyone pressing anything.
 	Newer string `json:"newer,omitempty"`
@@ -102,10 +110,33 @@ func (m *Manager) Versions(ctx context.Context, source string) (Versions, error)
 		}
 	}
 
+	// One pass over everything first: `Newer` and the "is this the newest runnable
+	// one" question are about the whole list, and answering them from a truncated
+	// one is how the picker ends up offering an older version as an update.
+	seenInstalled := false
+	otherGameVersions := map[string]bool{}
 	for _, v := range all {
-		if len(out.Choices) >= maxChoices {
-			break
+		run, _ := bootable(v)
+		installed := v.ID != "" && v.ID == out.Installed
+		if installed {
+			seenInstalled = true
 		}
+		if run && !installed && !seenInstalled && out.Newer == "" {
+			// Newest-first order, so the first runnable version before the installed
+			// one is the update. Anything after it is a downgrade.
+			out.Newer = v.VersionNumber
+		}
+
+		key := strings.Join(v.GameVersions, "/")
+		include := run || (!otherGameVersions[key] && !installed)
+		if !include || (run && countBootable(out.Choices) >= maxBootable) || (!run && len(otherGameVersions) >= maxOther) {
+			out.Skipped++
+			continue
+		}
+		if !run {
+			otherGameVersions[key] = true
+		}
+
 		choice := VersionChoice{
 			ID:           v.ID,
 			Number:       v.VersionNumber,
@@ -114,18 +145,25 @@ func (m *Manager) Versions(ctx context.Context, source string) (Versions, error)
 			GameVersions: v.GameVersions,
 			Loaders:      v.Loaders,
 			PublishedAt:  v.PublishedAt,
-			Installed:    v.ID != "" && v.ID == out.Installed,
+			Installed:    installed,
 		}
 		if file, err := v.Mrpack(); err == nil {
 			choice.Size = file.Size
 		}
 		choice.Bootable, choice.Reason = bootable(v)
-		if choice.Bootable && out.Newer == "" && !choice.Installed {
-			out.Newer = v.VersionNumber
-		}
 		out.Choices = append(out.Choices, choice)
 	}
 	return out, nil
+}
+
+func countBootable(choices []VersionChoice) int {
+	n := 0
+	for _, c := range choices {
+		if c.Bootable {
+			n++
+		}
+	}
+	return n
 }
 
 // bootable answers "can this server run this version", in the same terms
