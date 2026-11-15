@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"outpost/internal/config"
+	"outpost/internal/trash"
 )
 
 // testPack is the pack.json a fetch of a small 1.20.1 Fabric pack would leave.
@@ -590,5 +592,91 @@ func TestVanillaIsAPackThisServerCanBoot(t *testing.T) {
 	}
 	if pk.SamePack(Pack{Source: "modrinth", Slug: "cobblemon-fabric"}) {
 		t.Fatal("a vanilla pack claims a Modrinth pack's world")
+	}
+}
+
+func TestRunNewWorldPutsTheOldWorldInTheTrash(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.worlds[key("world.tar.gz")] = []byte("the world about to be replaced")
+	st.worlds[key("pack.json")] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
+
+	if _, err := Run(context.Background(), st, Options{
+		Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds", NewWorld: true,
+	}); err != nil {
+		t.Fatalf("new-world run: %v", err)
+	}
+	if _, ok := st.worlds[key("world.tar.gz")]; ok {
+		t.Fatal("--new-world left the old world behind")
+	}
+
+	// And it is in the trash, named the way `outpost world delete` names it, so
+	// `world list` skips it and the sweep can date it.
+	var trashed []string
+	for k := range st.worlds {
+		if strings.HasPrefix(k, trash.Prefix) {
+			trashed = append(trashed, k)
+		}
+	}
+	if len(trashed) != 1 {
+		t.Fatalf("trash = %v", trashed)
+	}
+	if got := string(st.worlds[trashed[0]]); got != "the world about to be replaced" {
+		t.Fatalf("the trashed world is %q", got)
+	}
+	if at, ok := trash.Time(trashed[0]); !ok {
+		t.Fatalf("%s has no readable stamp", trashed[0])
+	} else if time.Since(at) > time.Hour {
+		t.Fatalf("the trash key is dated %s, which is not now", at)
+	}
+}
+
+func TestRunNewWorldAbortsWhenTheCopyFails(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.worlds[key("world.tar.gz")] = []byte("the only copy")
+	st.worlds[key("pack.json")] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
+	st.failCopy = true
+
+	_, err := Run(context.Background(), st, Options{
+		Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds", NewWorld: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "nothing was discarded") {
+		t.Fatalf("want a refusal that says nothing was discarded, got %v", err)
+	}
+	// The old world is exactly where it was, and the marker still describes it.
+	if got := string(st.worlds[key("world.tar.gz")]); got != "the only copy" {
+		t.Fatalf("the old world was removed anyway: %q", got)
+	}
+	var marker Pack
+	if err := json.Unmarshal(st.worlds[key("pack.json")], &marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker.VersionID != "older" {
+		t.Fatalf("the marker was rewritten to %q after a failed discard", marker.VersionID)
+	}
+}
+
+func TestRunNewWorldSweepsTheTrashItGrows(t *testing.T) {
+	dir := writeModpack(t, testPack())
+	st := newFakeStore()
+	st.worlds[key("world.tar.gz")] = []byte("world")
+	st.worlds[key("pack.json")] = []byte(`{"source":"modrinth","slug":"test-pack","versionId":"older"}`)
+	// An entry from before the retention window, and one that is still wanted.
+	old := trash.Prefix + "test-pack-20260101T000000Z.tar.gz"
+	fresh := trash.Prefix + "homestead-" + time.Now().UTC().Format("20060102T150405Z") + ".tar.gz"
+	st.worlds[old] = []byte("long gone")
+	st.worlds[fresh] = []byte("still wanted")
+
+	if _, err := Run(context.Background(), st, Options{
+		Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds", NewWorld: true,
+	}); err != nil {
+		t.Fatalf("new-world run: %v", err)
+	}
+	if _, ok := st.worlds[old]; ok {
+		t.Fatal("the expired trash entry was not swept")
+	}
+	if _, ok := st.worlds[fresh]; !ok {
+		t.Fatal("the sweep removed a world still inside its retention")
 	}
 }

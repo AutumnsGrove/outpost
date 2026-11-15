@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -216,6 +217,9 @@ type fakeStore struct {
 	sums    map[string]string
 	puts    int
 	removes int
+	// failCopy makes Copy answer with an error and write nothing, which is a
+	// server-side copy that could not complete.
+	failCopy bool
 }
 
 const worldBucket = "mc-worlds"
@@ -276,6 +280,19 @@ func (f *fakeStore) Remove(_ context.Context, bucket, key string) error {
 	delete(f.bucket(bucket), key)
 	f.removes++
 	return nil
+}
+
+// Copy is the server-side duplicate a discard puts in the trash.
+func (f *fakeStore) Copy(_ context.Context, bucket, srcKey, dstKey string) (int64, error) {
+	if f.failCopy {
+		return 0, errors.New("the multipart copy failed")
+	}
+	b, ok := f.bucket(bucket)[srcKey]
+	if !ok {
+		return 0, r2.ErrNotFound
+	}
+	f.bucket(bucket)[dstKey] = append([]byte(nil), b...)
+	return int64(len(b)), nil
 }
 
 func TestRunUploadsThenLeavesItAlone(t *testing.T) {

@@ -27,12 +27,11 @@ import (
 // ErrBusy is returned when an install or a preview is already running.
 var ErrBusy = errors.New("another pack job is already running")
 
-// BucketStore is what the manager needs of R2: publish's surface, plus the
-// server-side copy that puts a world in the trash before it is removed.
-type BucketStore interface {
-	publish.Store
-	Copy(ctx context.Context, bucket, srcKey, dstKey string) (int64, error)
-}
+// BucketStore is what the manager needs of R2. It is publish's surface entire,
+// including the server-side copy that puts a world in the trash before a delete
+// or a discard removes it — one interface, because two that drift would be two
+// answers to "can this store trash a world".
+type BucketStore = publish.Store
 
 // Manager does the pack work the page asks for.
 type Manager struct {

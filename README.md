@@ -186,7 +186,9 @@ follows from that file:
   lets the next publish say "this world was made by Cobblemon, not Homestead". The same
   pack at a newer version is an update and keeps the world; a different pack is a
   question — `--new-world` discards it, `--keep-world` loads it anyway, and neither is
-  assumed.
+  assumed. A discard is the same operation as `outpost world delete`: the world goes to
+  `trash/` first, verified, and a copy that fails aborts the publish with the old world
+  exactly where it was.
 
 Two things a fetched pack does not carry over: its own `start.sh` JVM flags, and the
 settings in its `server.properties` — Outpost writes both. CurseForge and FTB packs are
@@ -287,6 +289,11 @@ promise — never delete a world you could not back up — applied to the one op
 cannot be retried. The trash expires on its own after 14 days, swept by the next delete
 rather than by a timer; the age comes from the key, so an entry this code did not write
 is left alone rather than guessed at.
+
+`publish --new-world` — and the page's "replace the world" checkbox — is the same
+discard under a different flag: the old world goes to `trash/` before it is removed, so
+"start fresh" is recoverable too. The naming lives in `internal/trash` so the two
+callers cannot drift, and `world list` skips the trash for both.
 
 `pack delete` needs `--yes` and is refused on the **active** profile: deleting what
 Start boots is a confusing way to learn what you did, so `outpost pack use <other>`

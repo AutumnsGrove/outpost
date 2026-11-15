@@ -585,6 +585,14 @@ deliberately absent: this is not the "servers this database does not track" case
 --force` exists for, and the confirmation should be about *which* world, not about
 skipping a check.
 
+`publish --new-world` — and the page's "replace the world" checkbox, which is the same
+flag — discards through the same `trash/` copy, with the same 14-day sweep. It was the
+one remaining path that destroyed a world in a single step, and it is the one a person
+reaches for casually ("this pack made a world I do not want, start fresh"). The naming
+lives in `internal/trash` rather than in either caller, because two packages write those
+keys — `world` deletes, `publish` discards — and a drift between them would leave
+`world list` advertising entries it should skip and a sweep that never empties.
+
 The **active** profile is refused by `pack delete` and allowed, with a note, by the
 world delete. Deleting what Start boots leaves the next session failing at "profile X has
 no server installed", which is a confusing way to find out what happened; deleting the
