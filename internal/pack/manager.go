@@ -21,10 +21,18 @@ import (
 
 	"outpost/internal/config"
 	"outpost/internal/publish"
+	"outpost/internal/world"
 )
 
 // ErrBusy is returned when an install or a preview is already running.
 var ErrBusy = errors.New("another pack job is already running")
+
+// BucketStore is what the manager needs of R2: publish's surface, plus the
+// server-side copy that puts a world in the trash before it is removed.
+type BucketStore interface {
+	publish.Store
+	Copy(ctx context.Context, bucket, srcKey, dstKey string) (int64, error)
+}
 
 // Manager does the pack work the page asks for.
 type Manager struct {
@@ -37,7 +45,7 @@ type Manager struct {
 
 	// Store is R2. Manager never touches SQLite: the active profile is the
 	// orchestrator's business.
-	Store publish.Store
+	Store BucketStore
 
 	// Regions are the plans a session can be rented on, so the RAM guard runs at
 	// install time rather than at start time.
@@ -50,6 +58,10 @@ type Manager struct {
 
 	mu  sync.Mutex
 	job *Job
+	// leased is true while a synchronous profile change (a delete) owns the same
+	// single slot the jobs use. Jobs and leases exclude each other: a delete that
+	// interleaved with an install would race it for the same keys.
+	leased bool
 }
 
 // Profile is one pack+world pair as the page sees it.
@@ -60,6 +72,9 @@ type Profile struct {
 	Mods     int           `json:"mods"`
 	Bytes    int64         `json:"bytes"`
 	HasWorld bool          `json:"hasWorld"`
+	// WorldBytes is how big the saved world is, so a page can say what it is
+	// about to delete instead of asking someone to trust a profile id.
+	WorldBytes int64 `json:"worldBytes,omitempty"`
 	// WorldPack is the pack the saved world was made by, when the marker says so.
 	WorldPack *publish.Pack `json:"worldPack,omitempty"`
 }
@@ -171,8 +186,9 @@ func (m *Manager) Profiles(ctx context.Context, active string) ([]Profile, error
 				p.Bytes += o.Size
 			}
 		}
-		if _, err := m.Store.Stat(ctx, m.WorldBucket, "profiles/"+id+"/world.tar.gz"); err == nil {
+		if info, err := m.Store.Stat(ctx, m.WorldBucket, "profiles/"+id+"/world.tar.gz"); err == nil {
 			p.HasWorld = true
+			p.WorldBytes = info.Size
 			if raw, err := m.Store.Get(ctx, m.WorldBucket, "profiles/"+id+"/pack.json"); err == nil {
 				var wp publish.Pack
 				if json.Unmarshal(raw, &wp) == nil {
@@ -451,7 +467,7 @@ func (m *Manager) cacheDir() string                 { return filepath.Join(m.Dir
 func (m *Manager) begin(kind, source, profile string) (*Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.job != nil && m.job.running {
+	if (m.job != nil && m.job.running) || m.leased {
 		return nil, ErrBusy
 	}
 	job := &Job{
@@ -548,4 +564,100 @@ func (m *Manager) uploadProgress(job *Job) func(done, total int) {
 			job.touch()
 		}
 	}
+}
+
+// ProfileDelete is what removing a profile did.
+type ProfileDelete struct {
+	Profile string
+	// World is the delete of the profile's live world, which goes to the trash
+	// rather than away.
+	World world.DeleteResult
+	// Trashed is false when the profile held no world to trash.
+	Trashed bool
+	// Assets and Leftovers are how many keys were removed from each bucket: the
+	// pack's files, and the world bucket's other things (the marker, the backups).
+	Assets    int
+	Leftovers int
+}
+
+// DeleteProfile removes a profile: its world (through the trash), its backups,
+// its marker and every asset under profiles/<id>/ in both buckets.
+//
+// It is the answer to "I typed the slug wrong" and to "I tried this pack once",
+// and it exists because the alternative was rclone by hand — which does not even
+// work on the Potato, whose rclone.conf carries a stale key.
+//
+// It refuses to remove the active profile. Switching away first is one command
+// (`outpost pack use <other>`), and deleting the thing Start boots would leave
+// the next session failing at "profile X has no server installed", which is a
+// confusing way to learn what you did. `active` is passed in because the active
+// profile is the orchestrator's business, and it is checked here rather than only
+// at the call sites so a switch between reading it and deleting cannot slip past.
+func (m *Manager) DeleteProfile(ctx context.Context, profile, active string, now func() time.Time) (ProfileDelete, error) {
+	if err := publish.ValidateProfile(profile); err != nil {
+		return ProfileDelete{}, err
+	}
+	// Checked here rather than only by the two callers: the page reads the active
+	// profile and then deletes, and a switch in between would otherwise delete the
+	// profile Start boots.
+	if profile == active {
+		return ProfileDelete{}, fmt.Errorf("profile %q is the active one; switch to another profile first, or delete just its world", profile)
+	}
+	release, err := m.Lease()
+	if err != nil {
+		return ProfileDelete{}, fmt.Errorf("cannot delete profile %s: %w", profile, err)
+	}
+	defer release()
+
+	out := ProfileDelete{Profile: profile}
+
+	// The world first, and through the trash: it is the only thing here that
+	// cannot be regenerated from a link and a name.
+	dres, err := world.Delete(ctx, m.Store, world.DeleteOptions{WorldBucket: m.WorldBucket, Profile: profile, Now: now})
+	if err != nil {
+		return out, err
+	}
+	out.World = dres
+	out.Trashed = !dres.Missing
+
+	// Then everything the profile owns in both buckets. The world's archives are
+	// already gone (or were never there); what is left under the prefix is the
+	// marker, the backups, and the assets themselves.
+	for _, bucket := range []string{m.AssetBucket, m.WorldBucket} {
+		prefix := publish.ProfilePrefix(profile)
+		objects, err := m.Store.List(ctx, bucket, prefix)
+		if err != nil {
+			return out, err
+		}
+		for _, o := range objects {
+			if err := m.Store.Remove(ctx, bucket, o.Key); err != nil {
+				return out, err
+			}
+			if bucket == m.AssetBucket {
+				out.Assets++
+			} else {
+				out.Leftovers++
+			}
+		}
+	}
+	return out, nil
+}
+
+// Lease claims the single slot the jobs use, for work that is short enough to
+// finish inside the request it belongs to. A delete is that work: it removes a
+// profile's keys, and an install running at the same time would keep uploading
+// under the prefix after the delete returned, leaving a profile that is half
+// gone and reported as gone.
+func (m *Manager) Lease() (release func(), err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if (m.job != nil && m.job.running) || m.leased {
+		return nil, ErrBusy
+	}
+	m.leased = true
+	return func() {
+		m.mu.Lock()
+		m.leased = false
+		m.mu.Unlock()
+	}, nil
 }

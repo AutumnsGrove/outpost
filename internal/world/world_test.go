@@ -389,3 +389,150 @@ func TestListReadsAMarkerThatSitsBesideAnOrphan(t *testing.T) {
 		t.Fatalf("the marker beside the orphan was not read: %+v", worlds[0].Pack)
 	}
 }
+
+func TestDeleteTrashesTheWorldBeforeItRemovesIt(t *testing.T) {
+	st := newFakeStore()
+	st.bucket(worldBucket)["profiles/fo/world.tar.gz"] = []byte("the only copy")
+	st.bucket(worldBucket)["profiles/fo/pack.json"] = []byte(`{"slug":"fo"}`)
+
+	res, err := Delete(context.Background(), st, DeleteOptions{
+		WorldBucket: worldBucket, Profile: "fo", Now: testClock,
+	})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, ok := st.bucket(worldBucket)["profiles/fo/world.tar.gz"]; ok {
+		t.Fatal("the live world is still there")
+	}
+	if got := string(st.bucket(worldBucket)[res.Trash]); got != "the only copy" {
+		t.Fatalf("the trash copy is %q", got)
+	}
+	if res.Trash != "trash/fo-20261115T120000Z.tar.gz" {
+		t.Fatalf("trash key = %q", res.Trash)
+	}
+	want := time.Date(2026, 11, 29, 12, 0, 0, 0, time.UTC)
+	if !res.Expires.Equal(want) {
+		t.Fatalf("expires = %s, want %s", res.Expires, want)
+	}
+	if res.Bytes != int64(len("the only copy")) {
+		t.Fatalf("bytes = %d", res.Bytes)
+	}
+	// The marker describes what will boot the *next* world in this profile, and
+	// deleting the world does not change which pack that is.
+	if _, ok := st.bucket(worldBucket)["profiles/fo/pack.json"]; !ok {
+		t.Fatal("deleting a world deleted the profile's marker")
+	}
+}
+
+func TestDeleteStopsWhenTheTrashCopyFails(t *testing.T) {
+	st := newFakeStore()
+	st.bucket(worldBucket)["profiles/fo/world.tar.gz"] = []byte("the only copy")
+	st.failCopy = true
+
+	_, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Profile: "fo", Now: testClock})
+	if err == nil || !strings.Contains(err.Error(), "nothing was deleted") {
+		t.Fatalf("want a refusal that says nothing was deleted, got %v", err)
+	}
+	if _, ok := st.bucket(worldBucket)["profiles/fo/world.tar.gz"]; !ok {
+		t.Fatal("a failed copy removed the world anyway")
+	}
+}
+
+func TestDeleteOfSomethingGoneIsAMessageNotAnError(t *testing.T) {
+	st := newFakeStore()
+	res, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Profile: "fo", Now: testClock})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !res.Missing || res.Trash != "" {
+		t.Fatalf("res = %+v", res)
+	}
+
+	// And a second delete of the same world is the same message.
+	st.bucket(worldBucket)["profiles/fo/world.tar.gz"] = []byte("world")
+	if _, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Profile: "fo", Now: testClock}); err != nil {
+		t.Fatalf("first delete: %v", err)
+	}
+	again, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Profile: "fo", Now: testClock})
+	if err != nil || !again.Missing {
+		t.Fatalf("second delete = %+v, %v", again, err)
+	}
+}
+
+func TestDeleteSweepsTheTrashPastItsRetentionAndOnlyThat(t *testing.T) {
+	st := newFakeStore()
+	st.bucket(worldBucket)["profiles/fo/world.tar.gz"] = []byte("world")
+	// Exactly fourteen days old, a day old, and a key this code did not write.
+	st.bucket(worldBucket)["trash/old-20261101T120000Z.tar.gz"] = []byte("expired")
+	st.bucket(worldBucket)["trash/fresh-20261114T120000Z.tar.gz"] = []byte("still wanted")
+	st.bucket(worldBucket)["trash/somebody-elses.tar.gz"] = []byte("no stamp")
+
+	res, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Profile: "fo", Now: testClock})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(res.Swept) != 1 || res.Swept[0] != "trash/old-20261101T120000Z.tar.gz" {
+		t.Fatalf("swept = %v", res.Swept)
+	}
+	if _, ok := st.bucket(worldBucket)["trash/fresh-20261114T120000Z.tar.gz"]; !ok {
+		t.Fatal("the sweep removed a world that is still inside its retention")
+	}
+	// A key with no readable stamp was not written by this code, and guessing at
+	// its age would delete somebody else's thing.
+	if _, ok := st.bucket(worldBucket)["trash/somebody-elses.tar.gz"]; !ok {
+		t.Fatal("the sweep removed a key it could not date")
+	}
+}
+
+func TestDeleteByKeyAdoptsAnOrphan(t *testing.T) {
+	st := newFakeStore()
+	st.bucket(worldBucket)[LegacyKey] = []byte("the lost world")
+
+	res, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Key: LegacyKey, Now: testClock})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if res.Trash != "trash/current-world-20261115T120000Z.tar.gz" {
+		t.Fatalf("trash key = %q", res.Trash)
+	}
+	if _, ok := st.bucket(worldBucket)[LegacyKey]; ok {
+		t.Fatal("the orphan is still there")
+	}
+	if _, ok := st.bucket(worldBucket)[res.Trash]; !ok {
+		t.Fatal("no trash copy of the orphan")
+	}
+}
+
+func TestDeleteRefusesAKeyThatIsNotAWorldAndBothNamesAtOnce(t *testing.T) {
+	st := newFakeStore()
+	if _, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Key: "profiles/fo/pack.json"}); err == nil {
+		t.Fatal("want a refusal for a key that is not an archive")
+	}
+	if _, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Profile: "fo", Key: LegacyKey}); err == nil {
+		t.Fatal("want a refusal for naming both a profile and a key")
+	}
+	if _, err := Delete(context.Background(), st, DeleteOptions{WorldBucket: worldBucket, Profile: "Fo!"}); err == nil {
+		t.Fatal("want a refusal for a profile that could not be a key")
+	}
+}
+
+func TestListDoesNotOfferTheTrashAsAnOrphan(t *testing.T) {
+	st := newFakeStore()
+	st.bucket(worldBucket)["profiles/fo/world.tar.gz"] = []byte("a world")
+	// A world that was deleted a minute ago sits at the top level of the bucket.
+	st.bucket(worldBucket)["trash/fo-20261115T120000Z.tar.gz"] = []byte("a world")
+	st.bucket(worldBucket)["trash/current-world-20261115T120000Z.tar.gz"] = []byte("an orphan")
+
+	worlds, err := List(context.Background(), st, worldBucket)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(worlds) != 1 || worlds[0].Profile != "fo" {
+		t.Fatalf("the trash was listed as a world: %+v", worlds)
+	}
+	// And nothing else is gone: the trashed copies are still in the bucket for the
+	// retention period, they are just not things you can boot or import.
+	if _, ok := st.bucket(worldBucket)["trash/fo-20261115T120000Z.tar.gz"]; !ok {
+		t.Fatal("listing removed a trash entry")
+	}
+}

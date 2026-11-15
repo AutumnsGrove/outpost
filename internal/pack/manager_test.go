@@ -56,6 +56,15 @@ func (m *memStore) List(_ context.Context, _, prefix string) ([]r2.Object, error
 	return out, nil
 }
 
+func (m *memStore) Copy(_ context.Context, _, srcKey, dstKey string) (int64, error) {
+	b, ok := m.objects[srcKey]
+	if !ok {
+		return 0, r2.ErrNotFound
+	}
+	m.objects[dstKey] = append([]byte(nil), b...)
+	return int64(len(b)), nil
+}
+
 func (m *memStore) Remove(_ context.Context, _, key string) error {
 	delete(m.objects, key)
 	return nil
@@ -575,5 +584,111 @@ func TestInstallVanillaCanAnswerTheWorldQuestion(t *testing.T) {
 			}
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestDeleteProfileTrashesTheWorldAndRemovesTheRest(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["profiles/typo/pack.json"] = []byte(`{"slug":"typo","name":"Tpyo"}`)
+	store.objects["profiles/typo/mods/a.jar"] = []byte("jar")
+	store.objects["profiles/typo/world.tar.gz"] = []byte("the world")
+	store.objects["profiles/typo/backups/world-2026.tar.gz"] = []byte("older")
+	store.objects["profiles/typo/trash/typo-20260101T000000Z.tar.gz"] = []byte("even older")
+	// Another profile's things must survive untouched.
+	store.objects["profiles/keep/mods/a.jar"] = []byte("jar")
+
+	res, err := m.DeleteProfile(context.Background(), "typo", "default", func() time.Time {
+		return time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !res.Trashed {
+		t.Fatal("the profile held a world and it was not trashed")
+	}
+	if _, ok := store.objects["trash/typo-20261115T120000Z.tar.gz"]; !ok {
+		t.Fatalf("no trash copy: %v", keysOf(store))
+	}
+	for key := range store.objects {
+		if strings.HasPrefix(key, "profiles/typo/") {
+			t.Fatalf("%s survived the profile delete", key)
+		}
+	}
+	if _, ok := store.objects["profiles/keep/mods/a.jar"]; !ok {
+		t.Fatal("deleting one profile removed another's files")
+	}
+	// memStore is not bucket-aware, so the split between the two counts is not
+	// meaningful here; the total is everything the profile still owned.
+	if res.Assets+res.Leftovers != 4 {
+		t.Fatalf("removed %d assets + %d leftovers, want 4", res.Assets, res.Leftovers)
+	}
+}
+
+func TestDeleteProfileWithNoWorldStillRemovesTheFiles(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["profiles/half/mods/a.jar"] = []byte("jar")
+
+	res, err := m.DeleteProfile(context.Background(), "half", "default", nil)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if res.Trashed {
+		t.Fatal("nothing to trash, but it says it trashed something")
+	}
+	if _, ok := store.objects["profiles/half/mods/a.jar"]; ok {
+		t.Fatal("the assets survived")
+	}
+}
+
+func TestDeleteProfileRefusesANameThatCouldNotBeAKey(t *testing.T) {
+	m, _ := newManager(t)
+	if _, err := m.DeleteProfile(context.Background(), "Two Words", "default", nil); err == nil {
+		t.Fatal("want a bad-profile refusal")
+	}
+}
+
+func keysOf(m *memStore) []string {
+	out := make([]string, 0, len(m.objects))
+	for k := range m.objects {
+		out = append(out, k)
+	}
+	return out
+}
+
+func TestDeleteProfileRefusesWhileAJobIsRunning(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["profiles/typo/mods/a.jar"] = []byte("jar")
+
+	job, err := m.begin("install", "cobblemon", "typo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.DeleteProfile(context.Background(), "typo", "default", nil); !errors.Is(err, ErrBusy) {
+		t.Fatalf("delete during an install = %v, want ErrBusy", err)
+	}
+	if _, ok := store.objects["profiles/typo/mods/a.jar"]; !ok {
+		t.Fatal("the refusal still removed files")
+	}
+
+	// Once the job is finished the slot is free again.
+	m.mu.Lock()
+	job.running = false
+	m.mu.Unlock()
+	if _, err := m.DeleteProfile(context.Background(), "typo", "default", nil); err != nil {
+		t.Fatalf("delete after the job: %v", err)
+	}
+}
+
+func TestDeleteProfileRefusesTheActiveProfileItself(t *testing.T) {
+	m, store := newManager(t)
+	store.objects["profiles/current/mods/a.jar"] = []byte("jar")
+
+	// The caller passes the active profile, so a switch between reading it and
+	// deleting cannot delete the one Start boots.
+	if _, err := m.DeleteProfile(context.Background(), "current", "current", nil); err == nil {
+		t.Fatal("the active profile was deleted")
+	}
+	if _, ok := store.objects["profiles/current/mods/a.jar"]; !ok {
+		t.Fatal("the refusal still removed files")
 	}
 }
