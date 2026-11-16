@@ -104,16 +104,19 @@
 		}
 	}
 
-	// profileMC is the Minecraft version the profile the picker is aimed at already
-	// holds. Empty for a profile with nothing installed, which is the case with no
-	// question to ask: there is no world to keep or lose.
+	// profileMC is the Minecraft version of the world the picker is aimed at. It is
+	// deliberately about the *world*, not the manifest: the server's guard refuses a
+	// Minecraft change only when there is a saved world to lose, so a profile whose
+	// assets were published but never started must be able to take a 1.21.1 build
+	// from the panel. Empty means there is no question to ask.
 	const profileMC = $derived.by(() => {
 		const list = versions;
 		if (!list) return '';
 		// The row's own id: a profile published as --profile potato is not named after
 		// its pack, so matching on the pack instead would read another profile's world.
 		const held = pack?.profiles.find((p) => p.id === list.profile);
-		return held?.pack?.mc ?? '';
+		if (!held?.hasWorld) return '';
+		return held.pack?.mc ?? '';
 	});
 
 	// blocked is why a version cannot be picked, in the same place an unbootable

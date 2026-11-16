@@ -719,3 +719,52 @@ func TestVersionsDoesNotCallAnotherMinecraftVersionAnUpdate(t *testing.T) {
 		}
 	}
 }
+
+// The budget is per game version, not per list. A pack with a long 1.21.1 tail must
+// not spend the forty row budget on builds a 1.20.1 profile cannot install and push
+// the installed build — and its update — off the picker, which is the one thing the
+// picker exists to show.
+func TestVersionsSpendsTheBudgetOnTheVersionTheProfileCanInstall(t *testing.T) {
+	m, store := newManager(t)
+	versions := []Version{}
+	// Forty-five newer 1.21.1 releases: runnable, and useless to a 1.20.1 profile.
+	for i := 0; i < 45; i++ {
+		versions = append(versions, Version{
+			ID: fmt.Sprintf("new-%d", i), VersionNumber: fmt.Sprintf("20.%d.0", 45-i),
+			VersionType: "release", GameVersions: []string{"1.21.1"}, Loaders: []string{"fabric"},
+		})
+	}
+	versions = append(versions,
+		Version{ID: "update", VersionNumber: "5.5.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		Version{ID: "held", VersionNumber: "5.4.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+	)
+	newFakeModrinth(t, versions)
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"held","mc":"1.20.1"}`)
+
+	out, err := m.Versions(context.Background(), "test-pack", "")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+
+	byID := map[string]VersionChoice{}
+	for _, c := range out.Choices {
+		byID[c.ID] = c
+	}
+	if !byID["held"].Installed {
+		t.Fatal("the version the profile holds was pushed off the list")
+	}
+	if _, ok := byID["update"]; !ok {
+		t.Fatal("the 1.20.1 update was pushed off the list by the 1.21.1 tail")
+	}
+	// The tail is still visible as one row, so nobody concludes the pack has no
+	// 1.21.1 build at all.
+	if !byID["new-0"].Bootable {
+		t.Fatalf("the newest 1.21.1 build is not listed as runnable: %+v", byID["new-0"])
+	}
+	if _, ok := byID["new-1"]; ok {
+		t.Fatal("every 1.21.1 release was listed; one row is the ceiling")
+	}
+	if out.Newer != "5.5.0" {
+		t.Fatalf("newer = %q, want the 1.20.1 update", out.Newer)
+	}
+}
