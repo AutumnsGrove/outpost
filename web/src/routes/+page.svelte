@@ -207,10 +207,28 @@
 						class="linkbtn"
 						onclick={() => run('update')}
 						disabled={pending !== null || !['OFFLINE', 'ERROR'].includes(o.status.state)}
-						title="git pull, rebuild, restart — only while offline"
+						title="Ask the host watcher for the newest image — it pulls, recreates the container, and rolls back if it does not come up. Only while offline."
 					>
-						<RefreshCw aria-hidden="true" />{pending === 'update' ? 'updating…' : 'update code'}
+						<RefreshCw aria-hidden="true" />{pending === 'update' ? 'asking…' : 'update'}
 					</button>
+					{#if o.update?.available}
+						{#if o.update.available.updateAvailable}
+							<span class="muted" title="The newest image the watcher has seen on the registry">
+								{o.update.available.latest} available
+							</span>
+						{:else}
+							<span class="muted" title="Checked {o.update.available.checkedAt}">up to date</span>
+						{/if}
+					{/if}
+					{#if o.update?.result}
+						<span
+							class="muted"
+							title={o.update.result.detail}
+							class:bad={o.update.result.status === 'failed'}
+						>
+							last update {o.update.result.status}
+						</span>
+					{/if}
 				{/if}
 			</p>
 			<p class="links">

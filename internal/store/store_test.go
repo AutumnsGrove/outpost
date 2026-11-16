@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -298,5 +300,65 @@ func TestOpenAddsTheHourlyRateColumnToAnExistingDatabase(t *testing.T) {
 	}
 	if latest.HourlyRate != 0.0144 {
 		t.Fatalf("new row rate = %v", latest.HourlyRate)
+	}
+}
+
+// The update watcher restores this file if a new image has to be rolled back, so
+// a snapshot has to be a database, not just a file with the right size. WAL mode is
+// what makes that worth asserting: the newest rows are not in outpost.db until a
+// checkpoint, so a copy of the main file alone can be an older database.
+func TestSnapshotIsAConsistentCopy(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "outpost.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Log("test", "written just before the snapshot"); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, "backups", "pre-update.db")
+	if err := st.Snapshot(context.Background(), path); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Open the copy on its own: no original, no sidecar files, nothing borrowed.
+	copyStore, err := Open(path)
+	if err != nil {
+		t.Fatalf("open the snapshot: %v", err)
+	}
+	defer copyStore.Close()
+
+	events, err := copyStore.RecentEvents(1)
+	if err != nil {
+		t.Fatalf("read the snapshot: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != "test" {
+		t.Fatalf("the snapshot is missing the last write: %+v", events)
+	}
+}
+
+// Replacing an existing snapshot is not an error: a watcher that could not
+// overwrite yesterday's file would refuse an update for no visible reason.
+func TestSnapshotReplacesAnOlderFile(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "outpost.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	path := filepath.Join(dir, "pre-update.db")
+	if err := os.WriteFile(path, []byte("not a database"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Snapshot(context.Background(), path); err != nil {
+		t.Fatalf("snapshot over a stale file: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Size() < 4096 {
+		t.Fatalf("the stale file was not replaced: %v %v", info, err)
 	}
 }

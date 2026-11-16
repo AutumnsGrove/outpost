@@ -1,0 +1,10 @@
+[Unit]
+Description=Every few minutes, show the Outpost update watcher is alive and catch any missed request
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=outpost-tick.service
+
+[Install]
+WantedBy=timers.target

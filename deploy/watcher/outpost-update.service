@@ -1,0 +1,22 @@
+[Unit]
+Description=Outpost update watcher (one-shot)
+After=network-online.target
+Wants=network-online.target
+# The path unit can fire faster than a one-shot finishes. systemd's default start
+# limit would then disable the unit silently, which once cost Polaris a feature for
+# most of a day. Turn the limit off.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# The deploy user (in the docker group), deliberately not root: the script runs one
+# fixed, reviewable sequence, and root would only add risk and leave root-owned
+# files in the project folder.
+User=@USER@
+WorkingDirectory=@INSTALL_DIR@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=@INSTALL_DIR@/deploy/watcher/update.sh
+# Must exceed the sum of the script's own timeouts (snapshot 60 + pull 300 +
+# recreate 60 + health 120 + rollback 120 + lookups 30 = 690s), or systemd could
+# kill it mid-run before it writes a result.
+TimeoutStartSec=1200

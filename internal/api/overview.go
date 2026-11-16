@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"outpost/internal/orchestrator"
 	"outpost/internal/roster"
 	"outpost/internal/store"
+	"outpost/internal/updatesignal"
 )
 
 // The DTOs exist because store's types carry no JSON tags: encoded directly they
@@ -97,6 +99,11 @@ type planDTO struct {
 	Known bool `json:"known"`
 }
 
+// updateCheckAge is how stale the watcher's answer may be before a page load asks
+// it to look again. The page polls every few seconds; the registry does not need to
+// be asked that often, and the watcher's own tick covers the rest.
+const updateCheckAge = 6 * time.Hour
+
 type overviewResponse struct {
 	Status   statusResponse      `json:"status"`
 	Health   orchestrator.Health `json:"health"`
@@ -107,9 +114,12 @@ type overviewResponse struct {
 	DNS      dnsDTO              `json:"dns"`
 	Players  playersDTO          `json:"players"`
 	Build    buildDTO            `json:"build"`
-	// CanUpdate is whether this binary sits in a git checkout and the page may
+	// CanUpdate is whether a host update watcher is installed, so the page may
 	// offer the Update button at all.
 	CanUpdate bool `json:"canUpdate"`
+	// Update is what the watcher last said: whether a newer image exists, and what
+	// the last update did. Nil when there is no watcher.
+	Update *updatesignal.Status `json:"update,omitempty"`
 	// Plans is what Start can rent, smallest first, and SelectedType is the one
 	// the picker opens on.
 	Plans        []planDTO `json:"plans"`
@@ -157,7 +167,24 @@ func backupDTOs(in []store.Backup) []backupDTO {
 // buildInfo reads the commit the binary was built from out of the Go toolchain's
 // own stamp, which `go build` inside a git checkout adds for free — and the
 // Potato builds inside one. "Did my update land?" then needs no ldflags.
+// buildVersion is the commit the image was built from, injected by the image build
+// (`-ldflags -X outpost/internal/api.buildVersion=<sha>`).
+//
+// debug.ReadBuildInfo below reads Go's VCS stamping, which is what a host build
+// gets from its own checkout — and what a container build cannot get, because the
+// image has no .git. Without this every deployed build would call itself "dev",
+// which is exactly the number a page showing "which build is running" must not
+// invent.
+var buildVersion = ""
+
 func buildInfo() buildDTO {
+	if buildVersion != "" {
+		commit := buildVersion
+		if len(commit) > 7 && !strings.Contains(commit, ".") {
+			commit = commit[:7]
+		}
+		return buildDTO{Commit: commit}
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return buildDTO{Commit: "unknown"}
@@ -266,7 +293,16 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		DNS:       dnsState(status.DNSName, state, health.LastDNS),
 		Players:   s.playersState(ctx),
 		Build:     buildInfo(),
-		CanUpdate: s.update != nil,
+		CanUpdate: s.updates.Configured(),
+	}
+	if s.updates.Configured() {
+		// This is also the once-a-page-load "is there anything new" question: it
+		// writes the check signal only when the watcher's answer is stale, so a
+		// five-second poll does not become a registry lookup every five seconds.
+		s.updates.MaybeCheck(time.Now(), updateCheckAge)
+		if st, err := s.updates.Status(); err == nil {
+			out.Update = &st
+		}
 	}
 	out.Plans, out.SelectedType, out.PackMemoryGB = planChoices(ctx, s.orch)
 	writeJSON(w, http.StatusOK, out)

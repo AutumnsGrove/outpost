@@ -1,0 +1,43 @@
+# What the image build does not need. The context is the whole repository, so
+# anything here that is absent only makes the build faster — except .git, which is
+# excluded on purpose: the commit is passed in as a build arg instead
+# (see the Dockerfile's VERSION), so a stale checkout cannot stamp the wrong one.
+
+.git
+.github
+legacy
+deploy
+
+# Dependencies and build output for both halves. web/build is built fresh in the
+# image; node_modules belongs to the host's pnpm (and to whichever architecture
+# the host is).
+web/node_modules
+web/build
+web/.svelte-kit
+node_modules
+
+# The daemon's own data, which lives on the host and is bind-mounted:
+# config.yaml, the database, session backups, fetched packs.
+config.yaml
+*.db
+*.db-shm
+*.db-wal
+*.db.lock
+packs
+pack
+data
+update-signal
+*.mrpack
+
+# Binaries built on the host (`make build`, `make potato`).
+outpost
+outpost-arm64
+outpost.new
+
+# Local environment and editor state.
+.env
+.env.*
+!.env.example
+.DS_Store
+*.swp
+*~

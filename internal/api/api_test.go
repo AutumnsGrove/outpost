@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"os"
 	"outpost/internal/config"
 	"outpost/internal/hetzner"
 	"outpost/internal/orchestrator"
@@ -19,6 +20,8 @@ import (
 	"outpost/internal/r2"
 	"outpost/internal/roster"
 	"outpost/internal/store"
+	"outpost/internal/updatesignal"
+	"path/filepath"
 )
 
 // --- fakes -----------------------------------------------------------------
@@ -412,5 +415,100 @@ func TestAPIResponsesAreNotCached(t *testing.T) {
 		if cc := f.do("GET", path, "", nil).Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
 			t.Errorf("%s cache-control = %q", path, cc)
 		}
+	}
+}
+
+// --- the update mailbox ----------------------------------------------------
+
+// withMailbox rebuilds the handler with an update mailbox, the way the daemon has
+// one when it is deployed as a container.
+func (f *fixture) withMailbox(t *testing.T, dir string) {
+	t.Helper()
+	rost := roster.New(f.blobs, "mc-assets", func(_ context.Context, name string) (publish.Player, error) {
+		return publish.Player{UUID: "11111111-1111-1111-1111-111111111111", Name: name}, nil
+	})
+	f.h = New(f.orch, f.store, Options{Roster: rost, Updates: updatesignal.Mailbox{Dir: dir}})
+}
+
+// The page's Update button writes one file. It does not update anything, and with
+// no watcher installed it says so rather than offering a request nobody reads.
+func TestUpdateWritesARequestForTheWatcher(t *testing.T) {
+	f := newFixture(t, "")
+	dir := t.TempDir()
+	f.withMailbox(t, dir)
+
+	body := `{"action":"update","token":"` + f.formToken(t) + `"}`
+	rec := f.do("POST", "/api/action", body, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update = %d: %s", rec.Code, rec.Body.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, updatesignal.RequestFile))
+	if err != nil {
+		t.Fatalf("no request file: %v", err)
+	}
+	if string(raw) != "latest\n" {
+		t.Fatalf("request = %q; the watcher refuses anything but the word 'latest'", raw)
+	}
+}
+
+func TestUpdateIsRefusedWhileAServerIsRented(t *testing.T) {
+	f := newFixture(t, "")
+	dir := t.TempDir()
+	f.withMailbox(t, dir)
+	f.setLive(t)
+
+	body := `{"action":"update","token":"` + f.formToken(t) + `"}`
+	rec := f.do("POST", "/api/action", body, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("update while RUNNING = %d, want 409", rec.Code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, updatesignal.RequestFile)); err == nil {
+		t.Fatal("a refused update still asked the watcher to recreate the daemon mid-session")
+	}
+}
+
+func TestUpdateSaysThereIsNoWatcherWhenThereIsNone(t *testing.T) {
+	f := newFixture(t, "")
+	body := `{"action":"update","token":"` + f.formToken(t) + `"}`
+	rec := f.do("POST", "/api/action", body, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("update with no mailbox = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "watcher") {
+		t.Fatalf("the refusal should name what is missing: %s", rec.Body.String())
+	}
+}
+
+// The page reads the watcher's last answer from the overview, which is also where
+// it asks for a fresh digest when the answer is stale.
+func TestOverviewCarriesTheWatchersAnswer(t *testing.T) {
+	f := newFixture(t, "")
+	dir := t.TempDir()
+	f.withMailbox(t, dir)
+	stale := `{"current":"aaaaaaaaaaaa","latest":"bbbbbbbbbbbb","latestDigest":"sha256:bbbb","checkedAt":"2020-01-01T00:00:00Z","updateAvailable":true}`
+	if err := os.WriteFile(filepath.Join(dir, updatesignal.AvailableLog), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, updatesignal.ResultFile), []byte(`{"status":"ok","detail":"updated to bbbbbbbbbbbb"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := decode(t, f.do("GET", "/api/overview", "", nil))
+	if got["canUpdate"] != true {
+		t.Fatal("a configured mailbox should offer the button")
+	}
+	upd, ok := got["update"].(map[string]any)
+	if !ok {
+		t.Fatalf("overview has no update section: %v", got["update"])
+	}
+	if upd["available"].(map[string]any)["latest"] != "bbbbbbbbbbbb" {
+		t.Fatalf("available = %v", upd["available"])
+	}
+	if upd["result"].(map[string]any)["status"] != "ok" {
+		t.Fatalf("result = %v", upd["result"])
+	}
+	// The stale answer means the page asked for a fresh one.
+	if _, err := os.Stat(filepath.Join(dir, updatesignal.CheckFile)); err != nil {
+		t.Fatal("a stale answer did not ask the watcher to look again")
 	}
 }

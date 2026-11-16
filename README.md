@@ -106,7 +106,7 @@ outpost pack delete <id>   # remove a profile: its world, backups and files
 outpost start [region]   # rent a server (default region: eu; --type for the plan)
 outpost stop             # save the world, delete the server
 outpost status           # what it is doing, and what it has cost
-outpost update           # git pull, rebuild, restart — see "Updating"
+outpost update           # ask the host watcher for the newest image — see "Deploying"
 outpost tick             # one reconcile pass, for cron
 outpost reset [--force]  # delete every outpost server, back to OFFLINE
 outpost console [cmd]    # one command on the live server (-i for a prompt)
@@ -315,9 +315,8 @@ add new things to `/api/overview` rather than to `status`. The Modpack panel is 
 `GET /api/pack`, polled every two seconds only while a preview or install is running.
 
 The page is a SvelteKit app built to static files and embedded with `go:embed`
-(the same shape as bwmon and Polaris), so the box needs no Node at runtime and
-`git pull && go build` is the whole deploy. The built output in `web/build` is
-committed on purpose; `make web` rebuilds it.
+(the same shape as the rest of the box), so the box needs no Node at runtime: the
+bundle is built inside the image from `web/src`.
 
 ## Console and players
 
@@ -354,34 +353,96 @@ so "who opped the griefer" has an answer, and refusals are logged too.
 
 Both commands need the credentials: the console does not (it reads the address and
 password out of the database the daemon writes), but the player list does, because
-it writes to R2. On the Potato the secrets are in `/etc/outpost.env`, which the
-service gets from systemd and an interactive shell does not:
+it writes to R2. On the Potato the secrets are in `~/outpost/.env`, which compose
+passes to the container — and the host `outpost` command runs *inside* that
+container, so the credentials are already there:
 
 ```bash
-set -a; . /etc/outpost.env; set +a
+outpost player add AutumnsAdventure   # no export, no sudo
 ```
 
 ## Building
 
 ```bash
-make build      # local
-make potato     # linux/arm64, the binary that goes to the Le Potato
+make web        # build the frontend the binary embeds — needed once per clone
+make build      # the daemon, for local work
 make test
-make web        # rebuild web/build after touching web/src, then commit it
-make web-check  # rebuild and fail if the committed bundle is stale
+make potato     # linux/arm64, for one-off debugging on the Le Potato
 ```
 
-`make build` does not touch the frontend: `web/build` is committed, so a plain
-`go build` on the box produces a complete binary.
+`web/build` is **not** committed. The image build runs `pnpm build` from `web/src`
+and copies the result into the Go build, so a deployed binary always embeds the
+bundle its own commit produced. Locally it exists only so that
+`go:embed all:build` has something to embed: run `make web` once after cloning, or
+`go build ./...` fails with `pattern all:build: no matching files found`. CI does
+the same before its Go steps.
 
 The build is reproducible — `version.name` in `web/vite.config.ts` is a hash of
-`web/src`, not the `Date.now()` SvelteKit defaults to, so two builds of one tree
-are byte-identical and a backend commit does not dirty `web/build`.
-`.github/workflows/web.yml` rebuilds and diffs on every PR, and builds twice to
-prove it.
+`web/src`, not the `Date.now()` SvelteKit defaults to — which is what lets
+`.github/workflows/web.yml` build twice and diff, and what keeps image builds from
+minting new chunk names.
 
-Pure Go SQLite, no cgo, so the cross-compile works from the Mac with no toolchain
-gymnastics.
+Pure Go SQLite, no cgo, so both the cross-compile and the image build need no
+toolchain gymnastics.
+
+## Deploying
+
+The Potato runs a published image, not a build of the checkout. GitHub Actions
+builds `linux/amd64` and `linux/arm64` on every push to `main` and publishes
+`ghcr.io/autumnsgrove/outpost:latest` plus a short-SHA tag
+(`.github/workflows/docker.yml`); the box only ever pulls.
+
+```bash
+# once, from a checkout of this repo on the Potato (e.g. ~/outpost)
+deploy/install.sh
+
+# then, whenever you want the newest image
+outpost update            # or the page's Update button, or Meridian
+```
+
+What is on the box, and what is in the image:
+
+```
+~/outpost/            the checkout: compose file, deploy/, nothing that runs
+  data/               bind-mounted to /data, the container's working directory
+    config.yaml         the settings (config.example.yaml has the comments)
+    outpost.db          the only state
+    packs/              fetched modpacks and the .mrpack cache
+    backups/pre-update.db   the watcher's snapshot, restored by a rollback
+  update-signal/      the mailbox: requested/check out, available.json/result back
+  .env                the six credentials, 0600
+```
+
+`data/` is the whole state. An image is replaced by writing `OUTPOST_IMAGE` in
+`.env` to a digest, `docker compose up -d`, and a health check — so no deploy ever
+builds anything on the box, and the world in R2 never depends on one.
+
+`outpost` on the host is a wrapper that runs the command **in** the container
+(`docker compose exec`), so the database has one writer and the commands above work
+unchanged. `deploy/install.sh` installs it at `/usr/local/bin/outpost`.
+
+### Updating, and why there is a watcher
+
+The daemon cannot update itself any more, and must not be able to: it is a
+container with a read-only filesystem and no docker socket. The thing that pulls a
+digest, recreates a container and rolls back is a host script with exactly those
+privileges — `deploy/watcher/update.sh`, started by a systemd path unit when the
+daemon (or `outpost update`, or Meridian) writes `update-signal/requested`.
+
+The watcher:
+
+1. refuses while a Minecraft server is rented — recreating the daemon then would
+   kill the loop that saves the world on logout;
+2. snapshots the database through the daemon (`outpost snapshot`, `VACUUM INTO`);
+3. resolves the newest digest, refuses an image reference of any other shape, pins
+   it in `.env` and pulls;
+4. recreates the container and waits up to 120 seconds for its own `/health` check;
+5. on failure, puts the previous digest back **and** restores the database snapshot;
+6. writes the outcome to `update-signal/result`, which the page shows, and removes
+   the request on every exit path.
+
+It is the same shape as Warbler's, Sepia's, Polaris's and Ivy's on this box, so
+`systemctl start outpost-update.service` is what Meridian's update action runs.
 
 ## Costs
 
