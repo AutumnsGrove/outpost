@@ -421,6 +421,14 @@ builds anything on the box, and the world in R2 never depends on one.
 (`docker compose exec`), so the database has one writer and the commands above work
 unchanged. `deploy/install.sh` installs it at `/usr/local/bin/outpost`.
 
+`deploy/install.sh` is also the migration off the systemd deploy, and it moves state
+rather than starting beside it: it stops the old `outpost.service`, moves
+`outpost.db` (with its `-wal`/`-shm`), `packs/` and `config.yaml` into `data/`, adds
+`update_signal_dir` to a config that predates the mailbox, and disables the old unit
+so a reboot cannot start a second daemon on the same database. A rented server
+survives the move — the container picks up the same database and the same state
+machine, which is why the old daemon is stopped before its files are touched.
+
 ### Updating, and why there is a watcher
 
 The daemon cannot update itself any more, and must not be able to: it is a

@@ -752,12 +752,36 @@ Minecraft server is rented.** Warbler's "busy" is a few seconds of upload and it
 waits; outpost's busy is a billed VPS with a world in memory, and recreating the
 daemon then kills the loop that saves that world on logout.
 
-**The tailnet is asked over the socket, not the CLI.** `internal/tailnet` used to
-shell out to `tailscale status --json`. A distroless image has no such binary, so it
-now reads `GET /localapi/v0/status` over a mounted `tailscaled.sock` — the same
-document, parsed by the same function — and falls back to the CLI where the socket
-is not where expected. Mounting the CLI in instead would have meant a Debian
-runtime, a tailscale package and its dependencies, for one JSON document.
+**The tailnet is asked over the socket, not the CLI.**
+`internal/tailnet` used to shell out to `tailscale status --json`. A distroless image
+has no such binary, so it now reads `GET /localapi/v0/status` over a mounted
+`tailscaled.sock` — the same document, parsed by the same function — and falls back
+to the CLI where the socket is not where expected. Mounting the CLI in instead would
+have meant a Debian runtime, a tailscale package and its dependencies, for one JSON
+document.
+
+The trade-off is real and worth naming: the LocalAPI is more than the status
+document — it is the interface `tailscale up`/`down`/`logout` use — so whatever runs
+in that container could drive the tailnet. What holds it is the rest of the compose
+file (uid 1000, read-only root, no capabilities, no docker socket) and the tailnet's
+ACLs. A read-only mount does not narrow a socket, because connecting is not a write
+through the mount; a proxy for `/localapi/v0/status` alone is the next step if that
+posture is not enough.
+
+**The migration moves state; it does not start beside it.** The old unit ran with
+`WorkingDirectory=~/outpost` and `database: "outpost.db"`, so the live database was
+at the checkout root and the container can only see `data/`. `deploy/install.sh`
+therefore stops the old daemon *first*, then moves `outpost.db` (with `-wal`/`-shm`,
+because moving one out from under a writer is how a database becomes a database plus
+a corrupt WAL), `packs/` and `config.yaml` into `data/`, and appends `update_signal_dir`
+to a config that predates the mailbox — otherwise the Update button would be hidden
+immediately after the watcher was installed to serve it. A rented VPS survives the
+move: the container opens the same database and resumes the same state machine.
+
+The compose file has no `build:` key on purpose. Compose builds instead when the
+image is missing, so a build key would turn the first `up -d` — and any rollback to a
+pruned digest — into a cold build on the Potato, which is the thing the image exists
+to avoid.
 
 Two small things the container needed and could not get from a shell: `outpost
 healthcheck` (the image's `HEALTHCHECK`, which asks its own `/health` — distroless
