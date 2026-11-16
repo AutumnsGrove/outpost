@@ -16,8 +16,10 @@ outpost.db.lock
 # The deployed state, on the box: config.yaml, the database, packs and the SSH key
 # live in data/ because it is bind-mounted at /data in the container (PLAN 38).
 /data/
-# The host update watcher's flock, created beside docker-compose.yml (deploy/watcher).
+# The host update watcher's flock and its mailbox, both created beside
+# docker-compose.yml (deploy/watcher, internal/updatesignal).
 /.update-watcher.lock
+/update-signal/
 
 # Gradle's caches and outputs. The mod's sources are tracked; a decompiled
 # Minecraft jar and 70 MB of remapped loom cache are not, and were committed by
