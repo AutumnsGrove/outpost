@@ -1,0 +1,67 @@
+name: go
+
+# Build, vet and test the Go side. Nothing did this before: the only CI was
+# `web.yml`, because the committed bundle was the thing that could drift. With
+# the bundle gone from git, a broken orchestrator would otherwise only be found
+# on the potato — mid-session, which is the worst possible time.
+#
+# The frontend step is not optional: web/embed.go unconditionally embeds
+# `web/build` (`go:embed all:build`), and a checkout without it fails
+# `go build ./...` outright rather than at runtime. So pnpm runs first, the same
+# order the Dockerfile uses.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'web/**'
+      - '.github/workflows/go.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'web/**'
+      - '.github/workflows/go.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-vet-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Restore the pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: web-deps-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+          restore-keys: |
+            web-deps-${{ runner.os }}-
+      - name: Build the frontend the binary embeds
+        working-directory: web
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: go build
+        run: go build ./...
+      - name: go vet
+        run: go vet ./...
+      # -race, not plain: the daemon's output handling runs stdin/stdout copies on
+      # separate goroutines, and sharing one writer between them was a real race
+      # (and a real torn "SIZE=" line) rather than a theoretical one.
+      - name: go test
+        run: go test -race ./...

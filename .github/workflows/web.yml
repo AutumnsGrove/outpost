@@ -1,14 +1,15 @@
 name: web
 
-# The built frontend is committed on purpose: the Go binary embeds `web/build`
-# with go:embed, the Le Potato needs no Node, and `git pull && go build` is the
-# whole deploy. That only holds if the committed bundle is what the sources
-# produce, so this job rebuilds it and fails on any difference.
+# The built frontend is not committed (PLAN 38). The image build runs `pnpm
+# build` from web/src and copies the bundle into the Go binary, so there is no
+# copy in git to keep in sync and nothing here needs to diff one.
 #
-# It only works because the build is reproducible: `version.name` in
-# web/vite.config.ts is a hash of `web/src`, not the `Date.now()` SvelteKit
-# defaults to. Before that, every `make web` minted new chunk names and this job
-# could not exist.
+# What is still worth checking is the property the old committed-build job was
+# quietly relying on: two builds of one tree produce one result. `version.name`
+# in web/vite.config.ts is a hash of `web/src` rather than SvelteKit's default
+# `Date.now()`, which is what makes the client's cache-invalidation token mean
+# anything and what keeps image builds reproducible. Before that change, every
+# build minted new chunk names.
 
 on:
   pull_request:
@@ -19,7 +20,7 @@ permissions:
   contents: read
 
 jobs:
-  committed-build:
+  deterministic:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,37 +39,6 @@ jobs:
           key: web-deps-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
           restore-keys: |
             web-deps-${{ runner.os }}-
-      - name: Install
-        working-directory: web
-        run: pnpm install --frozen-lockfile
-      - name: Rebuild the bundle
-        run: make web
-      - name: The committed bundle must match the sources
-        run: |
-          # `git status`, not `git diff`: a diff ignores untracked files, so a
-          # rebuild that only *adds* output — a new file in web/static/ lands in
-          # web/build as untracked — would sail through the check while the
-          # committed bundle lacks it.
-          if [ -n "$(git status --porcelain -- web/build)" ]; then
-            git status --porcelain -- web/build
-            echo
-            echo "web/build is out of date. Run \`make web\` and commit web/build with the source change."
-            exit 1
-          fi
-
-  # The same property, from the other direction: two builds of one tree have to
-  # produce one result. This is what the diff check above quietly depends on, and
-  # it is the thing that broke before (every build minted new filenames).
-  deterministic:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Enable pnpm
-        run: corepack enable
       - name: Install
         working-directory: web
         run: pnpm install --frozen-lockfile

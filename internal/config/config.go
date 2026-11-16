@@ -129,14 +129,21 @@ type Secrets struct {
 
 // Config is the whole thing.
 type Config struct {
-	Listen     string            `yaml:"listen"`
-	Database   string            `yaml:"database"`
-	Server     Server            `yaml:"server"`
-	Regions    map[string]Region `yaml:"regions"`
-	Cloudflare Cloudflare        `yaml:"cloudflare"`
-	Hetzner    Hetzner           `yaml:"hetzner"`
-	R2         R2                `yaml:"r2"`
-	Tailscale  Tailscale         `yaml:"tailscale"`
+	Listen   string `yaml:"listen"`
+	Database string `yaml:"database"`
+
+	// UpdateSignalDir is the mailbox shared with the host update watcher
+	// (internal/updatesignal): the daemon writes `requested`/`check`, the watcher
+	// writes `available.json`/`result`/`heartbeat`. Empty means there is no watcher
+	// — a binary built from a checkout and run by hand — and the page hides the
+	// update button rather than offering a request nobody reads.
+	UpdateSignalDir string            `yaml:"update_signal_dir"`
+	Server          Server            `yaml:"server"`
+	Regions         map[string]Region `yaml:"regions"`
+	Cloudflare      Cloudflare        `yaml:"cloudflare"`
+	Hetzner         Hetzner           `yaml:"hetzner"`
+	R2              R2                `yaml:"r2"`
+	Tailscale       Tailscale         `yaml:"tailscale"`
 
 	Secrets Secrets `yaml:"-"`
 }

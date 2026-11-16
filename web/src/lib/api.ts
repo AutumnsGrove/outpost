@@ -102,12 +102,35 @@ export interface Overview {
 	dns: Dns;
 	players: Players;
 	build: { commit: string; built: string; modified: boolean };
+	/** Whether a host update watcher is installed, so the button means something. */
 	canUpdate: boolean;
+	/** What the watcher last said. Absent when there is no watcher. */
+	update?: UpdateStatus;
 	/** What Start can rent, smallest first, and the plan it opens on. */
 	plans: Plan[];
 	selectedType: string;
 	/** What the active pack asks for; 0 when it has no manifest figure. */
 	packMemoryGb: number;
+}
+
+/** The update mailbox between the daemon and the host watcher (updatesignal). */
+export interface UpdateStatus {
+	configured: boolean;
+	dir?: string;
+	available?: {
+		current: string;
+		latest: string;
+		latestDigest: string;
+		checkedAt: string;
+		updateAvailable: boolean;
+	};
+	result?: {
+		status: 'ok' | 'failed' | 'skipped';
+		detail: string;
+		target?: string;
+		finishedAt?: string;
+	};
+	heartbeat?: string;
 }
 
 /** A pack as R2 records it: what was installed, and what it needs to run. */

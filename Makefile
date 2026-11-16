@@ -1,35 +1,29 @@
 BINARY := outpost
 PREFIX := .
 
-.PHONY: build test vet fmt potato web web-check clean
+.PHONY: build web test vet fmt potato clean
+
+# web/build is not committed (PLAN 38). The image build runs `pnpm build` itself
+# and copies the result into the Go build, so nothing here has to be kept in
+# sync by hand. Locally it exists for one reason: `go:embed all:build` matches
+# nothing when the directory is absent, so a cold clone must run `make web`
+# before `go build` or `go test`. CI does the same before its Go steps.
+#
+# The build is reproducible — two runs on one tree produce byte-identical output,
+# because `version.name` is a hash of web/src rather than a timestamp — which is
+# what .github/workflows/web.yml's deterministic job checks.
+web:
+	cd web && pnpm install --frozen-lockfile && pnpm build
 
 build:
 	go build -o $(BINARY) ./cmd/outpost
 
 # The Le Potato is linux/arm64. Pure-Go SQLite means no cgo and no toolchain
-# gymnastics: this compiles on the Mac and runs on the box.
+# gymnastics: this compiles on the Mac and runs on the box. It is no longer the
+# deploy — the box runs the published image — but it is still how a one-off
+# binary gets built for debugging on the host.
 potato:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o $(BINARY)-arm64 ./cmd/outpost
-
-# The built frontend is committed (web/build), so `go build` alone produces a
-# complete binary and the Le Potato needs no Node. Run this after changing
-# anything under web/src, then commit web/build with it.
-#
-# The build is reproducible — two runs on one tree produce byte-identical output,
-# because `version.name` is a hash of web/src rather than a timestamp — so the
-# CI job in .github/workflows/web.yml can rebuild and diff. `make web-check`
-# runs that check locally.
-web:
-	cd web && pnpm install --frozen-lockfile && pnpm build
-
-web-check:
-	$(MAKE) web
-	@if [ -n "$$(git status --porcelain -- web/build)" ]; then \
-		git status --porcelain -- web/build; \
-		echo; \
-		echo "web/build is out of date: run \`make web\` and commit it with the source change."; \
-		exit 1; \
-	fi
 
 test:
 	go test ./...
