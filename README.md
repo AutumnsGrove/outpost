@@ -424,10 +424,17 @@ unchanged. `deploy/install.sh` installs it at `/usr/local/bin/outpost`.
 `deploy/install.sh` is also the migration off the systemd deploy, and it moves state
 rather than starting beside it: it stops the old `outpost.service`, moves
 `outpost.db` (with its `-wal`/`-shm`), `packs/` and `config.yaml` into `data/`, adds
-`update_signal_dir` to a config that predates the mailbox, and disables the old unit
-so a reboot cannot start a second daemon on the same database. A rented server
-survives the move — the container picks up the same database and the same state
-machine, which is why the old daemon is stopped before its files are touched.
+`update_signal_dir` to a config that predates the mailbox, copies the Hetzner SSH
+key to `data/ssh/outpost` and points `hetzner.ssh_private_key` at it, and disables
+the old unit so a reboot cannot start a second daemon on the same database. A rented
+server survives the move — the container picks up the same database and the same
+state machine, which is why the old daemon is stopped before its files are touched.
+
+The key has to move because the daemon is its own SSH client: `ssh` is a library call
+now (`golang.org/x/crypto/ssh`), not a subprocess, because the image is distroless
+and has no `ssh` binary, no `~/.ssh` and no `known_hosts`. Nothing is lost by that —
+a host key on a VPS created ten seconds ago has nothing to be checked against
+anyway.
 
 ### Updating, and why there is a watcher
 

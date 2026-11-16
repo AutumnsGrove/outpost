@@ -783,6 +783,18 @@ image is missing, so a build key would turn the first `up -d` — and any rollba
 pruned digest — into a cold build on the Potato, which is the thing the image exists
 to avoid.
 
+**SSH is a library, not a subprocess.** `internal/orchestrator` reaches the VPS
+over SSH for the part RCON cannot do — tar the world, rclone it to R2, confirm it
+landed — and `internal/remote` used to exec the system client. A distroless image has
+no such client, so the package speaks SSH itself (`golang.org/x/crypto/ssh`). The key
+moves with the state: `deploy/install.sh` copies it to `data/ssh/outpost` and points
+`hetzner.ssh_private_key` at it, because the container has no home folder. Host keys
+are not verified, and cannot be: every VPS is new and its host key is one nobody has
+seen, so what protects that channel is the tailnet plus the key that is the only way
+to authenticate. The alternative — a Debian runtime with `openssh-client`, a key
+mount, and a known_hosts question that has no good answer — is more moving parts for
+one command runner.
+
 Two small things the container needed and could not get from a shell: `outpost
 healthcheck` (the image's `HEALTHCHECK`, which asks its own `/health` — distroless
 has no curl, and "the process is alive" is not the question the watcher asks before

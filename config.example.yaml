@@ -79,7 +79,12 @@ cloudflare:
 hetzner:
   image: "ubuntu-24.04"
   ssh_key_id: 12345               # from the Hetzner console
-  ssh_private_key: "~/.ssh/outpost"
+  # The private key that gets into the VPS. Deployed, this is the copy inside the
+  # data directory, because the container has no home folder and no ~/.ssh — and
+  # no need for either: the daemon is its own SSH client, so there is no `ssh`
+  # binary to read an agent or a known_hosts file (PLAN 38). deploy/install.sh
+  # copies the key here from ~/.ssh and rewrites this line to match.
+  ssh_private_key: "ssh/outpost"  # relative to the working directory; ~/ expands
   ssh_user: "root"
   server_name_base: "outpost"     # also the tailnet hostname prefix
   # firewall_id: 67890            # optional: an existing Hetzner Cloud Firewall,
