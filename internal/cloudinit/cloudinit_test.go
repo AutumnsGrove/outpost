@@ -14,6 +14,7 @@ func sample() Data {
 	return Data{
 		Hostname:         "outpost-eu-abc123",
 		Profile:          "cobblemon",
+		Java:             17,
 		MCPort:           25565,
 		RCONPassword:     "deadbeef",
 		TailscaleAuthKey: "tskey-auth-abc",
@@ -47,6 +48,36 @@ func TestRenderIsValidCloudConfig(t *testing.T) {
 	}
 	if strings.Contains(out, "{{") {
 		t.Fatal("template directives left in output")
+	}
+}
+
+// The JDK is the one thing that has to match the pack's Minecraft version: 1.21
+// on 17 is "Unsupported class file major version 65" after the VPS is already paid
+// for.
+func TestRenderInstallsTheJDKItIsGiven(t *testing.T) {
+	d := sample()
+	d.Java = 21
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "openjdk-21-jdk-headless") {
+		t.Fatal("Java 21 was asked for and not installed")
+	}
+	if strings.Contains(out, "openjdk-17") {
+		t.Fatal("the template still hardcodes openjdk-17")
+	}
+}
+
+func TestRenderRefusesAJavaThatIsNotAPackage(t *testing.T) {
+	d := sample()
+	d.Java = 0
+	if _, err := Render(d); err == nil {
+		t.Fatal("a missing Java version rendered into `openjdk-0-jdk-headless`")
+	}
+	d.Java = 18
+	if _, err := Render(d); err == nil {
+		t.Fatal("Java 18 is not an Ubuntu package and must not reach the apt line")
 	}
 }
 

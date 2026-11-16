@@ -191,10 +191,16 @@ func fetchVersions(ctx context.Context, slug string) ([]Version, error) {
 
 // pickVersion chooses the version to install.
 //
-// Without an explicit one it takes the newest release for the Minecraft version
-// this server can boot. That filter is not tidiness: picking the newest version
-// of a pack that has moved to 1.21 produces a rental that dies on Java 17 and
-// looks like a broken modpack.
+// Without an explicit one it takes the newest release for SupportedMC — the
+// oldest row of publish.Minecrafts, not the newest bootable one. That is
+// deliberate: the table can now boot 1.21.1 as well, but "newest runnable" would
+// change which Minecraft version a default `pack fetch` installs the day a row is
+// added, over a world that cannot follow it. Naming a version (the panel does) or
+// --version on the command line is how somebody asks for 1.21.1.
+//
+// The filter is not tidiness: picking the newest version of a pack that has moved
+// to a version outside the table produces a rental that dies at boot and looks
+// like a broken modpack.
 func pickVersion(versions []Version, want string) (Version, error) {
 	if len(versions) == 0 {
 		return Version{}, fmt.Errorf("the project has no versions")
@@ -222,7 +228,7 @@ func pickVersion(versions []Version, want string) (Version, error) {
 		// A pre-release for the right version beats nothing at all; that is the
 		// second pass.
 	}
-	return Version{}, fmt.Errorf("no version for Minecraft %s on Fabric; this pack offers %s",
+	return Version{}, fmt.Errorf("no version for Minecraft %s on Fabric (the default; pass a version to choose another); this pack offers %s",
 		publish.SupportedMC, versionList(versions, 3))
 }
 

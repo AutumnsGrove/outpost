@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -78,15 +79,34 @@ func TestBuildTrustsThePackOverTheClientOnlyList(t *testing.T) {
 	}
 }
 
-func TestBuildRefusesAPackForAnotherMinecraftVersion(t *testing.T) {
+func TestBuildRefusesAPackForAVersionOutsideTheTable(t *testing.T) {
+	p := testPack()
+	p.MC = "1.21.4"
+	dir := writeModpack(t, p)
+
+	_, _, err := Build(context.Background(), Options{Dir: dir})
+	if err == nil || !strings.Contains(err.Error(), "1.20.1 (Java 17)") {
+		t.Fatalf("want a refusal naming the table, got %v", err)
+	}
+}
+
+func TestBuildAcceptsEveryVersionInTheTable(t *testing.T) {
+	// 1.21.1 is bootable because cloud-init installs Java 21 for it, which is the
+	// whole point of the table: the refusal follows the row, not a constant.
 	p := testPack()
 	p.MC = "1.21.1"
 	dir := writeModpack(t, p)
 
-	_, _, err := Build(context.Background(), Options{Dir: dir})
-	if err == nil || !strings.Contains(err.Error(), "Java 17") {
-		t.Fatalf("want a Java 17 refusal, got %v", err)
+	objects, _, err := Build(context.Background(), Options{Dir: dir})
+	if err != nil {
+		t.Fatalf("1.21.1 fabric was refused: %v", err)
 	}
+	for _, o := range objects {
+		if strings.HasSuffix(o.Key, "/pack.json") {
+			return
+		}
+	}
+	t.Fatal("a 1.21.1 pack was built without its manifest")
 }
 
 func TestRunWarnsWhenNoRegionHoldsThePackButAPlanDoes(t *testing.T) {
@@ -180,6 +200,57 @@ func TestRunKeepsTheWorldAcrossAPackUpdate(t *testing.T) {
 		if strings.Contains(w, "world") {
 			t.Fatalf("a pack update complained about the world: %v", res.Warnings)
 		}
+	}
+}
+
+// A newer version of the same pack for a different Minecraft version is not an
+// update: the world cannot follow it. A pack version bump keeps the world (that
+// is TestRunKeepsTheWorldAcrossAPackUpdate); a game version bump must not.
+func TestRunRefusesAMinecraftVersionChangeIntoAProfile(t *testing.T) {
+	p := testPack()
+	p.MC = "1.21.1"
+	dir := writeModpack(t, p)
+	st := newFakeStore()
+	st.worlds[key("world.tar.gz")] = []byte("1.20.1 world")
+	// The same pack, same source and slug, installed for the Minecraft version
+	// before this one: the case a version picker produces.
+	older, _ := json.Marshal(Pack{Source: "modrinth", Slug: "test-pack", VersionID: "older", VersionNumber: "0.9.0", MC: "1.20.1"})
+	st.worlds[key("pack.json")] = older
+
+	opts := Options{Dir: dir, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"}
+	_, err := Run(context.Background(), st, opts)
+	if err == nil {
+		t.Fatal("1.21.1 was published over a 1.20.1 world")
+	}
+	// The refusal has to say what to do: a new profile keeps both worlds.
+	if !strings.Contains(err.Error(), "Minecraft version change") || !strings.Contains(err.Error(), "--profile default-1-21-1") {
+		t.Fatalf("the refusal is not actionable: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--new-world") {
+		t.Fatalf("the refusal does not offer --new-world: %v", err)
+	}
+	if _, ok := st.worlds[key("world.tar.gz")]; !ok {
+		t.Fatal("the world was removed by a refused publish")
+	}
+
+	// --keep-world is the door for somebody who knows what they are doing.
+	opts.KeepWorld = true
+	res, err := Run(context.Background(), st, opts)
+	if err != nil {
+		t.Fatalf("keep-world run: %v", err)
+	}
+	if !warningsContain(res.Warnings, "holds a Minecraft 1.20.1 world") || !warningsContain(res.Warnings, "--keep-world") {
+		t.Fatalf("the warning should say what was overridden: %v", res.Warnings)
+	}
+
+	// --new-world discards the world, which is the other honest answer.
+	opts.KeepWorld = false
+	opts.NewWorld = true
+	if _, err := Run(context.Background(), st, opts); err != nil {
+		t.Fatalf("new-world run: %v", err)
+	}
+	if _, ok := st.worlds[key("world.tar.gz")]; ok {
+		t.Fatal("--new-world kept a world from another Minecraft version")
 	}
 }
 
@@ -336,13 +407,13 @@ func TestRunNewWorldDiscardsEvenAWorldOfTheSameBuild(t *testing.T) {
 	}
 }
 
-func TestRunClearsTheMarkerWhenPublishingAHandRolledPack(t *testing.T) {
-	// No pack.json: an ordinary directory of jars, after a fetched pack was
-	// published. The marker still names Cobblemon, so it has to go.
-	dir := writePack(t)
+// A hand-rolled directory dropped into a profile that holds a fetched pack's world
+// is the same question as any other pack change, and it used to be answered
+// silently: the marker and the manifest were deleted, so the next publish had no
+// idea what made the world and booted the new jars over it. It is now refused like
+// a pack swap, and --keep-world is the door.
+func TestRunRefusesAHandRolledPackOverAnotherPacksWorld(t *testing.T) {
 	st := newFakeStore()
-	// A fetched pack was installed here first: it left a manifest in the asset
-	// bucket and a marker in the world bucket.
 	if _, err := Run(context.Background(), st, Options{
 		Dir:         writeModpack(t, testPack()),
 		AssetBucket: "mc-assets",
@@ -352,31 +423,47 @@ func TestRunClearsTheMarkerWhenPublishingAHandRolledPack(t *testing.T) {
 	}
 	st.worlds[key("world.tar.gz")] = []byte("world")
 
-	if _, err := Run(context.Background(), st, Options{
-		Dir:         dir,
+	_, err := Run(context.Background(), st, Options{
+		Dir:         writePack(t),
 		AssetBucket: "mc-assets",
 		WorldBucket: "mc-worlds",
-	}); err != nil {
-		t.Fatalf("hand-rolled publish: %v", err)
-	}
-	if _, ok := st.worlds[key("pack.json")]; ok {
-		t.Fatal("a stale pack marker survived a hand-rolled publish")
-	}
-	// The asset bucket had a manifest of its own (uploaded by the packed publish
-	// above in spirit): the page reads that one to name the profile, so it has to
-	// go too, or a hand-rolled pack keeps being called Fabulously Optimized.
-	if _, ok := st.objects[key("pack.json")]; ok {
-		t.Fatal("a stale asset manifest survived a hand-rolled publish")
-	}
-	if _, ok := st.worlds[key("world.tar.gz")]; !ok {
-		t.Fatal("a hand-rolled publish removed the world")
+	})
+	if err == nil || !strings.Contains(err.Error(), "--keep-world") {
+		t.Fatalf("want the world guard to ask, got %v", err)
 	}
 
-	// And the next fetched publish cannot trust a marker that is gone.
-	pack := writeModpack(t, testPack())
-	_, err := Run(context.Background(), st, Options{Dir: pack, AssetBucket: "mc-assets", WorldBucket: "mc-worlds"})
-	if err == nil || !strings.Contains(err.Error(), "--new-world") {
-		t.Fatalf("want the guard to ask, got %v", err)
+	// --keep-world loads it anyway, and the marker now says what is installed: a
+	// hand-rolled pack with the Minecraft version it will boot.
+	res, err := Run(context.Background(), st, Options{
+		Dir:         writePack(t),
+		AssetBucket: "mc-assets",
+		WorldBucket: "mc-worlds",
+		KeepWorld:   true,
+	})
+	if err != nil {
+		t.Fatalf("hand-rolled publish with --keep-world: %v", err)
+	}
+	if !warningsContain(res.Warnings, "--keep-world") {
+		t.Fatalf("loading another pack's world said nothing: %v", res.Warnings)
+	}
+	if string(st.worlds[key("world.tar.gz")]) != "world" {
+		t.Fatal("--keep-world removed the world it was told to keep")
+	}
+	var marker Pack
+	if err := json.Unmarshal(st.worlds[key("pack.json")], &marker); err != nil {
+		t.Fatalf("the marker is not a manifest: %v (%q)", err, st.worlds[key("pack.json")])
+	}
+	if marker.MC != "1.20.1" || marker.Source != "" {
+		t.Fatalf("the marker does not describe what is installed: %+v", marker)
+	}
+	// The asset manifest is the generated one, so the page can name the Minecraft
+	// version instead of "hand-rolled pack, no version".
+	var installed Pack
+	if err := json.Unmarshal(st.objects[key("pack.json")], &installed); err != nil {
+		t.Fatalf("the asset manifest is not a manifest: %v", err)
+	}
+	if installed.MC != "1.20.1" || installed.Name != "Hand-rolled" {
+		t.Fatalf("the uploaded manifest does not describe the profile: %+v", installed)
 	}
 }
 
@@ -526,15 +613,49 @@ func TestBuildUploadsTheManifestSoThePageCanNameTheProfile(t *testing.T) {
 		t.Fatalf("the uploaded manifest is not the pack's: %s", got.Content)
 	}
 
-	// A hand-rolled directory has no manifest, and must not gain an empty one.
+}
+
+// A hand-rolled directory has no pack.json, and used to ship none at all: the page
+// then called the profile "hand-rolled pack" with no Minecraft version, and the
+// orchestrator had nothing to pick a JDK from. The generated one fills exactly
+// those gaps and no others — no source, no slug, so it is not "a different pack"
+// to the world guard.
+func TestBuildGeneratesAManifestForAHandRolledDirectory(t *testing.T) {
 	plain := writePack(t)
-	objects, _, err = Build(context.Background(), Options{Dir: plain, Profile: "default"})
+	objects, _, err := Build(context.Background(), Options{Dir: plain, Profile: "default", FabricMC: "1.21.1"})
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
+
+	var got Object
 	for _, o := range objects {
 		if strings.HasSuffix(o.Key, "/pack.json") {
-			t.Fatalf("a hand-rolled pack grew a manifest: %s", o.Key)
+			got = o
+		}
+	}
+	if got.Key == "" {
+		t.Fatal("a hand-rolled publish shipped no manifest")
+	}
+	var pk Pack
+	if err := json.Unmarshal(got.Content, &pk); err != nil {
+		t.Fatalf("parse the generated manifest: %v", err)
+	}
+	if pk.MC != "1.21.1" || pk.Loader != "fabric" {
+		t.Fatalf("generated manifest does not say what will boot: %+v", pk)
+	}
+	if pk.Source != "" || pk.Slug != "" {
+		t.Fatalf("a generated manifest claimed an identity: %+v", pk)
+	}
+
+	// Two builds of an unchanged directory must be byte-identical, or every republish
+	// uploads a new manifest for nothing.
+	again, _, err := Build(context.Background(), Options{Dir: plain, Profile: "default", FabricMC: "1.21.1"})
+	if err != nil {
+		t.Fatalf("build again: %v", err)
+	}
+	for _, o := range again {
+		if o.Key == got.Key && !bytes.Equal(o.Content, got.Content) {
+			t.Fatalf("the generated manifest is not deterministic:\n%s\n%s", got.Content, o.Content)
 		}
 	}
 }
@@ -678,5 +799,42 @@ func TestRunNewWorldSweepsTheTrashItGrows(t *testing.T) {
 	}
 	if _, ok := st.worlds[fresh]; !ok {
 		t.Fatal("the sweep removed a world still inside its retention")
+	}
+}
+
+// The table is what the boot, the refusals and the picker all read, so its shape is
+// an invariant rather than a preference: row zero is the default a pack with no
+// version gets, and every row is bootable.
+func TestMinecraftTableIsConsistent(t *testing.T) {
+	if len(Minecrafts) == 0 {
+		t.Fatal("no Minecraft version is bootable")
+	}
+	if Minecrafts[0].MC != SupportedMC {
+		t.Fatalf("SupportedMC = %s but row zero is %s", SupportedMC, Minecrafts[0].MC)
+	}
+	seen := map[string]bool{}
+	for _, m := range Minecrafts {
+		if seen[m.MC] {
+			t.Fatalf("%s is in the table twice", m.MC)
+		}
+		seen[m.MC] = true
+		java, ok := JavaFor(m.MC)
+		if !ok || java != m.Java {
+			t.Fatalf("JavaFor(%s) = %d, %v; the table says %d", m.MC, java, ok, m.Java)
+		}
+		if !Runnable(m.MC) {
+			t.Fatalf("%s is a row and not runnable", m.MC)
+		}
+	}
+	a, _ := JavaFor("1.20.1")
+	b, _ := JavaFor("1.21.1")
+	if a == b {
+		t.Fatal("a Minecraft version change that does not change the JDK: the table is not saying anything")
+	}
+	if ChangedMinecraft(Pack{MC: "1.20.1"}, Pack{MC: "1.21.1"}) != true {
+		t.Fatal("1.20.1 → 1.21.1 is not a Minecraft version change")
+	}
+	if ChangedMinecraft(Pack{MC: "1.20.1"}, Pack{}) || ChangedMinecraft(Pack{}, Pack{MC: "1.21.1"}) {
+		t.Fatal("a pack that names no version is evidence of a change")
 	}
 }

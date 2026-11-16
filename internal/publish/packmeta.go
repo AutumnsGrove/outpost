@@ -11,15 +11,67 @@ import (
 	"time"
 )
 
-// SupportedMC is the only Minecraft version Outpost can boot today.
+// Minecraft is one Minecraft version this image can boot, and the JDK it needs.
 //
-// internal/cloudinit installs openjdk-17, which stops at 1.20.4. A 1.21 pack
-// fails at boot on "Unsupported class file major version 65", the orchestrator
-// reads that as a server that never came up, and it deletes the VPS — a Java
-// version showing up as a modpack problem twenty minutes into a rental. The two
-// move together: change this and the packages list in the cloud-init template in
-// the same commit.
+// A 1.21 pack on Java 17 fails at boot on "Unsupported class file major version
+// 65", the orchestrator reads that as a server that never came up, and it deletes
+// the VPS — a Java version showing up as a modpack problem twenty minutes into a
+// rental. So the version and its JDK are one row here, never two facts that can
+// drift: internal/cloudinit installs exactly the JDK of the row a pack names, and
+// the orchestrator reads that row from the profile's pack.json before it rents.
+//
+// The table is a list of versions somebody has vouched for, not every version
+// that exists. Adding a row says "a shared world can live here", so the next one
+// is a decision (a Java version, a Fabric build, a boot) rather than a line.
+// Minecraft versions are not interchangeable either: a world made in 1.20.1 does
+// not open in 1.21.1, which is why the version a profile holds is checked and not
+// just the pack (see worldGuard).
+//
+// Oldest first, so [0] is the default and vanilla's version.
+type Minecraft struct {
+	MC   string
+	Java int
+}
+
+// Minecrafts is every Minecraft version Outpost can boot.
+var Minecrafts = []Minecraft{
+	{MC: "1.20.1", Java: 17},
+	{MC: "1.21.1", Java: 21},
+}
+
+// SupportedMC is the Minecraft version a pack that names none is assumed to be
+// for, and the one vanilla is: the oldest row, which is also the one every world
+// saved so far was made in. `pack fetch` without --version keeps resolving to it,
+// so the default fetch does not move somebody's world.
 const SupportedMC = "1.20.1"
+
+// JavaFor is the JDK a Minecraft version needs, and whether this image can boot
+// it at all.
+func JavaFor(mc string) (int, bool) {
+	for _, m := range Minecrafts {
+		if strings.EqualFold(m.MC, mc) {
+			return m.Java, true
+		}
+	}
+	return 0, false
+}
+
+// Runnable reports whether this Minecraft version is one the image can boot.
+func Runnable(mc string) bool {
+	_, ok := JavaFor(mc)
+	return ok
+}
+
+// MinecraftList is the table as prose, for the refusals and the panel: "1.20.1
+// (Java 17), 1.21.1 (Java 21)". One wording, because a refusal and a greyed-out
+// row that disagree are worse than either alone.
+func MinecraftList() string {
+	out := make([]string, 0, len(Minecrafts))
+	for _, m := range Minecrafts {
+		out = append(out, fmt.Sprintf("%s (Java %d)", m.MC, m.Java))
+	}
+	return strings.Join(out, ", ")
+}
 
 // PackFile is the manifest `outpost pack fetch` leaves in a pack directory. Its
 // absence is not an error: a directory of hand-picked jars is still a pack, and
@@ -93,6 +145,33 @@ func (p Pack) SameBuild(o Pack) bool {
 	return p.Source == o.Source && p.Slug == o.Slug && p.VersionNumber == o.VersionNumber
 }
 
+// handRolledPack describes a pack directory with no pack.json: server/, mods/
+// and config/ somebody curated, or a bare `publish --fabric 1.21.1` with nothing
+// but a launcher.
+//
+// It deliberately names no source and no slug. Two hand-rolled builds are not "a
+// different pack" in SamePack's terms (source+slug), which is what lets a curated
+// directory be republished over its own world without the guard treating each
+// upload as a pack swap. What it does say is the Minecraft version, because that
+// is the one thing a boot and a world both need to agree on, and the flag is the
+// only place a hand-rolled pack can say it.
+//
+// No FetchedAt on purpose: nothing was fetched, and a timestamp here would make
+// every republish of an unchanged directory upload a byte-different manifest.
+func handRolledPack(opts Options, files int) Pack {
+	mc := opts.FabricMC
+	if mc == "" {
+		mc = SupportedMC
+	}
+	return Pack{
+		Name:          "Hand-rolled",
+		MC:            mc,
+		Loader:        "fabric",
+		LoaderVersion: opts.FabricLoader,
+		FileCount:     files,
+	}
+}
+
 // LoadPack reads pack.json out of a pack directory. A directory without one is
 // a hand-rolled pack, which returns ok=false rather than an error.
 func LoadPack(dir string) (Pack, bool, error) {
@@ -151,12 +230,26 @@ func VanillaPack() Pack {
 // anything. Exported because `outpost pack fetch` asks the same question before
 // downloading 300 files instead of after.
 func CheckPack(p Pack) error {
-	if p.MC != "" && p.MC != SupportedMC {
-		return fmt.Errorf("pack %s is Minecraft %s; outpost runs %s (cloud-init installs Java 17, which stops there)",
-			p.Describe(), p.MC, SupportedMC)
+	if p.MC != "" && !Runnable(p.MC) {
+		return fmt.Errorf("pack %s is Minecraft %s; outpost boots %s — a version outside that table has no JDK here, so it is not offered",
+			p.Describe(), p.MC, MinecraftList())
 	}
 	if p.Loader != "" && !strings.EqualFold(p.Loader, "fabric") {
 		return fmt.Errorf("pack %s needs the %s loader; only Fabric is supported so far", p.Describe(), p.Loader)
 	}
 	return nil
+}
+
+// ChangedMinecraft reports whether two descriptions disagree about the Minecraft
+// version. Two empty ones agree: a hand-rolled pack that names no version is not
+// evidence of a change.
+//
+// This is the question a world cannot answer with "probably fine". Block ids and
+// registry entries move between Minecraft versions, and the server either
+// migrates the world with no way back or refuses to open it at all.
+func ChangedMinecraft(a, b Pack) bool {
+	if a.MC == "" || b.MC == "" {
+		return false
+	}
+	return !strings.EqualFold(a.MC, b.MC)
 }

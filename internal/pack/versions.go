@@ -114,11 +114,16 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 	}
 
 	// What the profile already holds, so the picker can mark it and the page can
-	// say "an update is available" on load.
+	// say "an update is available" on load. The Minecraft version it holds comes
+	// with it: with more than one runnable version in the table, "newest runnable"
+	// is no longer the same question as "an update for this world", and the newer
+	// 1.21.1 build of a pack is not an update of the 1.20.1 one.
+	heldMC := ""
 	if raw, err := m.Store.Get(ctx, m.AssetBucket, "profiles/"+out.Profile+"/pack.json"); err == nil {
 		var held publish.Pack
 		if json.Unmarshal(raw, &held) == nil {
 			out.Installed = held.VersionID
+			heldMC = held.MC
 		}
 	}
 
@@ -133,9 +138,11 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 		if installed {
 			seenInstalled = true
 		}
-		if run && !installed && !seenInstalled && out.Newer == "" {
+		if run && sameGameVersion(v, heldMC) && !installed && !seenInstalled && out.Newer == "" {
 			// Newest-first order, so the first runnable version before the installed
-			// one is the update. Anything after it is a downgrade.
+			// one is the update. Anything after it is a downgrade, and anything for
+			// another Minecraft version is a different game: a 1.21.1 build is not an
+			// update of a 1.20.1 world, it is a world replacement.
 			out.Newer = v.VersionNumber
 		}
 
@@ -168,6 +175,16 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 	return out, nil
 }
 
+// sameGameVersion reports whether a version is for the Minecraft version the
+// profile already holds. No held version means no opinion: a profile with nothing
+// installed has no world to keep.
+func sameGameVersion(v Version, heldMC string) bool {
+	if heldMC == "" {
+		return true
+	}
+	return contains(v.GameVersions, heldMC)
+}
+
 func countBootable(choices []VersionChoice) int {
 	n := 0
 	for _, c := range choices {
@@ -179,7 +196,11 @@ func countBootable(choices []VersionChoice) int {
 }
 
 // bootable answers "can this server run this version", in the same terms
-// publish.CheckPack and pack.pickVersion use.
+// publish.CheckPack and pack.pickVersion use: a Fabric build, and a Minecraft
+// version this image has a row for. The row matters because the row carries the
+// JDK — a 1.21.1 build is bootable precisely because cloud-init will install Java
+// 21 for it, and one outside the table is refused here for the same reason it is
+// refused at upload.
 func bootable(v Version) (bool, string) {
 	if !contains(v.Loaders, "fabric") {
 		if len(v.Loaders) == 0 {
@@ -188,13 +209,13 @@ func bootable(v Version) (bool, string) {
 		return false, "no Fabric build (" + strings.Join(v.Loaders, ", ") + ")"
 	}
 	for _, mc := range v.GameVersions {
-		if strings.EqualFold(mc, publish.SupportedMC) {
+		if publish.Runnable(mc) {
 			return true, ""
 		}
 	}
 	if len(v.GameVersions) == 0 {
 		return false, "the pack names no Minecraft version"
 	}
-	return false, fmt.Sprintf("minecraft %s — this server installs Java 17, which stops at %s",
-		strings.Join(v.GameVersions, ", "), publish.SupportedMC)
+	return false, fmt.Sprintf("minecraft %s — outpost boots %s",
+		strings.Join(v.GameVersions, ", "), publish.MinecraftList())
 }

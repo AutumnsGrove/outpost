@@ -692,3 +692,30 @@ func TestDeleteProfileRefusesTheActiveProfileItself(t *testing.T) {
 		t.Fatal("the refusal still removed files")
 	}
 }
+
+// With more than one runnable Minecraft version, "the newest runnable build" is no
+// longer the same question as "an update for this world": a 1.21.1 build of the
+// same pack is runnable, and installing it would replace the world, not update it.
+func TestVersionsDoesNotCallAnotherMinecraftVersionAnUpdate(t *testing.T) {
+	m, store := newManager(t)
+	newFakeModrinth(t, []Version{
+		{ID: "java21", VersionNumber: "6.0.0", VersionType: "release", GameVersions: []string{"1.21.1"}, Loaders: []string{"fabric"}},
+		{ID: "newer", VersionNumber: "5.5.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+		{ID: "have", VersionNumber: "5.4.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+	})
+	store.objects["profiles/test-pack/pack.json"] = []byte(`{"slug":"test-pack","versionId":"have","mc":"1.20.1"}`)
+
+	out, err := m.Versions(context.Background(), "test-pack", "")
+	if err != nil {
+		t.Fatalf("versions: %v", err)
+	}
+	if out.Newer != "5.5.0" {
+		t.Fatalf("newer = %q: 6.0.0 is a different game, not an update of a 1.20.1 world", out.Newer)
+	}
+	// It is still offered: the ceiling has to be visible, not hidden.
+	for _, c := range out.Choices {
+		if c.ID == "java21" && (!c.Bootable || c.Reason != "") {
+			t.Fatalf("1.21.1 should be runnable now it has a JDK: %+v", c)
+		}
+	}
+}
