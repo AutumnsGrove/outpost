@@ -92,9 +92,9 @@ func TestExpandPathHandlesATilde(t *testing.T) {
 
 // --- against a real SSH server -------------------------------------------
 
-// startSSH runs an in-process SSH server that answers every exec with the given
-// handler, and points sshPort at it.
-func startSSH(t *testing.T, handler func(cmd string) (string, uint32)) (string, ssh.Signer) {
+// startSSH runs an in-process SSH server that answers every exec with the handler,
+// and points sshPort at it. The handler returns stdout, stderr and an exit status.
+func startSSH(t *testing.T, handler func(cmd string) (string, string, uint32)) (string, ssh.Signer) {
 	t.Helper()
 
 	_, hostKey, err := ed25519.GenerateKey(rand.Reader)
@@ -141,7 +141,15 @@ func startSSH(t *testing.T, handler func(cmd string) (string, uint32)) (string, 
 	return keyPath, clientSigner
 }
 
-func serveOne(conn net.Conn, cfg *ssh.ServerConfig, handler func(cmd string) (string, uint32), t *testing.T) {
+// stdoutOnly adapts the common case: one stream, one status.
+func stdoutOnly(handler func(cmd string) (string, uint32)) func(cmd string) (string, string, uint32) {
+	return func(cmd string) (string, string, uint32) {
+		out, code := handler(cmd)
+		return out, "", code
+	}
+}
+
+func serveOne(conn net.Conn, cfg *ssh.ServerConfig, handler func(cmd string) (string, string, uint32), t *testing.T) {
 	sc, chans, reqs, err := ssh.NewServerConn(conn, cfg)
 	if err != nil {
 		_ = conn.Close()
@@ -174,27 +182,30 @@ func serveOne(conn net.Conn, cfg *ssh.ServerConfig, handler func(cmd string) (st
 				}
 				n := binary.BigEndian.Uint32(payload[:4])
 				cmd := string(payload[4 : 4+n])
-				out, code := handler(cmd)
+				stdout, stderr, code := handler(cmd)
 				_ = req.Reply(true, nil)
 
 				// Output first, then the exit status: the status is what tells the
 				// client the command is over, and real sshd does not send it until the
 				// output is on the wire.
-				if out != "" {
-					if n, werr := ch.Write([]byte(out)); werr != nil {
-						t.Logf("fake server write failed after %d bytes: %v", n, werr)
+				if stdout != "" {
+					if _, err := ch.Write([]byte(stdout)); err != nil {
+						t.Logf("fake server stdout write: %v", err)
 					}
 				}
-				// EOF first: closing a channel without it can drop the data that was
-				// just written, which is not what sshd does.
+				if stderr != "" {
+					if _, err := ch.Stderr().Write([]byte(stderr)); err != nil {
+						t.Logf("fake server stderr write: %v", err)
+					}
+				}
 				_ = ch.CloseWrite()
 				status := make([]byte, 4)
 				binary.BigEndian.PutUint32(status, code)
 				_, _ = ch.SendRequest("exit-status", false, status)
 				// Give the mux a moment to put the bytes on the wire before the
 				// deferred Close. sshd has a process exit to do this for it; a fake
-				// does not, and closing in the same instruction loses the data
-				// often enough to make the test flaky.
+				// does not, and closing in the same instruction loses the data often
+				// enough to make the test flaky.
 				time.Sleep(20 * time.Millisecond)
 				return
 			}
@@ -204,10 +215,10 @@ func serveOne(conn net.Conn, cfg *ssh.ServerConfig, handler func(cmd string) (st
 
 func TestRunSendsTheCommandOverSSH(t *testing.T) {
 	var got string
-	keyPath, _ := startSSH(t, func(cmd string) (string, uint32) {
+	keyPath, _ := startSSH(t, stdoutOnly(func(cmd string) (string, uint32) {
 		got = cmd
 		return "hello from the vps\n", 0
-	})
+	}))
 
 	out, err := New("root", keyPath).Run(context.Background(), "127.0.0.1", "tar -czf world.tar.gz world")
 	if err != nil {
@@ -223,10 +234,27 @@ func TestRunSendsTheCommandOverSSH(t *testing.T) {
 
 // "rclone said no" is the only useful thing in the log when a save fails, so a
 // non-zero exit has to carry the remote output rather than just the exit code.
-func TestAFailedCommandCarriesItsOutput(t *testing.T) {
-	keyPath, _ := startSSH(t, func(string) (string, uint32) {
-		return "rclone: 501 NotImplemented\n", 1
+// stdout and stderr arrive on separate pipes from separate goroutines, and the
+// shutdown script's "SIZE=" line is on one of them. Sharing a writer is a data race
+// (caught by -race) and can tear the line that decides whether the world was saved.
+func TestBothStreamsLandInTheOutput(t *testing.T) {
+	keyPath, _ := startSSH(t, func(string) (string, string, uint32) {
+		return "SIZE=1234\n", "rclone: 4 KiB/s\n", 0
 	})
+
+	out, err := New("root", keyPath).Run(context.Background(), "127.0.0.1", "save.sh")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out, "SIZE=1234") || !strings.Contains(out, "rclone: 4 KiB/s") {
+		t.Fatalf("output = %q, want both streams", out)
+	}
+}
+
+func TestAFailedCommandCarriesItsOutput(t *testing.T) {
+	keyPath, _ := startSSH(t, stdoutOnly(func(string) (string, uint32) {
+		return "rclone: 501 NotImplemented\n", 1
+	}))
 
 	out, err := New("root", keyPath).Run(context.Background(), "127.0.0.1", "rclone copy")
 	if err == nil {

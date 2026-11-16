@@ -79,17 +79,24 @@ func (r *Runner) Run(ctx context.Context, host, cmd string) (string, error) {
 	}
 	defer session.Close()
 
-	var out bytes.Buffer
-	session.Stdout = &out
-	session.Stderr = &out
+	// Two buffers, not one shared one: the library copies stdout and stderr from
+	// separate goroutines, so sharing a writer is a data race (os/exec used to
+	// deduplicate the two for us by putting both on one pipe). Torn output here is
+	// not cosmetic — the shutdown script prints "SIZE=<bytes>" on stdout and rclone
+	// chatters on stderr, and a lost SIZE line reads as a failed upload, which means
+	// retries and a VPS that stays up.
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	combined := func() string { return stdout.String() + stderr.String() }
 
 	if err := session.Run(cmd); err != nil {
 		if ctx.Err() != nil {
-			return out.String(), fmt.Errorf("ssh %s: %w", host, ctx.Err())
+			return combined(), fmt.Errorf("ssh %s: %w", host, ctx.Err())
 		}
-		return out.String(), fmt.Errorf("ssh %s: %w: %s", host, err, strings.TrimSpace(out.String()))
+		return combined(), fmt.Errorf("ssh %s: %w: %s", host, err, strings.TrimSpace(combined()))
 	}
-	return out.String(), nil
+	return combined(), nil
 }
 
 // Ready reports whether SSH on host answers at all. Used while waiting for a
@@ -152,10 +159,13 @@ func dial(ctx context.Context, host, user string, signer ssh.Signer) (*ssh.Clien
 		User:            user,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // see above: nothing to pin
-		Timeout:         10 * time.Second,
 	}
 
-	var d net.Dialer
+	// ClientConfig.Timeout is only read by ssh.Dial, which this does not use (it
+	// needs the context), so the connect bound has to be the dialer's. Fifteen
+	// minutes of SYN retries on the terminating path is fifteen minutes before each
+	// save attempt, on a VPS that is still billing.
+	d := net.Dialer{Timeout: 10 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("ssh %s: %w", addr, err)
