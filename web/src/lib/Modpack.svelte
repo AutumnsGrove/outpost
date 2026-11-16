@@ -17,6 +17,7 @@
 		type PackJob,
 		type PackMeta,
 		type PackOverview,
+		type PackVersion,
 		type PackVersions
 	} from './api';
 
@@ -103,6 +104,32 @@
 		}
 	}
 
+	// profileMC is the Minecraft version the profile the picker is aimed at already
+	// holds. Empty for a profile with nothing installed, which is the case with no
+	// question to ask: there is no world to keep or lose.
+	const profileMC = $derived.by(() => {
+		const list = versions;
+		if (!list) return '';
+		// The row's own id: a profile published as --profile potato is not named after
+		// its pack, so matching on the pack instead would read another profile's world.
+		const held = pack?.profiles.find((p) => p.id === list.profile);
+		return held?.pack?.mc ?? '';
+	});
+
+	// blocked is why a version cannot be picked, in the same place an unbootable
+	// version is refused. Two different questions share the answer: this server
+	// cannot run it at all (no JDK for that Minecraft version), or it can, but not
+	// into this profile — a world does not survive 1.20.1 → 1.21.1, so a runnable
+	// 1.21.1 build is a new profile, not an update. The refusal has to say which,
+	// or the pack looks like it has no 1.21 build at all.
+	function blocked(c: PackVersion): string {
+		if (!c.bootable) return c.reason ?? 'this server cannot run this version';
+		if (profileMC && !c.gameVersions.includes(profileMC)) {
+			return `minecraft ${c.gameVersions.join(', ')} — ${versions?.profile} holds a ${profileMC} world, which does not open in another Minecraft version; a new profile needs \`outpost publish --profile <id>\` for now`;
+		}
+		return '';
+	}
+
 	// identity is the line you match against your own Prism instance. A profile is
 	// only useful if you know which client can join it, and two profiles on the
 	// same Minecraft version are not interchangeable.
@@ -143,7 +170,7 @@
 		targetProfile = id;
 		await loadVersions();
 		const next = versions?.choices.find((c) => c.number === want);
-		if (next?.bootable) chosen = { id: next.id, number: next.number };
+		if (next && !blocked(next)) chosen = { id: next.id, number: next.number };
 	}
 
 	async function loadVersions() {
@@ -303,7 +330,9 @@
 	function label(profile: string, slug: string): string {
 		const existing = pack?.profiles.find((p) => p.id === profile);
 		if (!existing?.pack) return `Install into ${profile}`;
-		const samePack = !existing.pack.slug || existing.pack.slug === slug;
+		// A hand-rolled profile names no pack, so it is not this one whatever it is.
+		// Calling that "Update" reads like the jars will be kept, and they will not.
+		const samePack = !!existing.pack.slug && existing.pack.slug === slug;
 		if (!samePack) return `Replace ${profile}`;
 		return `Update ${profile}`;
 	}
@@ -355,7 +384,7 @@
 						<span class="name mono">{p.id}</span>
 						{#if p.active}<span class="badge" title="the next start boots this profile">active</span>{/if}
 						<span class="meta muted">
-							{meta ? `${meta.name} ${meta.versionNumber}` : 'hand-rolled pack'}
+							{meta ? [meta.name, meta.versionNumber].filter(Boolean).join(' ') : 'hand-rolled pack'}
 							{#if meta?.mc}· <span class="mono">{identity(meta)}</span>{/if}
 							· {p.mods} mod{p.mods === 1 ? '' : 's'}
 							{#if p.bytes > 0}· {bytes(p.bytes)}{/if}
@@ -520,11 +549,11 @@
 			</p>
 			<ul class="versions">
 				{#each versions.choices as c (c.id)}
-					<li class:off={!c.bootable} class:picked={chosen?.id === c.id}>
+					<li class:off={!!blocked(c)} class:picked={chosen?.id === c.id}>
 						<button
 							class="vrow"
-							disabled={!c.bootable || !editable || running}
-							title={c.bootable ? 'Resolve this version' : c.reason}
+							disabled={!!blocked(c) || !editable || running}
+							title={blocked(c) || 'Resolve this version'}
 							onclick={() => pick(c)}
 						>
 							<span class="vnum mono">{c.number}</span>
@@ -532,8 +561,8 @@
 							{#if c.installed}<span class="badge">installed</span>{/if}
 							<span class="vmc mono">{c.gameVersions.join(', ')}</span>
 							<span class="vwhen muted">{clock(c.publishedAt)}</span>
-							{#if !c.bootable}
-								<span class="vwhy">{c.reason}</span>
+							{#if blocked(c)}
+								<span class="vwhy">{blocked(c)}</span>
 							{/if}
 						</button>
 					</li>

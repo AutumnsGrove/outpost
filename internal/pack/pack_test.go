@@ -132,3 +132,52 @@ func TestHeapForLeavesTwoGigabytesForTheBox(t *testing.T) {
 		}
 	}
 }
+
+// bootable decides which rows the picker offers, so it has to follow the same
+// table publish.CheckPack and the boot do — including for the versions it refuses,
+// whose reason is the only thing a person sees.
+func TestBootableFollowsTheMinecraftTable(t *testing.T) {
+	tests := []struct {
+		name     string
+		version  Version
+		bootable bool
+		inReason string
+	}{
+		{
+			name:     "the version every world so far was made in",
+			version:  Version{GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
+			bootable: true,
+		},
+		{
+			name:     "the second row, which is Java 21",
+			version:  Version{GameVersions: []string{"1.21.1"}, Loaders: []string{"fabric"}},
+			bootable: true,
+		},
+		{
+			name:     "a version outside the table",
+			version:  Version{GameVersions: []string{"1.21.4"}, Loaders: []string{"fabric"}},
+			bootable: false,
+			inReason: "1.20.1 (Java 17), 1.21.1 (Java 21)",
+		},
+		{
+			name:     "no Fabric build",
+			version:  Version{GameVersions: []string{"1.20.1"}, Loaders: []string{"forge"}},
+			bootable: false,
+			inReason: "no Fabric build",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, reason := bootable(tt.version)
+			if got != tt.bootable {
+				t.Fatalf("bootable = %v, want %v (%s)", got, tt.bootable, reason)
+			}
+			if tt.bootable && reason != "" {
+				t.Fatalf("a runnable version explained itself: %q", reason)
+			}
+			if tt.inReason != "" && !strings.Contains(reason, tt.inReason) {
+				t.Fatalf("reason = %q, want it to name %q", reason, tt.inReason)
+			}
+		})
+	}
+}

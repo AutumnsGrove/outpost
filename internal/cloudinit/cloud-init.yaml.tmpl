@@ -12,8 +12,12 @@ manage_etc_hosts: true
 package_update: true
 package_upgrade: true
 
+# One JDK, the one this profile's pack says its Minecraft version needs
+# (publish.Minecrafts). Two would be 200 MB on every rental and a second way for
+# the boot to pick the wrong one; none would be a 1.21 pack dying on "Unsupported
+# class file major version 65" after the orchestrator has already paid for a VPS.
 packages:
-  - openjdk-17-jdk-headless
+  - openjdk-{{ .Java }}-jdk-headless
   - curl
   - tar
   - unzip

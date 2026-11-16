@@ -20,6 +20,12 @@ var (
 	safeName   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 )
 
+// javaMajors are the JDK packages Ubuntu 24.04 has (8 and 11 in universe). A
+// table rather than a check for positivity because the value becomes part of a
+// package name, and the difference between a wrong package and a right one is a
+// boot that fails on "no installation candidate".
+var javaMajors = map[int]bool{8: true, 11: true, 17: true, 21: true}
+
 // Data is everything the template needs. Secrets arrive here already read from
 // the orchestrator's environment and are never written to disk anywhere else.
 type Data struct {
@@ -27,7 +33,11 @@ type Data struct {
 	// Profile is which pack+world pair this VPS is for. It scopes every R2 key
 	// the server reads and the shutdown upload writes, so two profiles never see
 	// each other's mods or world.
-	Profile          string
+	Profile string
+	// Java is the JDK major version to install: the one the profile's pack says
+	// its Minecraft version needs. It is passed in rather than looked up here so
+	// that a boot and the `pack.json` the pack wrote are one fact, not two.
+	Java             int
 	MCPort           int
 	RCONPassword     string
 	TailscaleAuthKey string
@@ -48,6 +58,9 @@ func (d Data) Validate() error {
 	}
 	if d.Profile == "" {
 		missing = append(missing, "profile")
+	}
+	if d.Java == 0 {
+		missing = append(missing, "java version")
 	}
 	if d.MCPort == 0 {
 		missing = append(missing, "mc port")
@@ -80,6 +93,12 @@ func (d Data) Validate() error {
 		if !safeSecret.MatchString(v) {
 			return fmt.Errorf("cloud-init: %s has characters outside A-Z a-z 0-9 . _ ~ + = / : -", name)
 		}
+	}
+	// A JDK is a package name in the template: "openjdk-<n>-jdk-headless". Only
+	// the majors Ubuntu ships are accepted, so a pack cannot name a package that
+	// does not exist and fail the boot on "no installation candidate".
+	if _, ok := javaMajors[d.Java]; !ok {
+		return fmt.Errorf("cloud-init: Java %d is not a JDK Ubuntu installs (have 8, 11, 17, 21)", d.Java)
 	}
 	for _, v := range []string{d.Hostname, d.Profile, d.AssetBucket, d.WorldBucket, d.R2AccountID} {
 		if !safeName.MatchString(v) {
