@@ -23,3 +23,7 @@ node_modules/
 .wrangler/
 web/node_modules/
 web/.svelte-kit/
+# The built frontend is NOT committed: the image build runs `pnpm build` fresh
+# from web/src (Dockerfile), and `go:embed all:build` needs it on disk, so a cold
+# clone runs `make web` before `go build`. See PLAN 38.
+web/build/

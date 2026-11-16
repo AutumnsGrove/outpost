@@ -22,6 +22,7 @@ import (
 	"outpost/internal/config"
 	"outpost/internal/orchestrator"
 	"outpost/internal/store"
+	"outpost/internal/updatesignal"
 )
 
 func main() {
@@ -66,7 +67,11 @@ func rootCmd() *cobra.Command {
 			return a.setup(cmd)
 		},
 	}
-	root.PersistentFlags().StringVarP(&a.cfgPath, "config", "c", "config.yaml", "path to config.yaml")
+	// OUTPOST_CONFIG is the default so that the container (and the host wrapper
+	// that execs into it) does not have to repeat the path on every command: the
+	// image's WORKDIR is the data directory, where config.yaml sits beside
+	// outpost.db and packs/.
+	root.PersistentFlags().StringVarP(&a.cfgPath, "config", "c", defaultConfigPath(), "path to config.yaml")
 	root.PersistentFlags().BoolVarP(&a.verbose, "verbose", "v", false, "debug logging")
 
 	root.AddCommand(
@@ -82,8 +87,18 @@ func rootCmd() *cobra.Command {
 		a.playerCmd(),
 		a.packCmd(),
 		a.worldCmd(),
+		a.snapshotCmd(),
+		a.healthcheckCmd(),
 	)
 	return root
+}
+
+// defaultConfigPath is -c's default: the environment's answer when it has one.
+func defaultConfigPath() string {
+	if p := os.Getenv("OUTPOST_CONFIG"); p != "" {
+		return p
+	}
+	return "config.yaml"
 }
 
 func (a *app) setup(cmd *cobra.Command) error {
@@ -123,12 +138,21 @@ func (a *app) setup(cmd *cobra.Command) error {
 }
 
 func (a *app) serveCmd() *cobra.Command {
-	return &cobra.Command{
+	// --listen exists for the container, where the config's 127.0.0.1 would make
+	// the published port unreachable: docker forwards to the container's network
+	// interface, not to its loopback. The loopback restriction lives in compose's
+	// port mapping in that deployment, which is a better place for it — it is the
+	// host's exposure being decided, not the daemon's.
+	var listen string
+	cmd := &cobra.Command{
 		Use:         "serve",
 		Short:       "Run the reconcile loop and the HTTP API",
 		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			defer a.store.Close()
+			if listen != "" {
+				a.cfg.Listen = listen
+			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -142,21 +166,14 @@ func (a *app) serveCmd() *cobra.Command {
 				return err
 			}
 			opts := api.Options{
-				Token:  a.cfg.Secrets.APIToken,
-				Update: a.selfUpdater(),
-				Roster: rost,
-				Packs:  packs,
-				Log:    a.log,
-			}
-			// Under systemd the way to restart is to leave: Restart=always brings
-			// the new binary up. The unit runs with NoNewPrivileges, which stops
-			// the `sudo systemctl restart` the CLI path uses from working here.
-			// INVOCATION_ID is set by systemd and by nothing else.
-			if os.Getenv("INVOCATION_ID") != "" {
-				opts.Restart = func() {
-					a.log.Info("update installed; exiting so systemd starts the new binary")
-					stop()
-				}
+				Token: a.cfg.Secrets.APIToken,
+				// The mailbox the host update watcher watches. Empty config means no
+				// watcher: the page hides the button rather than writing a request
+				// nobody reads.
+				Updates: updatesignal.Mailbox{Dir: a.cfg.UpdateSignalDir},
+				Roster:  rost,
+				Packs:   packs,
+				Log:     a.log,
 			}
 			handler := api.New(a.orch, a.store, opts)
 			srv := &http.Server{
@@ -194,6 +211,8 @@ func (a *app) serveCmd() *cobra.Command {
 			}
 		},
 	}
+	cmd.Flags().StringVar(&listen, "listen", "", "address to listen on (overrides the config's `listen`)")
+	return cmd
 }
 
 func (a *app) startCmd() *cobra.Command {

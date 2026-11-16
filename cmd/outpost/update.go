@@ -3,50 +3,43 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"outpost/internal/store"
-	"outpost/internal/updater"
+	"outpost/internal/updatesignal"
 )
 
-// unitName is the systemd unit `outpost serve` runs under. `outpost update`
-// restarts it by name; the name is a constant because the page and the CLI had
-// better agree about which service they are replacing.
-const unitName = "outpost.service"
-
-// selfUpdater builds an updater for this executable's checkout. It returns nil
-// (and no error) for a binary that is not sitting in a git checkout — a build
-// in /tmp, or a copy someone scp'd — because that is a normal way to run this,
-// not a failure.
-func (a *app) selfUpdater() *updater.Update {
-	u, err := updater.Update{Log: a.log}.ForExecutable(unitName)
-	if err != nil {
-		return nil
-	}
-	if _, err := os.Stat(filepath.Join(u.Dir, ".git")); err != nil {
-		return nil
-	}
-	return &u
-}
-
-// updateCmd pulls, rebuilds and restarts the daemon.
+// updateCmd asks the host update watcher for the newest image.
 //
-// This exists so a phone can do it: Meridian's control plane runs
-// `outpost update` as `autumn`, and the status page has a button that does the
-// same thing. On its own it is also just the deploy command.
+// This used to be `git pull && go build && systemctl restart` from inside the
+// binary. It is a message now, because the daemon is a container: it cannot pull
+// an image, it has no shell to build with, and replacing the process that is
+// running the request is exactly the kind of thing that is worth doing from
+// outside (PLAN 38). The watcher does the pulling, pins the digest, recreates the
+// container, checks it came up, and puts the old image back if it did not.
+//
+// Three callers end up here and all three mean the same thing: this command,
+// Meridian's executor, and the page's Update button (through the API). The answer
+// arrives in the mailbox, not on stdout — the request file is read by the watcher
+// within a second or two, and the container is replaced shortly after.
 func (a *app) updateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "update",
-		Short: "Pull, rebuild and restart the daemon",
+		Short: "Ask the host update watcher for the newest image",
+		Long: "Writes the update request the host watcher watches, then returns. The watcher\\n" +
+			"pulls the newest published image by digest, recreates the container, checks it\\n" +
+			"answers /health, and rolls back if it does not. Watch it with `outpost status`\\n" +
+			"or the page; the outcome is in the update mailbox's result file.",
+		Annotations: map[string]string{requiresCloud: "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			u := a.selfUpdater()
-			if u == nil {
-				return errors.New("this binary is not inside a git checkout, so there is nothing to pull")
+			mailbox := updatesignal.Mailbox{Dir: a.cfg.UpdateSignalDir}
+			if !mailbox.Configured() {
+				return errors.New("no update watcher is configured (update_signal_dir is empty), so there is nothing to ask; deploy with deploy/install.sh and the update comes with it")
 			}
 
+			// Same rule the old in-process updater had, for the same reason: recreating
+			// the daemon mid-session kills the loop that saves the world.
 			st, err := a.orch.Status(cmd.Context())
 			if err != nil {
 				return err
@@ -55,20 +48,11 @@ func (a *app) updateCmd() *cobra.Command {
 				return fmt.Errorf("server is %s; save and stop it before updating (`outpost stop`)", st.State)
 			}
 
-			res, err := u.PullAndBuild(cmd.Context())
-			if err != nil {
+			if err := mailbox.Request(); err != nil {
 				return err
 			}
-			if !res.Changed {
-				fmt.Printf("already up to date at %s\n", res.After)
-				return nil
-			}
-
-			fmt.Printf("updated %s → %s\n", res.Before, res.After)
-			if err := u.Restart(cmd.Context()); err != nil {
-				return fmt.Errorf("built, but the restart failed: %w", err)
-			}
-			fmt.Println("restarted", unitName)
+			fmt.Println("asked the update watcher for the newest image:", mailbox.Dir)
+			fmt.Println("it pulls, recreates the container and checks it answers /health; the outcome lands in", mailbox.Dir+"/result")
 			return nil
 		},
 	}

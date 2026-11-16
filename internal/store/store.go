@@ -8,8 +8,11 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -217,6 +220,34 @@ func (s *Store) Lock(ctx context.Context) (release func(), err error) {
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Snapshot writes a consistent copy of the database to path.
+//
+// VACUUM INTO rather than a file copy: the database runs in WAL mode, so the
+// live outpost.db is not a complete picture of itself — the newest commits are
+// in outpost.db-wal until a checkpoint, and a copy of the main file alone can be
+// a version of the database from before the last session. VACUUM INTO asks SQLite
+// for a transactionally consistent copy, which is what the update watcher restores
+// if a new image has to be rolled back.
+//
+// The caller owns the path: an existing file is replaced, because a watcher that
+// could not overwrite yesterday's snapshot would refuse an update for no reason
+// the operator could see.
+func (s *Store) Snapshot(ctx context.Context, path string) error {
+	if path == "" {
+		return errors.New("snapshot: no path")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("replace %s: %w", path, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("snapshot to %s: %w", path, err)
+	}
+	return nil
+}
 
 func stamp(t time.Time) string {
 	if t.IsZero() {
