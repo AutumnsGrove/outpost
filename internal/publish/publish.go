@@ -263,8 +263,17 @@ type Result struct {
 // in this profile. The page calls it to show a warning before someone commits to
 // a 300 MB download, and Run calls it so there is one answer, not two.
 type Preflight struct {
-	// Pack is nil for a hand-rolled pack directory.
+	// Pack is the manifest this publish would upload. It is never nil: a directory
+	// with no pack.json gets a generated one (handRolledPack), because the world
+	// guard, the plan guard and the orchestrator's JDK all want to know what
+	// Minecraft version is being published.
 	Pack *Pack
+
+	// Packed says the directory shipped its own pack.json. That is what turns on
+	// the pack-only rules — prune config/ and root/, take the loader version from
+	// the pack — and it is what tells an update of a pack apart from somebody
+	// dropping a curated directory into the profile.
+	Packed bool
 
 	Profile string
 
@@ -288,15 +297,24 @@ func Inspect(ctx context.Context, st Store, opts Options) (Preflight, error) {
 		return pf, err
 	}
 	if !packed {
-		return pf, nil
+		// A hand-rolled directory is a pack with a generated manifest. It goes
+		// through the same guards as a fetched one, because the questions they ask
+		// are about the profile and the world, not about where the jars came from:
+		// "is this Minecraft version bootable", "does this world belong to this
+		// game". fileCount arrives in Build, when there is something to count.
+		pk = handRolledPack(opts, 0)
 	}
-	return InspectPack(ctx, st, opts, pk)
+	return inspectPack(ctx, st, opts, pk, packed)
 }
 
 // InspectPack is Inspect for a pack that is not on disk yet, which is what the
 // page has after it resolves a link and before anyone commits to the download.
 func InspectPack(ctx context.Context, st Store, opts Options, pk Pack) (Preflight, error) {
-	pf := Preflight{Profile: opts.ProfileOf()}
+	return inspectPack(ctx, st, opts, pk, true)
+}
+
+func inspectPack(ctx context.Context, st Store, opts Options, pk Pack, packed bool) (Preflight, error) {
+	pf := Preflight{Profile: opts.ProfileOf(), Packed: packed}
 
 	if err := CheckPack(pk); err != nil {
 		return pf, err
@@ -339,7 +357,8 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	res.Warnings = append(res.Warnings, pf.Warnings...)
 	discardWorld = pf.Discard
 
-	if pk := pf.Pack; pk != nil {
+	if pf.Packed {
+		pk := pf.Pack
 		// Pruning is not optional for a pack: the previous version's jars have to
 		// go, or the server loads two of everything.
 		opts.Prune = true
@@ -442,7 +461,7 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// "vanilla" profile keeps forty-nine jars. config/ and root/ are only pruned on
 	// request, because a hand-rolled directory may be the first publish into a
 	// profile whose configs somebody wrote by hand.
-	if packed := pf.Pack != nil; opts.Prune || !packed {
+	if packed := pf.Packed; opts.Prune || !packed {
 		removed, err := prune(ctx, st, opts, objects, opts.Prune || packed)
 		if err != nil {
 			return res, err
@@ -458,28 +477,23 @@ func Run(ctx context.Context, st Store, opts Options) (Result, error) {
 	// Everything is up and verified: only now is it true that this bucket holds
 	// this pack, which is what the marker claims. Discarding the old world happens
 	// here too, never before the upload.
-	switch {
-	case pf.Pack != nil:
-		if err := recordPack(ctx, st, opts, *pf.Pack, discardWorld); err != nil {
-			return res, err
-		}
-	default:
-		// A hand-rolled pack has no identity to record, so both halves of an earlier
-		// fetched publish have to go: the marker in the world bucket, or the next
-		// packed publish trusts a label that no longer describes the assets, and the
-		// manifest in the asset bucket, or the page keeps naming a pack that is not
-		// installed any more.
-		if opts.AssetBucket != "" {
-			if err := st.Remove(ctx, opts.AssetBucket, profilePrefix(opts.ProfileOf())+PackFile); err != nil {
-				return res, fmt.Errorf("clear the pack manifest: %w", err)
+	//
+	// Hand-rolled publishes write a marker like any other: it used to be deleted,
+	// because a curated directory had no identity to write. Now it has one that
+	// matters — the Minecraft version — and it is the marker the next publish's
+	// world guard reads. The marker is the manifest that was just uploaded, read
+	// back, so the two can never disagree about what this profile holds.
+	installed := *pf.Pack
+	for _, o := range objects {
+		if o.Key == profilePrefix(opts.ProfileOf())+PackFile {
+			if err := json.Unmarshal(o.Content, &installed); err != nil {
+				return res, fmt.Errorf("read the manifest this publish uploaded: %w", err)
 			}
+			break
 		}
-		if opts.WorldBucket != "" {
-			_, marker := worldKeys(opts.ProfileOf())
-			if err := st.Remove(ctx, opts.WorldBucket, marker); err != nil {
-				return res, fmt.Errorf("clear the pack marker: %w", err)
-			}
-		}
+	}
+	if err := recordPack(ctx, st, opts, installed, discardWorld); err != nil {
+		return res, err
 	}
 	return res, nil
 }
@@ -671,18 +685,6 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 	// start.sh is what minecraft.service runs. Generating one means a bare
 	// `outpost publish --fabric 1.20.1` produces a bootable server rather than a
 	// VPS that fails systemd twenty minutes later.
-	// pack.json is not just local bookkeeping: it is how the page names a profile
-	// ("Fabulously Optimized 5.2.8", "minecraft 1.20.1") and how the RAM guard
-	// knows what it is looking at. It is small, and it belongs beside the files it
-	// describes.
-	if packed {
-		raw, err := os.ReadFile(filepath.Join(opts.Dir, PackFile))
-		if err != nil {
-			return nil, nil, fmt.Errorf("read %s: %w", PackFile, err)
-		}
-		add(PackFile, Object{Key: PackFile, Content: raw, Size: int64(len(raw))})
-	}
-
 	if !hasKey(objects, "scripts/start.sh") {
 		add("scripts/start.sh", textObject("scripts/start.sh", defaultStartScript))
 		warnings = append(warnings, "generated scripts/start.sh (2 GB heap; raise it in the pack if the modpack needs more)")
@@ -690,6 +692,36 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 
 	if !opts.Open && !hasKey(objects, "server/whitelist.json") {
 		return nil, nil, errors.New("no whitelist: pass --whitelist name1,name2 (resolved through Mojang), put server/whitelist.json in the pack, or pass --open for a server anyone can join")
+	}
+
+	// pack.json is not just local bookkeeping: it is how the page names a profile
+	// ("Fabulously Optimized 5.2.8", "minecraft 1.20.1"), how the RAM guard knows
+	// what it is looking at, and how the orchestrator decides which JDK this
+	// profile's VPS installs (`publish.Minecrafts`). It is small, and it belongs
+	// beside the files it describes.
+	//
+	// A directory without one is not a pack with nothing to say: it is a pack
+	// somebody curated by hand, and shipping no manifest left the page calling it
+	// "hand-rolled pack" with no Minecraft version at all — so a hand-rolled 1.21.1
+	// build was indistinguishable from a 1.20.1 one, including to the boot. The
+	// generated one names no source and no slug on purpose: two hand-rolled builds
+	// are not "a different pack" to the world guard (SamePack is source+slug), so
+	// republishing a curated directory over its own world keeps working.
+	if packed {
+		raw, err := os.ReadFile(filepath.Join(opts.Dir, PackFile))
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %w", PackFile, err)
+		}
+		add(PackFile, Object{Key: PackFile, Content: raw, Size: int64(len(raw))})
+	} else {
+		pk := handRolledPack(opts, packFileCount(objects))
+		raw, err := json.MarshalIndent(pk, "", "  ")
+		if err != nil {
+			return nil, nil, err
+		}
+		raw = append(raw, '\n')
+		add(PackFile, Object{Key: PackFile, Content: raw, Size: int64(len(raw))})
+		warnings = append(warnings, fmt.Sprintf("generated %s: this is a hand-rolled pack, minecraft %s", PackFile, pk.MC))
 	}
 
 	// Every key is scoped by profile last, after all the key checks above, so the
@@ -709,6 +741,19 @@ func Build(ctx context.Context, opts Options) ([]Object, []string, error) {
 
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Key < objects[j].Key })
 	return objects, warnings, nil
+}
+
+// packFileCount is how many files a publish puts in the profile, which is what
+// pack.json's fileCount means: the pack's own files, not the player list that
+// every profile shares.
+func packFileCount(objects []Object) int {
+	files := 0
+	for _, o := range objects {
+		if !playerKeys[o.Key] && o.Key != PackFile {
+			files++
+		}
+	}
+	return files
 }
 
 // whitelistNamesIn reads the names out of one whitelist.json, and answers nil for

@@ -29,8 +29,10 @@ type packOverview struct {
 	// profiles underneath a live server would file its world in the wrong drawer.
 	Editable bool   `json:"editable"`
 	State    string `json:"state"`
-	// SupportedMC is the Minecraft version this image can boot, so the panel can
-	// offer a vanilla profile without hardcoding a version number in the page.
+	// SupportedMC is the Minecraft version `Install Vanilla` writes, so the panel
+	// can offer one without hardcoding a version number in the page. It is the
+	// default row of publish.Minecrafts, not the only version the image boots:
+	// a pack may be for another row, and its own pack.json is what says so.
 	SupportedMC string `json:"supportedMc"`
 	// Detail explains why the panel is read-only, when it is.
 	Detail string `json:"detail,omitempty"`
