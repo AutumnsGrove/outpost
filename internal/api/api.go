@@ -15,13 +15,12 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"outpost/internal/orchestrator"
 	"outpost/internal/pack"
 	"outpost/internal/roster"
 	"outpost/internal/store"
-	"outpost/internal/updater"
+	"outpost/internal/updatesignal"
 )
 
 // Server is the HTTP handler set.
@@ -36,14 +35,12 @@ type Server struct {
 	// submitting a form that rents a server. Issued per process, never stored.
 	formToken string
 
-	// update is nil when the binary cannot find its own checkout (a dev build
-	// in /tmp, say), which hides the Update button rather than offering a
-	// button that fails.
-	update *updater.Update
-	// restart replaces the process after an update. See Options.Restart.
-	restart func()
-	// updating makes the update single-flight: a double tap on the button must
-	// not run two `git pull`s and two builds over the same outpost.new.
+	// updates is the mailbox shared with the host update watcher. A zero one means
+	// no watcher is installed (a binary built from a checkout and run by hand),
+	// which hides the Update button rather than offering a request nobody reads.
+	updates updatesignal.Mailbox
+	// updating makes the update single-flight: a double tap on the button must not
+	// write two requests.
 	updating sync.Mutex
 
 	roster *roster.Roster
@@ -59,13 +56,11 @@ type Options struct {
 	// Token is the optional bearer token for /api/*. Empty means the listener's
 	// loopback binding and tailscale serve are the whole boundary.
 	Token string
-	// Update enables the page's Update button.
-	Update *updater.Update
-	// Restart, when set, is how the daemon replaces itself after a page-driven
-	// update. Under systemd this should simply end the process and let
-	// Restart=always bring the new binary up: the unit runs with NoNewPrivileges,
-	// which makes `sudo systemctl restart` from inside it fail.
-	Restart func()
+	// Updates is the mailbox the host update watcher watches. The daemon does not
+	// update itself and cannot: it is a container with a read-only filesystem and no
+	// docker socket, and the thing that pulls by digest is a host script with the
+	// privileges that needs (PLAN 38). Empty means no watcher is installed.
+	Updates updatesignal.Mailbox
 	// Roster enables the player list and its controls. Nil hides them.
 	Roster *roster.Roster
 	// Packs enables the modpack panel: profiles, resolving links and installing
@@ -86,8 +81,7 @@ func New(orch *orchestrator.Orchestrator, st *store.Store, opts Options) http.Ha
 		token:     opts.Token,
 		log:       log,
 		formToken: newFormToken(),
-		update:    opts.Update,
-		restart:   opts.Restart,
+		updates:   opts.Updates,
 		roster:    opts.Roster,
 		packs:     opts.Packs,
 	}
@@ -285,19 +279,29 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request, raw []byte) {
 	}
 }
 
+// updateFromPage asks the host watcher for the newest image.
+//
+// It does not update anything: the daemon cannot pull an image, and the whole
+// point of the split is that the process being replaced is not the process doing
+// the replacing. So this writes one file — the request — and says what it did. The
+// answer arrives later, in the mailbox's `result`, which the page reads on its next
+// poll (and which survives the container being recreated, because it is a volume).
 func (s *Server) updateFromPage(ctx context.Context, w http.ResponseWriter) {
-	if s.update == nil {
+	if !s.updates.Configured() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "this binary cannot find its own git checkout, so it cannot update itself",
+			"error": "no update watcher is installed on this host, so there is nobody to ask; deploy with deploy/install.sh and the update comes with it",
 		})
 		return
 	}
 	if !s.updating.TryLock() {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "an update is already running"})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "an update is already being requested"})
 		return
 	}
 	defer s.updating.Unlock()
 
+	// The state check is the same one the old in-process updater made, and it
+	// matters more now: recreating the container while a VPS is rented would kill
+	// the loop that saves the world.
 	st, err := s.orch.Status(ctx)
 	if err != nil {
 		s.fail(w, err)
@@ -310,35 +314,27 @@ func (s *Server) updateFromPage(ctx context.Context, w http.ResponseWriter) {
 		return
 	}
 
-	res, err := s.update.PullAndBuild(ctx)
-	if err != nil {
+	if err := s.updates.Request(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if !res.Changed {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"message": "already up to date at " + res.After,
-		})
-		return
+	s.log.Info("asked the update watcher for the newest image", "mailbox", s.updates.Dir)
+
+	message := "asked the update watcher for the newest image; the daemon restarts when it is ready"
+	if st := mailboxStatus(s.updates); st.Available != nil && !st.Available.UpdateAvailable {
+		message = "asked the update watcher; it last saw you already on the newest image, so this may come back as nothing to do"
 	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": message})
+}
 
-	writeJSON(w, http.StatusOK, map[string]string{
-		"message": "updated " + res.Before + " → " + res.After + ", restarting",
-	})
-
-	// Answer the browser before the process goes away, or the page shows a failed
-	// request for an update that actually worked.
-	u := *s.update
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		if s.restart != nil {
-			s.restart()
-			return
-		}
-		if err := u.Restart(context.WithoutCancel(ctx)); err != nil && !errors.Is(err, context.Canceled) {
-			s.log.Error("restart after update failed", "err", err)
-		}
-	}()
+// mailboxStatus is Status with errors flattened: a mailbox that cannot be read is
+// "no answer", which only affects the wording of a message.
+func mailboxStatus(m updatesignal.Mailbox) updatesignal.Status {
+	st, err := m.Status()
+	if err != nil {
+		return updatesignal.Status{}
+	}
+	return st
 }
 
 // console sends one command to the running server.

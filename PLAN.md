@@ -699,7 +699,81 @@ and the manifest and boot the new jars over the old world silently. It is the sa
 as any other pack swap — the world guard asks whose world it is — and `--keep-world` is
 the door for somebody who means it.
 
-### 38. Not done, on purpose, on this branch
+### 38. The box pulls an image, and the daemon cannot update itself
+
+Outpost was the last project on this box that committed its build output and built
+itself on the Potato. Ivy, Warbler, Polaris and Sepia all run a multi-stage image
+built in CI and pulled by digest, and Warber's Dockerfile says why in one line: a
+cold build on that box *"peaks near 730 MiB and exhausts swap"*. Outpost's deploy was
+`git pull --ff-only && go build` **on that box**, from the page's Update button and
+from Meridian, with `internal/updater` hand-rolling the "build to a temporary name,
+swap only on success" pattern that an image plus a watcher already provides. So the
+deploy is now an image, and the work that made the committed bundle *safe* (#36's
+pinned `version.name`, `make web-check`, a workflow whose only job was to prove the
+committed bundle matched the sources) is gone with the bundle.
+
+Dockerfile, `docker-compose.yml` at the repository root (Meridian's compose targets
+run in the project folder), `.github/workflows/docker.yml` publishing
+`linux/amd64,linux/arm64` to ghcr, and `deploy/watcher/update.sh` on the host. The
+shape is Warbler's, deliberately: this box has one way to deploy a service and a
+second way is a second thing to remember at 1am.
+
+Four decisions here did not have a sibling to copy.
+
+**The CLI runs in the container, behind a host wrapper.** `outpost publish` and
+`outpost start` both open `outpost.db`, and one SQLite file with two writers whose
+only guard is `TryLock` is a shape that works until it does not. So every command
+runs in the container — `docker compose exec` — and `/usr/local/bin/outpost` on the
+host is a two-line wrapper that does exactly that, so the commands in the README
+keep working verbatim. The alternative (daemon in a container, CLI on the host) was
+the least work and the worst answer: it puts a second process on the database to
+save nobody an ergonomic change.
+
+**`web/build` is not committed, and Node is required for a clean Go build.**
+`go:embed all:build` matches nothing when the directory is absent, so a fresh clone
+cannot `go build ./...` until `make web` has run. That is Polaris's choice over
+committing a placeholder, and the reason is the failure mode: a placeholder makes a
+UI-less binary build *silently*, and a UI-less binary deployed by mistake looks like
+a broken page rather than a broken build. CI installs Node and builds the frontend
+before its Go steps, because it hits the same wall.
+
+**Updating is a mailbox, not a process.** The daemon writes `update-signal/requested`
+(the literal word `latest`, never a digest — it cannot name an image) and the host
+watcher does the rest: resolve the digest, refuse an image reference of any other
+shape, snapshot the database, pin, pull, recreate, poll `/health` for 120 seconds,
+and on failure put the previous digest back *and* restore the snapshot. `outpost
+update`, the page's button and Meridian all end in the same file, and the outcome
+comes back in `update-signal/result`, which the page shows. `internal/updater` is
+deleted; its three rules do not carry over because the image is either built or it
+is not.
+
+The one rule the watcher needs that the siblings do not: **it refuses while a
+Minecraft server is rented.** Warbler's "busy" is a few seconds of upload and it
+waits; outpost's busy is a billed VPS with a world in memory, and recreating the
+daemon then kills the loop that saves that world on logout.
+
+**The tailnet is asked over the socket, not the CLI.** `internal/tailnet` used to
+shell out to `tailscale status --json`. A distroless image has no such binary, so it
+now reads `GET /localapi/v0/status` over a mounted `tailscaled.sock` — the same
+document, parsed by the same function — and falls back to the CLI where the socket
+is not where expected. Mounting the CLI in instead would have meant a Debian
+runtime, a tailscale package and its dependencies, for one JSON document.
+
+Two small things the container needed and could not get from a shell: `outpost
+healthcheck` (the image's `HEALTHCHECK`, which asks its own `/health` — distroless
+has no curl, and "the process is alive" is not the question the watcher asks before
+keeping a new image) and `outpost snapshot` (`VACUUM INTO`, because a `cp` of a
+WAL-mode database is not a consistent copy). The daemon's `WORKDIR` is `/data`, so
+`config.yaml`, `outpost.db` and `packs/` are relative paths from one bind mount and
+the deployed config is the file the repo documents.
+
+Retired: `deploy/outpost.service` (the container is the unit), `internal/updater`
+and its tests, `cmd/outpost/update.go`'s git path, `web.yml`'s committed-build job,
+`make web-check`. Kept: the `deterministic` job (two builds of one tree must match —
+that property is what makes an image reproducible, wherever the bytes end up), and
+`version.name`'s source hash, which is the client's cache token.
+
+### 39. Not done, on purpose, on this branch
 
 - Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
   a second profile id (`--profile cobblemon-second`), which the page has no field for yet.

@@ -14,6 +14,38 @@ import (
 	"outpost/internal/roster"
 )
 
+// snapshotCmd writes a consistent copy of the database, which is what the update
+// watcher restores if a new image has to be rolled back.
+//
+// It lives in the binary rather than in the watcher because only the program that
+// owns the store knows how (VACUUM INTO, not cp: the database runs in WAL mode and
+// the newest commits are in a sidecar file). It also means the image needs no
+// sqlite3 binary, which a distroless runtime could not have anyway.
+func (a *app) snapshotCmd() *cobra.Command {
+	var to string
+	cmd := &cobra.Command{
+		Use:   "snapshot",
+		Short: "Write a consistent copy of the database",
+		Long: "Writes the database to --to as one consistent file. Used by the host update\n" +
+			"watcher before it recreates the container, so a rollback puts the old schema\n" +
+			"back with the old binary.",
+		Example: "  outpost snapshot --to data/backups/pre-update.db",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if to == "" {
+				return errors.New("pass --to with the file to write")
+			}
+			defer a.store.Close()
+			if err := a.store.Snapshot(cmd.Context(), to); err != nil {
+				return err
+			}
+			fmt.Println("snapshot written to", to)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&to, "to", "", "file to write the snapshot to")
+	return cmd
+}
+
 // consoleCmd runs RCON commands against the live server.
 //
 // It reads the server's address and password from the same database the daemon

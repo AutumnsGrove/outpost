@@ -1,0 +1,66 @@
+name: docker
+
+# Publishes ghcr.io/autumnsgrove/outpost on every push to main, matching the REPO
+# constant in deploy/watcher/update.sh, which resolves the "latest" tag's digest
+# against it. One image per commit is deliberate: a floating :latest for
+# convenience, plus a short-SHA tag per push so a specific build can always be
+# pinned or rolled back to by name, not only by digest.
+#
+# platforms: linux/amd64,linux/arm64 — arm64 is what actually matters (the Le
+# Potato SBC), amd64 covers dev machines. Both build stages that would otherwise
+# need per-arch emulation (Node/pnpm, and Go's own compiler) are pinned to
+# --platform=$BUILDPLATFORM in the Dockerfile for exactly that reason, so only the
+# short final stage runs under QEMU for the non-native target.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel an in-progress publish mid-push — an interrupted push can leave a
+  # partially-uploaded manifest on GHCR. A second push landing while one is running
+  # queues behind it instead.
+  group: docker-publish
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The page's build stamp, and the only place a containerized build can get it:
+      # there is no .git inside the image, so Go's own VCS stamping has nothing to
+      # read. Passed to the Dockerfile's VERSION build arg.
+      - name: Compute the version string
+        id: vars
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          count="$(git rev-list --count HEAD)"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "version=r${count}.${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/autumnsgrove/outpost:latest
+            ghcr.io/autumnsgrove/outpost:${{ steps.vars.outputs.short_sha }}
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

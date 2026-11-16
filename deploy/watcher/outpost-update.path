@@ -1,0 +1,13 @@
+[Unit]
+Description=Start the Outpost update watcher when the daemon asks for a check or an update
+
+[Path]
+# The daemon writes one of these from the page's Update button or `outpost update`.
+# The watcher deletes them on every exit path, so this is an edge trigger, not a
+# standing condition.
+PathExists=@INSTALL_DIR@/update-signal/check
+PathExists=@INSTALL_DIR@/update-signal/requested
+Unit=outpost-update.service
+
+[Install]
+WantedBy=multi-user.target

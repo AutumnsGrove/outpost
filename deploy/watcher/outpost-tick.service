@@ -1,0 +1,14 @@
+[Unit]
+Description=Outpost update watcher heartbeat (one-shot)
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@INSTALL_DIR@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# --tick refreshes the heartbeat and acts only if a signal file is waiting. It
+# never updates by itself.
+ExecStart=@INSTALL_DIR@/deploy/watcher/update.sh --tick
+TimeoutStartSec=1200

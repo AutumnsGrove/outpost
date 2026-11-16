@@ -1,0 +1,54 @@
+# Outpost on the potato. This file sits at the repository root, like the rest of
+# the box's projects, because Meridian's "compose" targets run `docker compose` in
+# the project folder.
+#
+# Updates: the image is pinned by digest through OUTPOST_IMAGE in .env, which the
+# host update watcher (deploy/watcher/update.sh) rewrites. Unset, it defaults to
+# the floating :latest tag, which is fine for a first start. The watcher is also
+# what `.env`'s credentials are for: compose reads that file twice — for the ${...}
+# interpolation below, and as the container's environment (the six secrets
+# internal/config reads).
+services:
+  outpost:
+    build: .
+    image: ${OUTPOST_IMAGE:-ghcr.io/autumnsgrove/outpost:latest}
+    restart: unless-stopped
+    # Runs as the same user that owns ./data and ./update-signal on the host. The
+    # daemon writes packs and the .mrpack cache there, so a mismatch would be a
+    # permission error the first time a modpack is installed from the page.
+    user: "${OUTPOST_UID:-1000}:${OUTPOST_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    # config.yaml, outpost.db, packs/ and the .mrpack cache are relative to the
+    # image's WORKDIR (/data), so this one mount is the whole state.
+    working_dir: /data
+    # The daemon listens on the container's interface, not its loopback: docker
+    # forwards the published port to eth0, and a 127.0.0.1 listener inside the
+    # container is reachable from nothing outside it. The *host* side below is
+    # loopback-only, which is where the restriction belongs now — it is the box's
+    # exposure being decided, not the daemon's.
+    command: ["serve", "--listen", "0.0.0.0:8896"]
+    env_file:
+      - .env
+    ports:
+      # Loopback only, exactly as the systemd unit was: `tailscale serve --bg 8896`
+      # on the host is the way in from the tailnet, and the tailnet is the access
+      # control. Meridian and the update watcher reach /health and /api/status on
+      # this port from the host.
+      - "127.0.0.1:${OUTPOST_PORT:-8896}:8896"
+    volumes:
+      - ./data:/data
+      # The mailbox shared with the host update watcher: `requested` and `check`
+      # the daemon writes, `available.json`, `result` and `heartbeat` the watcher
+      # writes. It has to be a directory both sides can see, which is why it is a
+      # mount and not a file.
+      - ./update-signal:/update-signal
+      # tailscaled's LocalAPI, read by internal/tailnet to turn a VPS's MagicDNS
+      # name into its tailnet address without DNS and without the tailscale CLI
+      # (the image is distroless and has none). If this mount is missing or not
+      # readable by uid 1000, the resolver falls back to the hostname it already
+      # had — correct, but it reintroduces the cached-NXDOMAIN delay the package
+      # exists to avoid.
+      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
