@@ -133,6 +133,45 @@ if [ -f "$INSTALL_DIR/data/config.yaml" ] && ! grep -q '^update_signal_dir:' "$I
 	fi
 fi
 
+say "SSH key"
+# The daemon is its own SSH client (internal/remote), so there is no ssh binary in
+# the image and no ~/.ssh either: the key has to live in the mounted data folder.
+run mkdir -p "$INSTALL_DIR/data/ssh"
+if [ -f "$INSTALL_DIR/data/ssh/outpost" ]; then
+	echo "  data/ssh/outpost already exists, leaving it alone"
+else
+	KEY_SRC=""
+	# Where the config points now, if that is a path with a shell's tilde in it.
+	KEY_SETTING="$(sed -n 's/^[[:space:]]*ssh_private_key:[[:space:]]*"\{0,1\}\([^"#]*\)"\{0,1\}.*/\1/p' "$INSTALL_DIR/data/config.yaml" 2>/dev/null | head -1)"
+	case "$KEY_SETTING" in
+	~/*) KEY_SRC="$HOME/${KEY_SETTING#\~/}" ;;
+	*) KEY_SRC="$KEY_SETTING" ;;
+	esac
+	[ -f "$KEY_SRC" ] || KEY_SRC="$HOME/.ssh/outpost"
+	if [ -f "$KEY_SRC" ]; then
+		run cp "$KEY_SRC" "$INSTALL_DIR/data/ssh/outpost"
+		run chmod 600 "$INSTALL_DIR/data/ssh/outpost"
+		echo "  copied $KEY_SRC to data/ssh/outpost"
+	else
+		echo "  no key found: put the Hetzner SSH key at data/ssh/outpost (0600)"
+	fi
+fi
+
+# Point the config at the copy, wherever it used to look. A host path — relative,
+# absolute or tilde — is not a path the container has, and the value it wants is
+# the one line that works.
+if [ -f "$INSTALL_DIR/data/config.yaml" ] && [ -f "$INSTALL_DIR/data/ssh/outpost" ]; then
+	if ! grep -q '^[[:space:]]*ssh_private_key:[[:space:]]*"\{0,1\}ssh/outpost"' "$INSTALL_DIR/data/config.yaml"; then
+		if [ "$DRY" -eq 1 ]; then
+			echo "  would point hetzner.ssh_private_key at ssh/outpost"
+		else
+			sed -i.bak -E 's|^([[:space:]]*)ssh_private_key:.*$|\1ssh_private_key: "ssh/outpost"|' "$INSTALL_DIR/data/config.yaml"
+			rm -f "$INSTALL_DIR/data/config.yaml.bak"
+			echo "  pointed hetzner.ssh_private_key at ssh/outpost"
+		fi
+	fi
+fi
+
 say "Host CLI wrapper"
 # `outpost` on the host means "run it in the container", so the database has one
 # writer and the commands in the README keep working. The daemon is the only
