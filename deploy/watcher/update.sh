@@ -198,13 +198,28 @@ daemon_state() {
 # A rented server is a billed VPS with a world in memory: recreating the container
 # then kills the loop that saves that world when everybody logs off. So this is a
 # refusal, not a wait (unlike the siblings, whose "busy" is a few seconds of upload).
+#
+# "The API did not answer" is not the same as "nothing is rented": a wedged listener
+# can sit in front of a live world, so an unanswered /api/status is refused too. Only
+# a container that is not running at all is safe to replace blind — the update may
+# be the fix.
 refuse_if_server_is_rented() {
 	local state
+	if ! service_running; then
+		return 0
+	fi
 	state="$(daemon_state)"
 	case "$state" in
-	"" | OFFLINE | ERROR) return 0 ;;
+	"")
+		finish_failed "the daemon is running but did not answer /api/status, so it is unknown whether a Minecraft server is rented; refusing to recreate it. Check \`outpost status\` or \`docker compose logs outpost\`, stop any session, then update again"
+		;;
+	OFFLINE | ERROR)
+		return 0
+		;;
+	*)
+		finish_failed "a Minecraft server is ${state}, so the daemon was left alone; save and stop it first (\`outpost stop\`) and update again"
+		;;
 	esac
-	finish_failed "a Minecraft server is ${state}, so the daemon was left alone; save and stop it first (\`outpost stop\`) and update again"
 }
 
 # Put the previous image back, and the database snapshot with it. Returns

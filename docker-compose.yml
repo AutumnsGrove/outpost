@@ -10,7 +10,12 @@
 # internal/config reads).
 services:
   outpost:
-    build: .
+    # No `build:` on purpose. The box pulls a published image, and Compose builds
+    # instead when the image is missing — so a build key here would turn the first
+    # `up -d`, and any rollback to a pruned digest, into a cold build on the Potato:
+    # the exact thing this deploy exists to remove (a Go build there peaks near
+    # 730 MiB and exhausts swap). For local work, build the image by name first:
+    #   docker build -t ghcr.io/autumnsgrove/outpost:latest .
     image: ${OUTPOST_IMAGE:-ghcr.io/autumnsgrove/outpost:latest}
     restart: unless-stopped
     # Runs as the same user that owns ./data and ./update-signal on the host. The
@@ -51,4 +56,12 @@ services:
       # readable by uid 1000, the resolver falls back to the hostname it already
       # had — correct, but it reintroduces the cached-NXDOMAIN delay the package
       # exists to avoid.
+      #
+      # Known trade-off: the LocalAPI is more than the status document — it is the
+      # interface `tailscale up`/`down`/`logout` use, so whatever runs in this
+      # container could drive the tailnet. The mitigations are the rest of this
+      # file (uid 1000, read-only root, no capabilities, no docker socket) and the
+      # tailnet's ACLs; a narrower proxy for /localapi/v0/status alone would be the
+      # next step if that is not enough. Read-only mounts do not narrow a socket:
+      # connecting is not a write through the mount.
       - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
