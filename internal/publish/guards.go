@@ -149,7 +149,24 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 			// this build can still be the one you want to throw away.
 			return true, &saved, nil, nil
 		} else if saved.SamePack(p) {
-			return false, &saved, nil, nil
+			// Same pack, so an update keeps the world — unless the update is a new
+			// Minecraft version, which is not an update at all: block ids and registry
+			// entries move between versions, and the server either migrates the world
+			// with no way back or refuses to open it. The version is checked here
+			// rather than refused by CheckPack because both versions may be runnable
+			// (1.20.1 and 1.21.1 both are); what cannot happen is one world, two games.
+			if !ChangedMinecraft(saved, p) {
+				return false, &saved, nil, nil
+			}
+			msg := fmt.Sprintf("publish: profile %q holds a Minecraft %s world made by %s and this is %s for Minecraft %s",
+				opts.ProfileOf(), saved.MC, saved.Describe(), p.Describe(), p.MC)
+			if opts.KeepWorld {
+				return false, &saved, append(warnings, msg+": loading it anyway because of --keep-world (the server may migrate it irreversibly, or refuse to open it)"), nil
+			}
+			suggested := ProfileFromSlug(opts.ProfileOf() + "-" + strings.ReplaceAll(p.MC, ".", "-"))
+			return false, &saved, nil, fmt.Errorf("%s; a world does not survive a Minecraft version change. "+
+				"Publish into its own profile instead (--profile %s), or pass --new-world to discard this one",
+				msg, suggested)
 		} else {
 			known = true
 		}
@@ -184,6 +201,11 @@ func worldGuard(ctx context.Context, st Store, opts Options, p Pack) (discard bo
 // publish cannot tell whether the world belongs to the pack it is about to
 // upload.
 func recordPack(ctx context.Context, st Store, opts Options, p Pack, discard bool) error {
+	if opts.WorldBucket == "" {
+		// Nothing is filed in a bucket that does not exist: the marker's whole job
+		// is to sit beside a world, and write tests publish without one.
+		return nil
+	}
 	if discard {
 		if err := discardWorld(ctx, st, opts.WorldBucket, opts.ProfileOf(), time.Now()); err != nil {
 			return err

@@ -33,6 +33,9 @@ type fakeServers struct {
 	createErr error
 	// created records every server type asked for, in order.
 	created []string
+	// userData is the cloud-config of every create, so a test can read what the
+	// boot was told to install.
+	userData []string
 	// lostReply creates the server and then reports an error anyway, the way a
 	// timed-out HTTP call does when Hetzner placed the order.
 	lostReply bool
@@ -50,6 +53,7 @@ func (f *fakeServers) Create(_ context.Context, spec hetzner.CreateRequest) (*he
 	defer f.mu.Unlock()
 
 	f.created = append(f.created, spec.ServerType)
+	f.userData = append(f.userData, spec.UserData)
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -1125,6 +1129,42 @@ func TestStartRefusesAPlanTooSmallForTheActivePack(t *testing.T) {
 	}
 	if len(h.servers.created) != 0 {
 		t.Fatalf("a refusal rented %v", h.servers.created)
+	}
+}
+
+// The JDK on the VPS follows the profile's own pack.json, because the wrong one
+// is a stack trace at boot, a provisioning timeout and a deleted VPS.
+func TestStartInstallsTheJDKTheProfileNeeds(t *testing.T) {
+	h := newHarness(t)
+	// A 1.21.1 pack says so in its manifest. Java 21 is what opens it; 17 answers
+	// "Unsupported class file major version 65" and looks like a broken modpack.
+	h.assets.files["mc-assets/profiles/default/pack.json"] = `{"slug":"cobblemon","mc":"1.21.1","memoryGB":4}`
+
+	if _, err := h.o.Start(context.Background(), "eu", "cx33"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if len(h.servers.userData) != 1 {
+		t.Fatalf("%d creates recorded", len(h.servers.userData))
+	}
+	if !strings.Contains(h.servers.userData[0], "openjdk-21-jdk-headless") {
+		t.Fatal("a 1.21.1 pack was rented without Java 21")
+	}
+	if strings.Contains(h.servers.userData[0], "openjdk-17-jdk-headless") {
+		t.Fatal("two JDKs were installed for a pack that needs one")
+	}
+}
+
+func TestStartAssumesTheDefaultJavaWhenTheManifestSaysNothing(t *testing.T) {
+	h := newHarness(t)
+	// A hand-rolled profile from before manifests had a Minecraft version, or one
+	// that never had a manifest at all: the boot must not be the thing that fails.
+	h.assets.files["mc-assets/profiles/default/pack.json"] = `{"slug":"cobblemon","memoryGB":4}`
+
+	if _, err := h.o.Start(context.Background(), "eu", "cx33"); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !strings.Contains(h.servers.userData[0], "openjdk-17-jdk-headless") {
+		t.Fatal("a manifest with no Minecraft version did not fall back to Java 17")
 	}
 }
 

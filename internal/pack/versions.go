@@ -20,9 +20,17 @@ import (
 // How many rows the picker shows. Modrinth keeps every version ever published —
 // 481 for Fabulously Optimized — and the interesting ones are not the newest
 // forty: FO's newest Fabric build for 1.20.1 sits at index 278, with 278 newer
-// versions (26.x, 25.x, …) that this server cannot run. So the list is every
-// runnable version, plus the newest of each game version it cannot run, which is
-// what makes the ceiling visible without burying the usable rows.
+// versions (26.x, 25.x, …).
+//
+// The budget is per game version rather than per list, and that distinction became
+// load-bearing when 1.21.1 joined the table: before, "runnable" meant 1.20.1 and a
+// single budget could not be spent on the wrong game. Now a pack with a long 1.21.1
+// tail would fill all forty slots with rows a 1.20.1 profile cannot use and push the
+// installed build and its update off the list — the one thing the picker exists to
+// show. So the forty go to the Minecraft version the profile can actually install
+// (the one it holds, or the default), and every other game version contributes one
+// row — its newest — which is what makes the ceiling visible without burying the
+// usable rows.
 const (
 	maxBootable = 40
 	maxOther    = 12
@@ -114,12 +122,25 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 	}
 
 	// What the profile already holds, so the picker can mark it and the page can
-	// say "an update is available" on load.
+	// say "an update is available" on load. The Minecraft version it holds comes
+	// with it: with more than one runnable version in the table, "newest runnable"
+	// is no longer the same question as "an update for this world", and the newer
+	// 1.21.1 build of a pack is not an update of the 1.20.1 one.
+	heldMC := ""
 	if raw, err := m.Store.Get(ctx, m.AssetBucket, "profiles/"+out.Profile+"/pack.json"); err == nil {
 		var held publish.Pack
 		if json.Unmarshal(raw, &held) == nil {
 			out.Installed = held.VersionID
+			heldMC = held.MC
 		}
+	}
+
+	// focus is the Minecraft version this profile can actually install: the one it
+	// holds, or the default when it holds nothing. Everything for it is listed;
+	// every other game version gets one row.
+	focus := heldMC
+	if focus == "" {
+		focus = publish.SupportedMC
 	}
 
 	// One pass over everything first: `Newer` and the "is this the newest runnable
@@ -127,26 +148,47 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 	// one is how the picker ends up offering an older version as an update.
 	seenInstalled := false
 	otherGameVersions := map[string]bool{}
+	bootableRows, otherRows := 0, 0
 	for _, v := range all {
 		run, _ := bootable(v)
 		installed := v.ID != "" && v.ID == out.Installed
 		if installed {
 			seenInstalled = true
 		}
-		if run && !installed && !seenInstalled && out.Newer == "" {
+		if run && sameGameVersion(v, heldMC) && !installed && !seenInstalled && out.Newer == "" {
 			// Newest-first order, so the first runnable version before the installed
-			// one is the update. Anything after it is a downgrade.
+			// one is the update. Anything after it is a downgrade, and anything for
+			// another Minecraft version is a different game: a 1.21.1 build is not an
+			// update of a 1.20.1 world, it is a world replacement.
 			out.Newer = v.VersionNumber
 		}
 
 		key := strings.Join(v.GameVersions, "/")
-		include := run || (!otherGameVersions[key] && !installed)
-		if !include || (run && countBootable(out.Choices) >= maxBootable) || (!run && len(otherGameVersions) >= maxOther) {
+		var include bool
+		switch {
+		case installed:
+			// Always: the picker's first job is to say what you have.
+			include = true
+		case contains(v.GameVersions, focus) && run:
+			// The game version this profile can install: every release for it,
+			// newest first, until the budget runs out.
+			include = bootableRows < maxBootable
+			if include {
+				bootableRows++
+			}
+		default:
+			// Another game version — a runnable one this profile cannot install, one
+			// outside the table, or the focus version with no Fabric build — gets one
+			// row, its newest, so the ceiling is visible without spending the budget.
+			include = !otherGameVersions[key] && otherRows < maxOther
+			if include {
+				otherRows++
+				otherGameVersions[key] = true
+			}
+		}
+		if !include {
 			out.Skipped++
 			continue
-		}
-		if !run {
-			otherGameVersions[key] = true
 		}
 
 		choice := VersionChoice{
@@ -168,18 +210,22 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 	return out, nil
 }
 
-func countBootable(choices []VersionChoice) int {
-	n := 0
-	for _, c := range choices {
-		if c.Bootable {
-			n++
-		}
+// sameGameVersion reports whether a version is for the Minecraft version the
+// profile already holds. No held version means no opinion: a profile with nothing
+// installed has no world to keep.
+func sameGameVersion(v Version, heldMC string) bool {
+	if heldMC == "" {
+		return true
 	}
-	return n
+	return contains(v.GameVersions, heldMC)
 }
 
 // bootable answers "can this server run this version", in the same terms
-// publish.CheckPack and pack.pickVersion use.
+// publish.CheckPack and pack.pickVersion use: a Fabric build, and a Minecraft
+// version this image has a row for. The row matters because the row carries the
+// JDK — a 1.21.1 build is bootable precisely because cloud-init will install Java
+// 21 for it, and one outside the table is refused here for the same reason it is
+// refused at upload.
 func bootable(v Version) (bool, string) {
 	if !contains(v.Loaders, "fabric") {
 		if len(v.Loaders) == 0 {
@@ -188,13 +234,13 @@ func bootable(v Version) (bool, string) {
 		return false, "no Fabric build (" + strings.Join(v.Loaders, ", ") + ")"
 	}
 	for _, mc := range v.GameVersions {
-		if strings.EqualFold(mc, publish.SupportedMC) {
+		if publish.Runnable(mc) {
 			return true, ""
 		}
 	}
 	if len(v.GameVersions) == 0 {
 		return false, "the pack names no Minecraft version"
 	}
-	return false, fmt.Sprintf("minecraft %s — this server installs Java 17, which stops at %s",
-		strings.Join(v.GameVersions, ", "), publish.SupportedMC)
+	return false, fmt.Sprintf("minecraft %s — outpost boots %s",
+		strings.Join(v.GameVersions, ", "), publish.MinecraftList())
 }

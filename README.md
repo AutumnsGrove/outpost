@@ -165,10 +165,11 @@ repeating what the bucket already knows.
 
 `pack fetch` takes a Modrinth slug, a modpack URL (the one Prism's "open in browser"
 gives you), a `.mrpack` URL, or a `.mrpack` on disk. `--version` pins a pack version;
-the default is the newest release for Minecraft 1.20.1, and a pack that has moved on to
-1.21 is refused rather than downloaded, because cloud-init installs Java 17. Files the
-pack marks `env.server: unsupported` are not fetched at all, so no client mod reaches
-the server.
+the default is the newest release for Minecraft 1.20.1, and any version outside the
+table in `internal/publish` (1.20.1 on Java 17, 1.21.1 on Java 21) is refused rather
+than downloaded, because the VPS installs the JDK the pack's `pack.json` asks for and a
+version outside the table has no JDK to install. Files the pack marks
+`env.server: unsupported` are not fetched at all, so no client mod reaches the server.
 
 What it writes is an ordinary pack directory plus `pack.json`, and everything else
 follows from that file:

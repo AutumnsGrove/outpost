@@ -145,7 +145,7 @@ Le Potato (~/outpost, Go binary, SQLite, tailscale serve :8896)
         │
         ├──► Hetzner cx23 in nbg1  ─ ephemeral, deleted on idle
         │      (cx33 is the 8 GB step; swapping is one line in config)
-        │      cloud-init: tailscale, java 17, rclone pull from R2,
+        │      cloud-init: tailscale, the pack's JDK, rclone pull from R2,
         │      restore world, start MC, RCON on
         └──► R2  mc-assets/ + mc-worlds/   (unchanged from v1)
 ```
@@ -637,7 +637,69 @@ Two consequences worth stating:
 - **`fallback_types` keeps its old meaning** — sold out, not too small — and the example
   config now says so, because the old comment read like a size menu.
 
-### 37. Not done, on purpose, on this branch
+### 37. A Minecraft version and its JDK are one row, and the boot reads the pack
+
+`SupportedMC` was one constant and cloud-init installed `openjdk-17-jdk-headless`. Adding
+1.21 that way would be two facts that must not drift — which Minecraft version a pack is
+for, which JDK the image installs — and drift here is the expensive kind: the wrong JDK
+is "Unsupported class file major version 65" at boot, an orchestrator that reads it as a
+server which never came up, and a deleted VPS twenty minutes into a rental. So
+`publish.Minecrafts` is a table of rows, `{MC, Java}`, oldest first, and `SupportedMC` is
+row zero.
+
+**A row is a promise, not a fact about Minecraft.** `1.20.1 → 17` and `1.21.1 → 21` are
+in it because somebody will boot them. It is not derived from a version family: "1.20.4
+is probably 17 as well" is exactly the guess that turns a working image into a rental
+that dies at boot, and a refusal is cheaper than a guess. Adding a row means adding a
+JDK, a Fabric build and a boot to the list of things that have been tried.
+
+**The JDK is chosen per profile, at rent time.** `Start` already reads
+`profiles/<id>/pack.json` for the pack's RAM figure; it reads the same file for `mc`,
+looks up the row, and passes `Java` to cloud-init, which installs exactly one JDK. Both
+JDKs would be ~200 MB on every rental and a second place for the boot to disagree with
+the pack. A profile with no manifest, or one whose manifest names no Minecraft version,
+gets `SupportedMC`'s row: a JDK is one package, and the loud failure is at publish, not
+at boot.
+
+**Everything that asks "can this run" reads the table.** `CheckPack` accepts a pack whose
+`mc` is a row and refuses one outside it naming the rows; `pack fetch` refuses it before
+the download; the picker marks a row bootable or greys it out with the same wording. The
+greyed-out rows are the point (issue #22): hiding a 1.21.4 build is how somebody concludes
+the pack has no 1.21 build at all.
+
+**`pickVersion`'s default stays `SupportedMC`, not "newest runnable".** Adding a row must
+not change which Minecraft version an unqualified `pack fetch` installs — that is a
+silent world replacement for anybody who typed the command twice. Choosing is explicit:
+a version id in the panel, or `--version` on the command line.
+
+**"An update is available" is scoped to the world.** With two runnable versions, the
+newest runnable build of a pack is no longer necessarily an update: a 1.21.1 build is a
+different game than the 1.20.1 world in the profile. `Versions` reports `Newer` from the
+versions matching the Minecraft version the profile holds, so the row does not advertise
+a build that would replace the world instead of updating it.
+
+**A Minecraft version change inside a profile is refused.** Same pack, same slug, newer
+version — an update, the world comes along (30). Same pack, different Minecraft version —
+refused by the world guard, which suggests a derived profile id (`fabulously-optimized-1-21-1`),
+lets `--new-world` discard the world, and lets `--keep-world` load it anyway with a
+warning. This is the one pack change that cannot keep a world, and it is now sayable
+before the upload rather than discovered at boot.
+
+**A hand-rolled directory gets a generated `pack.json`.** `source` and `slug` stay empty
+on purpose, so two hand-rolled builds are not "a different pack" to `SamePack` and
+republishing a curated directory over its own world keeps working. What it does carry is
+`mc` (from `--fabric`, else `SupportedMC`) and `fileCount`, which is what the page, the
+plan guard and the JDK all read — and what makes a hand-rolled 1.21.1 build
+distinguishable from a 1.20.1 one. No `fetchedAt`: nothing was fetched, and a timestamp
+would make every republish of an unchanged directory upload a new manifest.
+
+That has one consequence worth stating: dropping a hand-rolled directory into a profile
+that holds a fetched pack's world is now *refused*, where it used to delete the marker
+and the manifest and boot the new jars over the old world silently. It is the same rule
+as any other pack swap — the world guard asks whose world it is — and `--keep-world` is
+the door for somebody who means it.
+
+### 38. Not done, on purpose, on this branch
 
 - Two worlds on the *same* pack: a profile is one pack, so a second Cobblemon world needs
   a second profile id (`--profile cobblemon-second`), which the page has no field for yet.
@@ -645,7 +707,12 @@ Two consequences worth stating:
   is a copy back by hand (`rclone` or a Go one-liner), not a button.
 - The world itself is not versioned inside a profile: a pack update keeps the world,
   which is right for 1.5.1 → 1.5.2 and wrong for a pack that changes world generation.
-  The backups in `profiles/<id>/backups/` are the answer for now.
+  A *Minecraft* version change is refused (37); a pack that silently changed the world
+  generator is not detectable from a `pack.json`. The backups in
+  `profiles/<id>/backups/` are the answer for now.
+- Vanilla is offered at `SupportedMC` only: the panel's button and `outpost pack vanilla`
+  write `VanillaPack()`, which is the default row. A 1.21.1 vanilla profile is a
+  hand-rolled publish with `--fabric 1.21.1` away, not a button.
 - The old single-profile keys are left in place (see 30). `outpost world import` is the
   door to `mc-worlds/current/`, but nothing imports it on its own: a world moved without
   being asked for is a world moved by surprise.

@@ -145,13 +145,17 @@ func TestPickVersionPrefersAReleaseForTheVersionWeCanBoot(t *testing.T) {
 	}
 }
 
-func TestCheckPackRefusesAnotherMinecraftVersion(t *testing.T) {
-	err := publish.CheckPack(publish.Pack{Name: "Pack", MC: "1.21.1", Loader: "fabric"})
-	if err == nil || !strings.Contains(err.Error(), "Java 17") {
-		t.Fatalf("want a Java 17 explanation, got %v", err)
+func TestCheckPackFollowsTheMinecraftTable(t *testing.T) {
+	// A version outside the table is a version with no JDK here, so it is refused
+	// and the refusal names the ones that do have one.
+	err := publish.CheckPack(publish.Pack{Name: "Pack", MC: "1.21.4", Loader: "fabric"})
+	if err == nil || !strings.Contains(err.Error(), "1.20.1 (Java 17)") {
+		t.Fatalf("want a refusal naming the table, got %v", err)
 	}
 
-	if err := publish.CheckPack(publish.Pack{Name: "Pack", MC: "1.20.1", Loader: "fabric"}); err != nil {
-		t.Fatalf("1.20.1 fabric was refused: %v", err)
+	for _, mc := range []string{"1.20.1", "1.21.1"} {
+		if err := publish.CheckPack(publish.Pack{Name: "Pack", MC: mc, Loader: "fabric"}); err != nil {
+			t.Fatalf("%s fabric was refused: %v", mc, err)
+		}
 	}
 }

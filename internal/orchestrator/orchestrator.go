@@ -449,6 +449,7 @@ func (o *Orchestrator) Start(ctx context.Context, region, serverType string) (st
 	userData, err := cloudinit.Render(cloudinit.Data{
 		Hostname:         hostname,
 		Profile:          profile,
+		Java:             o.profileJava(ctx, profile),
 		MCPort:           o.cfg.Server.MCPort,
 		RCONPassword:     password,
 		TailscaleAuthKey: o.cfg.Secrets.TailscaleAuthKey,
@@ -1214,26 +1215,72 @@ func (o *Orchestrator) PackMemoryGB(ctx context.Context) (int, error) {
 
 // packMemoryGB reads the pack's own memory figure out of its manifest.
 func (o *Orchestrator) packMemoryGB(ctx context.Context, profile string) (int, error) {
+	pk, ok, err := o.profilePack(ctx, profile)
+	if err != nil || !ok || pk.MemoryGB <= 0 {
+		return 0, err
+	}
+	return pk.MemoryGB, nil
+}
+
+// profileJava is the JDK this profile's pack needs, which is the JDK the VPS
+// installs. A profile with no manifest is assumed to be for SupportedMC, the same
+// assumption a pack that names no version gets: guessing is only a risk when it
+// drives something that cannot be undone, and a JDK is one package.
+//
+// The table is publish's, so "which Java does 1.21.1 need" is answered in one
+// place. A manifest naming a version outside it falls back rather than refusing
+// here: publish refused it at upload time, and a start is the wrong moment to
+// rediscover that (the world may simply be older than the manifest).
+func (o *Orchestrator) profileJava(ctx context.Context, profile string) int {
+	pk, ok, err := o.profilePack(ctx, profile)
+	if err != nil {
+		// Not fatal: an unreadable manifest is not worth an unrented session, and
+		// the boot's own refusals are louder than this one would be.
+		o.log.Warn("could not read the profile's pack.json for its Minecraft version", "profile", profile, "error", err)
+	}
+	if !ok {
+		return defaultJava
+	}
+	if java, known := publish.JavaFor(pk.MC); known {
+		return java
+	}
+	return defaultJava
+}
+
+// defaultJava is the JDK for SupportedMC, resolved once. It is the fallback for a
+// profile with no manifest, and a zero here (SupportedMC missing from the table)
+// is refused by cloudinit.Validate before a rental rather than rented and booted.
+var defaultJava = func() int {
+	java, _ := publish.JavaFor(publish.SupportedMC)
+	return java
+}()
+
+// profilePack reads profiles/<profile>/pack.json. ok=false means there is no
+// manifest, which is a hand-rolled profile and not an error.
+func (o *Orchestrator) profilePack(ctx context.Context, profile string) (publish.Pack, bool, error) {
 	assets := o.deps.Assets
 	if assets == nil {
 		c, err := r2.New(o.cfg.R2.AccountID, o.cfg.Secrets.R2AccessKey, o.cfg.Secrets.R2SecretKey)
 		if err != nil {
-			return 0, err
+			return publish.Pack{}, false, err
 		}
 		assets = c
 	}
 	raw, err := assets.Get(ctx, o.cfg.Server.AssetBucket, "profiles/"+profile+"/pack.json")
 	if err != nil {
 		if errors.Is(err, r2.ErrNotFound) {
-			return 0, nil // no manifest: no figure to check
+			return publish.Pack{}, false, nil
 		}
-		return 0, err
+		return publish.Pack{}, false, err
 	}
 	var pk publish.Pack
-	if err := json.Unmarshal(raw, &pk); err != nil || pk.MemoryGB <= 0 {
-		return 0, nil
+	if err := json.Unmarshal(raw, &pk); err != nil {
+		// Refused rather than ignored: the file is written by publish and read by
+		// nothing else, so one that does not parse is a truncated upload or an edit
+		// by hand — and both mean the profile may be half of what it claims.
+		return publish.Pack{}, false, fmt.Errorf("parse profiles/%s/pack.json: %w; republish the pack to rewrite it", profile, err)
 	}
-	return pk.MemoryGB, nil
+	return pk, true, nil
 }
 
 // hourlyRate is what the current session costs per hour. With no session live it
