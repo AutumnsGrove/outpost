@@ -2,7 +2,9 @@ package pack
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -21,8 +23,9 @@ func projectID(downloadURL string) string {
 	return ""
 }
 
-// maxSideBatch is how many project ids one request may carry: Modrinth's limit for
-// POST /project, and one pack is normally far under it.
+// maxSideBatch is how many project ids one request may carry. Modrinth's batch
+// endpoint takes a thousand; five hundred is a pack and a half, and a pack that
+// large is already a different problem.
 const maxSideBatch = 500
 
 // serverSides asks Modrinth which sides a batch of projects can run on: "required",
@@ -45,11 +48,15 @@ func serverSides(ctx context.Context, ids []string) map[string]string {
 	sides := map[string]string{}
 	for start := 0; start < len(ids); start += maxSideBatch {
 		end := min(start+maxSideBatch, len(ids))
+		raw, err := json.Marshal(ids[start:end])
+		if err != nil {
+			return sides
+		}
 		var docs []struct {
 			ID         string `json:"id"`
 			ServerSide string `json:"server_side"`
 		}
-		if err := postJSON(ctx, "/project", ids[start:end], &docs); err != nil {
+		if err := getJSON(ctx, "/projects?ids="+url.QueryEscape(string(raw)), &docs); err != nil {
 			// No answer is not "unsupported": a pack we cannot ask about is installed
 			// as the pack says, because refusing to fetch on an API hiccup is worse
 			// than a mod the loader will ignore.
