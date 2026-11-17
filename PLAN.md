@@ -944,3 +944,32 @@ metadata, and the answer to it is not another filter but a daemon that says why 
 died — issue #51, which is the next thing after this. Until then, a client pack installed
 on a server carries the risk that one of its mods is broken on that version, and the way to
 find out is a log the daemon currently will not show you.
+
+### 43. Java versions are ranges, and the picker is a shortlist
+
+37's table was rows of `{MC, Java}` and it had two of them, so the panel offered two
+versions of anything and every other version read as impossible. Two of those rows were
+factually right and one was, on 2026-11-17, wrong in a way nobody could see: the version
+that was actually wanted — 26.3 — needed a JDK the image did not install.
+
+The fact underneath is a range, not a row. A mod's `fabric.mod.json` declares the JDK it
+was built for, and the famous ones agree: `fabric-api` says `java >=17` for 1.17–1.20.4,
+`>=21` for 1.20.5–1.21.x and `>=25` for 26.x. Those boundaries are `publish.JavaRanges`
+now, and `JavaFor` is a lookup in them, so `1.19.4` or `1.21.8` or `26.2` boots without a
+line of code each. A ceiling of `1.21.x` means "any 1.21", so a patch release nobody has
+heard of yet does not need an edit either.
+
+Two things are deliberately still a list:
+
+- **`Minecrafts` is what the panel offers**, eight versions oldest-first, because a select
+  with forty entries is not a better question than a select with eight. Anything a range
+  covers is accepted by `pack vanilla --mc`, the API and `CheckPack`; the buttons are a
+  shortlist, not the boundary. A test asserts the offers all resolve and that row zero is
+  `SupportedMC`, so a plain `pack vanilla` still cannot move a world by surprise.
+- **`Booted` is a column, not a claim.** `1.20.1`, `1.21.1` and `26.3` are marked because a
+  real rent came up on each; the other five say "untested" in the select. This is 37's "a
+  row is a promise" made literal — the promise is per version and somebody earned it.
+
+What a range does **not** promise is that a version works. It promises the JDK the boot
+will be given, which was the expensive unknown; whether 1.21.8 comes up is the boot's
+answer, and the daemon now says what happened when it does not (41, #53).

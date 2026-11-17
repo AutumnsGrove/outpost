@@ -168,10 +168,10 @@ func TestPackVanillaTakesAVersionAndRefusesOneWithNoJDK(t *testing.T) {
 		t.Fatalf("the job does not name the version: %s", rec.Body.String())
 	}
 
-	// A version outside the table is a refusal, not a rental that dies at boot.
-	rec = f.do("POST", "/api/pack/vanilla", `{"token":"`+token+`","mc":"1.19.4"}`, nil)
+	// A version outside the ranges is a refusal, not a rental that dies at boot.
+	rec = f.do("POST", "/api/pack/vanilla", `{"token":"`+token+`","mc":"1.16.5"}`, nil)
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("install vanilla 1.19.4 = %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("install vanilla 1.16.5 = %d: %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(rec.Body.String(), publish.MinecraftList()) {
 		t.Fatalf("the refusal should name the table: %s", rec.Body.String())

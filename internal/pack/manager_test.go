@@ -339,7 +339,8 @@ func TestVersionsSaysWhatThisServerCanRun(t *testing.T) {
 	// The fake Modrinth answers with four versions spanning three game versions.
 	srv := newFakeModrinth(t, []Version{
 		{ID: "v4", VersionNumber: "15.0.0-beta.4", VersionType: "beta", GameVersions: []string{"26.3"}, Loaders: []string{"fabric"}},
-		{ID: "v3", VersionNumber: "14.1.2", VersionType: "release", GameVersions: []string{"26.2"}, Loaders: []string{"fabric"}},
+		// Between the 1.21.x and 26.x ranges: no JDK row, so not bootable.
+		{ID: "v3", VersionNumber: "14.1.2", VersionType: "release", GameVersions: []string{"1.22.4"}, Loaders: []string{"fabric"}},
 		{ID: "v2", VersionNumber: "5.4.1", VersionType: "alpha", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
 		{ID: "v1", VersionNumber: "5.2.8", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"fabric"}},
 		{ID: "v0", VersionNumber: "0.9.0", VersionType: "release", GameVersions: []string{"1.20.1"}, Loaders: []string{"forge"}},
@@ -375,6 +376,11 @@ func TestVersionsSaysWhatThisServerCanRun(t *testing.T) {
 	if c := byNumber["14.1.2"]; c.Bootable || !strings.Contains(c.Reason, "Java 17") {
 		t.Fatalf("14.1.2 = %+v", c)
 	}
+	// A version inside a range is bootable even though no button offers it, which is
+	// the point of the ranges: 26.2 needs Java 25 and the image has a row for it.
+	if c := byNumber["15.0.0-beta.4"]; !c.Bootable {
+		t.Fatalf("26.3 is inside the 26.x range: %+v", c)
+	}
 	if c := byNumber["0.9.0"]; c.Bootable || !strings.Contains(c.Reason, "Fabric") {
 		t.Fatalf("0.9.0 = %+v", c)
 	}
@@ -390,7 +396,7 @@ func TestVersionsFindsTheRunnableOnesUnderHundredsOfNewerOnes(t *testing.T) {
 	for i := 0; i < 300; i++ {
 		versions = append(versions, Version{
 			ID: fmt.Sprintf("new-%d", i), VersionNumber: fmt.Sprintf("90.%d.0", 300-i),
-			VersionType: "release", GameVersions: []string{"26.2"}, Loaders: []string{"fabric"},
+			VersionType: "release", GameVersions: []string{"1.22.4"}, Loaders: []string{"fabric"},
 		})
 	}
 	for i := 0; i < 5; i++ {
@@ -555,7 +561,7 @@ func TestInstallVanillaTakesTheVersionItWasAsked(t *testing.T) {
 func TestInstallVanillaRefusesAVersionWithNoJDK(t *testing.T) {
 	m, _ := newManager(t)
 
-	_, err := m.InstallVanilla(context.Background(), VanillaRequest{MC: "1.19.4"})
+	_, err := m.InstallVanilla(context.Background(), VanillaRequest{MC: "1.16.5"})
 	if err == nil || !strings.Contains(err.Error(), publish.MinecraftList()) {
 		t.Fatalf("want a refusal naming the table, got %v", err)
 	}

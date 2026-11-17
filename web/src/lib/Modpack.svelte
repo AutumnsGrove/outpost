@@ -553,7 +553,7 @@
 					: 'The plain game, no mods.'}
 			>
 				{#each vanillaRows as m (m.mc)}
-					<option value={m.mc}>{m.mc}</option>
+					<option value={m.mc}>{m.mc}{m.booted ? '' : ' · untested'}</option>
 				{/each}
 			</select>
 		</label>
