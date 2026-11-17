@@ -27,12 +27,17 @@ func TestProjectIDComesFromTheModrinthCDN(t *testing.T) {
 // is part of the answer, not something a test server can stand in for.
 func stubSides(t *testing.T, sides map[string]string) {
 	t.Helper()
-	old := sidesLookup
-	sidesLookup = func(_ context.Context, id string) (string, bool) {
-		side, ok := sides[id]
-		return side, ok
+	old := sidesOf
+	sidesOf = func(_ context.Context, ids []string) map[string]string {
+		out := map[string]string{}
+		for _, id := range ids {
+			if side, ok := sides[id]; ok {
+				out[id] = side
+			}
+		}
+		return out
 	}
-	t.Cleanup(func() { sidesLookup = old })
+	t.Cleanup(func() { sidesOf = old })
 }
 
 func TestDropServerUnsupportedDropsWhatModrinthCallsClientOnly(t *testing.T) {

@@ -303,7 +303,7 @@ func (a *app) packFetchCmd() *cobra.Command {
 			fmt.Printf("%s: minecraft %s, %s %s\n", p.Describe(), p.MC, p.Loader, p.LoaderVersion)
 			fmt.Printf("wrote %d file(s) (%d mod(s)), %s into %s/\n", res.Files, res.Mods, humanSize(res.Bytes), dir)
 			if len(res.Skipped) > 0 {
-				fmt.Printf("skipped %d file(s) the pack marks client-only or optional\n", len(res.Skipped))
+				fmt.Printf("skipped %d file(s): client-only, optional-and-skipped, or unsupported on a server\n", len(res.Skipped))
 			}
 			for _, w := range res.Warnings {
 				fmt.Printf("note    %s\n", w)

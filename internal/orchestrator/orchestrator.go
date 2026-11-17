@@ -491,6 +491,17 @@ func (o *Orchestrator) Start(ctx context.Context, region, serverType string) (st
 	_ = o.store.MetaSet("save_attempts", "0")
 	_ = o.store.MetaSet("rcon_failures", "0")
 	_ = o.store.MetaSet("ever_running", "")
+	// Fresh rent, fresh bookkeeping. A missed-probe count carried over from the last
+	// session asks this box for its log on the first tick — seconds after rent, when
+	// cloud-init has not written one — and that early answer then suppresses the
+	// question for the failure that actually matters. The summary belongs to the box
+	// that produced it, so it goes too: attributing one box's crash to the next is
+	// worse than saying nothing.
+	_ = o.store.MetaSet("provision_misses", "0")
+	_ = o.store.MetaSet("why_reported", "")
+	_ = o.store.MetaSet("why_summary", "")
+	_ = o.store.MetaSet("why_tries", "0")
+	_ = o.store.MetaSet("why_tries_for", "")
 
 	// The rate of the plan that was actually rented, which is not always the one
 	// asked for: a sold-out plan falls back, and a fallback size has its own price.
@@ -692,7 +703,13 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 
 	if elapsed := o.now().Sub(st.StartedAt); elapsed > o.cfg.Server.ProvisionTimeout.Std() {
 		o.log.Error("provisioning timed out", "id", st.VPSID, "elapsed", elapsed)
-		st.LastError = fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second))
+		reason := fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second))
+		if summary := o.reportWhy(ctx, st, reason); summary != "" {
+			// The log's answer beats the symptom: "timed out" alone is what this
+			// session spent fifteen minutes learning nothing from.
+			reason += ": " + summary
+		}
+		st.LastError = truncate(reason, 240)
 		_ = o.store.SetState(st)
 		_ = o.store.Log("provision-timeout", "%s", st.LastError)
 		return o.transition(st, store.Terminating)
@@ -705,8 +722,23 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 	players, err := o.deps.Probe(ctx, addr, st.RCONPassword)
 	if err != nil {
 		o.log.Debug("not ready yet", "host", st.TailnetHost, "err", err)
+
+		// The same question as a live failure, and the one that went unanswered for
+		// fifteen minutes the first time a pack could not load: a server that never
+		// comes up is a log nobody reads. Six misses is two minutes, which is past
+		// any boot and short enough to be before somebody gives up.
+		misses, _ := o.store.MetaInt("provision_misses")
+		misses++
+		_ = o.store.MetaSet("provision_misses", fmt.Sprint(misses))
+		// "At least", not "exactly": the counter can start above zero (a new rent
+		// after a session that never came up), and the once-per-VPS guard inside
+		// reportWhy is what stops it repeating.
+		if misses >= 6 {
+			o.reportWhy(ctx, st, "the server never answered RCON while provisioning")
+		}
 		return nil
 	}
+	_ = o.store.MetaSet("provision_misses", "0")
 
 	next := st
 	next.State = store.Running
@@ -764,6 +796,15 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		failures++
 		_ = o.store.MetaSet("rcon_failures", fmt.Sprint(failures))
 		o.log.Warn("rcon probe failed", "host", st.TailnetHost, "attempt", failures, "err", probeErr)
+
+		if failures >= whyAfterFailures {
+			if summary := o.reportWhy(ctx, st, "the server stopped answering RCON"); summary != "" {
+				// The hero shows lastError, so the reason a player was kicked belongs
+				// there and not only in the event trail.
+				st.LastError = truncate("the server stopped answering RCON: "+summary, 240)
+				_ = o.store.SetState(st)
+			}
+		}
 
 		if failures >= o.rconFailureLimit() {
 			_ = o.store.MetaSet("rcon_failures", "0")

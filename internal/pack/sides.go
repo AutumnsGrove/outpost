@@ -2,10 +2,11 @@ package pack
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
-	"sync"
 )
 
 // modrinthCDN matches the project id inside a Modrinth file URL:
@@ -22,59 +23,59 @@ func projectID(downloadURL string) string {
 	return ""
 }
 
-// sideCache holds what Modrinth says about each project's sides, for the length of
-// one fetch: a pack of a hundred mods is a hundred projects, and asking twice for
-// the same one (or once per fetch of the same pack) is pointless load on somebody
-// else's API.
-var sideCache = struct {
-	sync.Mutex
-	known map[string]string
-}{known: map[string]string{}}
+// maxSideBatch is how many project ids one request may carry. Modrinth's batch
+// endpoint takes a thousand; five hundred is a pack and a half, and a pack that
+// large is already a different problem.
+const maxSideBatch = 500
 
-// serverSide is Modrinth's own statement of whether a mod can run on a dedicated
-// server: "required", "optional" or "unsupported".
+// serverSides asks Modrinth which sides a batch of projects can run on: "required",
+// "optional" or "unsupported", by project id.
 //
-// It is the right question to ask, and the other two sources are not. The pack's
-// `env.server` is whatever the author's launcher exported — Fabulously Optimized
-// marks all fifty of its files `server: required`, including the purely graphical
-// ones — and a jar's `fabric.mod.json` `environment` field is the mod's opinion
-// about its own code, which is often "*" for something that in practice only works
-// on a client (e4mc says "*" and registers a server command that dies on the first
-// player's login). Modrinth's per-project sides are curated against the mod's
-// actual behaviour, which is the thing the boot cares about.
-func serverSide(ctx context.Context, id string) (string, bool) {
-	sideCache.Lock()
-	side, ok := sideCache.known[id]
-	sideCache.Unlock()
-	if ok {
-		return side, side != ""
+// It is one request for the whole pack, because the alternative is a request per
+// mod: Fabulously Optimized is a hundred files, the API allows about three hundred
+// requests a minute, and a preview somebody asked for on a phone should not be a
+// burst. A project the API does not answer about is absent from the map, which is
+// read as "no opinion" rather than "unsupported".
+//
+// What this is worth, exactly: `server_side` is author-declared — the same class of
+// evidence as a pack's `env.server`, not a curated fact. It is right more often only
+// because it is written once per project by the person who wrote the mod, instead of
+// being exported per pack by whoever assembled one. It is not an oracle. Where it
+// and the code disagree and it is wrong (e4mc is `required` and dies on the first
+// login), nothing in the metadata helps: the dependency rescue and the daemon's
+// crash report are the answers.
+func serverSides(ctx context.Context, ids []string) map[string]string {
+	sides := map[string]string{}
+	for start := 0; start < len(ids); start += maxSideBatch {
+		end := min(start+maxSideBatch, len(ids))
+		raw, err := json.Marshal(ids[start:end])
+		if err != nil {
+			return sides
+		}
+		var docs []struct {
+			ID         string `json:"id"`
+			ServerSide string `json:"server_side"`
+		}
+		if err := getJSON(ctx, "/projects?ids="+url.QueryEscape(string(raw)), &docs); err != nil {
+			// No answer is not "unsupported": a pack we cannot ask about is installed
+			// as the pack says, because refusing to fetch on an API hiccup is worse
+			// than a mod the loader will ignore.
+			return sides
+		}
+		for _, d := range docs {
+			if d.ServerSide != "" {
+				sides[d.ID] = d.ServerSide
+			}
+		}
 	}
-
-	var doc struct {
-		ServerSide string `json:"server_side"`
-	}
-	if err := getJSON(ctx, "/project/"+id, &doc); err != nil {
-		// No answer is not "unsupported": a pack we cannot ask about is installed as
-		// the pack says, because refusing to fetch on an API hiccup is worse than a
-		// mod the loader will ignore.
-		sideCache.Lock()
-		sideCache.known[id] = ""
-		sideCache.Unlock()
-		return "", false
-	}
-
-	sideCache.Lock()
-	sideCache.known[id] = doc.ServerSide
-	sideCache.Unlock()
-	return doc.ServerSide, true
+	return sides
 }
 
-// sidesLookup and projectOfURL are where dropServerUnsupported asks, and seams for
-// the tests: a fixture cannot host cdn.modrinth.com, and the questions being tested
-// are what happens to an answer and which file it applies to, not where either came
-// from. Production uses the two functions below, unchanged.
+// sidesOf and projectOfURL are seams for the tests: a fixture cannot host
+// cdn.modrinth.com, so it cannot produce a URL that names a project or an API answer
+// about one. Production uses the two functions above unchanged.
 var (
-	sidesLookup  = serverSide
+	sidesOf      = serverSides
 	projectOfURL = projectID
 )
 
@@ -87,19 +88,26 @@ var (
 // client-only. The ones that do not are the problem: at best they are dead weight
 // in a 2 GB heap, and at worst they crash the server at the moment a player logs
 // in, which the player experiences as being kicked and which reads as "Outpost is
-// broken".
+// broken". Fabulously Optimized marks all fifty of its files server-required, so
+// its own annotations cannot answer this; asking each project can, and does: 36 of
+// those fifty are `server_side: unsupported`.
 //
 // Dropped files join the skipped list, so the dependency rescue still sees them: a
 // "client" mod another kept mod cannot load without is put back (PLAN 40).
 func dropServerUnsupported(ctx context.Context, wanted []ManifestFile, res *Result, log *slog.Logger) (kept, dropped []ManifestFile) {
+	ids := make([]string, 0, len(wanted))
+	seen := map[string]bool{}
+	for _, f := range wanted {
+		if id := projectOfURL(f.Downloads[0]); id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	sides := sidesOf(ctx, ids)
+
 	for _, f := range wanted {
 		id := projectOfURL(f.Downloads[0])
-		if id == "" {
-			kept = append(kept, f)
-			continue
-		}
-		side, known := sidesLookup(ctx, id)
-		if known && strings.EqualFold(side, "unsupported") {
+		if id != "" && strings.EqualFold(sides[id], "unsupported") {
 			dropped = append(dropped, f)
 			res.Skipped = append(res.Skipped, f.Path)
 			log.Info("not installing a client-only mod", "file", f.Path, "modrinth", "server_side: unsupported")
