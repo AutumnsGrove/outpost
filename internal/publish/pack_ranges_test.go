@@ -102,7 +102,7 @@ func TestMinecraftListNamesTheRanges(t *testing.T) {
 func TestAVersionThatIsNotAVersionIsRefused(t *testing.T) {
 	// Surrounding whitespace is trimmed on purpose (MinecraftFor's doc), so it is not
 	// in this list; everything else is a string that is not a version.
-	for _, mc := range []string{"1.20.4x", "1.20.4.", ".1.20", "1.21.x", "latest", "1.20.1.0.1"} {
+	for _, mc := range []string{"1.20.4x", "1.20.4.", ".1.20", "1.21.x", "latest", "1.20.1.0.1", "1.20.01", "01.20.4", "1.020.04"} {
 		if _, ok := JavaFor(mc); ok {
 			t.Fatalf("JavaFor(%q) accepted something that is not a Minecraft version", mc)
 		}

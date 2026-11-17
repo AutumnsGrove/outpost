@@ -100,7 +100,9 @@
 	const vanillaRows = $derived.by(() => {
 		const rows: MinecraftRow[] = pack?.minecrafts ?? [];
 		if (vanillaHeld && !rows.some((m) => m.mc === vanillaHeld)) {
-			return [{ mc: vanillaHeld, java: 0, booted: true }, ...rows];
+			// Not "booted": holding a pack.json is not evidence that a rent came up
+			// on this version, and the row should say so.
+			return [{ mc: vanillaHeld, java: 0, booted: false }, ...rows];
 		}
 		return rows;
 	});
