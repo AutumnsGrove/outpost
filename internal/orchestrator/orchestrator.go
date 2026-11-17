@@ -692,6 +692,7 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 
 	if elapsed := o.now().Sub(st.StartedAt); elapsed > o.cfg.Server.ProvisionTimeout.Std() {
 		o.log.Error("provisioning timed out", "id", st.VPSID, "elapsed", elapsed)
+		o.reportWhy(ctx, st, fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second)))
 		st.LastError = fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second))
 		_ = o.store.SetState(st)
 		_ = o.store.Log("provision-timeout", "%s", st.LastError)
@@ -705,8 +706,20 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 	players, err := o.deps.Probe(ctx, addr, st.RCONPassword)
 	if err != nil {
 		o.log.Debug("not ready yet", "host", st.TailnetHost, "err", err)
+
+		// The same question as a live failure, and the one that went unanswered for
+		// fifteen minutes the first time a pack could not load: a server that never
+		// comes up is a log nobody reads. Six misses is two minutes, which is past
+		// any boot and short enough to be before somebody gives up.
+		misses, _ := o.store.MetaInt("provision_misses")
+		misses++
+		_ = o.store.MetaSet("provision_misses", fmt.Sprint(misses))
+		if misses == 6 {
+			o.reportWhy(ctx, st, "the server never answered RCON while provisioning")
+		}
 		return nil
 	}
+	_ = o.store.MetaSet("provision_misses", "0")
 
 	next := st
 	next.State = store.Running
@@ -764,6 +777,10 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		failures++
 		_ = o.store.MetaSet("rcon_failures", fmt.Sprint(failures))
 		o.log.Warn("rcon probe failed", "host", st.TailnetHost, "attempt", failures, "err", probeErr)
+
+		if failures == whyAfterFailures {
+			o.reportWhy(ctx, st, "the server stopped answering RCON")
+		}
 
 		if failures >= o.rconFailureLimit() {
 			_ = o.store.MetaSet("rcon_failures", "0")
