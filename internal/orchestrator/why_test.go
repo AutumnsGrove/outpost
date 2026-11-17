@@ -178,6 +178,16 @@ func TestASecondSessionThatNeverBootsStillSaysWhy(t *testing.T) {
 	h.remote.out = "Mod resolution failed\nImmediate reason: [HARD_DEP_NO_CANDIDATE chipped 3.0.7]\n"
 	h.probeErr = errors.New("never comes up")
 
+	logReads := func() int {
+		n := 0
+		for _, c := range h.remote.calls {
+			if strings.Contains(c, "latest.log") {
+				n++
+			}
+		}
+		return n
+	}
+
 	crashes := func() int {
 		events, err := h.store.RecentEvents(50)
 		if err != nil {
@@ -219,14 +229,79 @@ func TestASecondSessionThatNeverBootsStillSaysWhy(t *testing.T) {
 		t.Fatalf("state = %s, want OFFLINE", got)
 	}
 
-	// A new rent, a new box, the same broken pack: it gets asked again.
+	// A new rent, a new box, and a different failure: it gets asked again, for its
+	// own reason, and not on the first tick — when cloud-init has not written a log
+	// yet and an early empty answer would suppress the question that matters.
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	h.remote.out = "Incompatible mods found!\n - Mod 'Chipped' requires athena\n"
+	readsBefore := logReads()
+	h.tick(t)
+	if got := logReads(); got != readsBefore {
+		t.Fatalf("asked for the log on the first missed probe")
+	}
+	for i := 0; i < 5; i++ {
+		h.tick(t)
+	}
+	if got := crashes(); got < 2 {
+		t.Fatalf("the second session never asked why: %d crash event(s)", got)
+	}
+
+	events, err := h.store.RecentEvents(50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// RecentEvents is newest first; the newest crash is the one with the highest id.
+	var latest string
+	var latestID int64
+	for _, e := range events {
+		if e.Kind == "crash" && e.ID > latestID {
+			latest, latestID = e.Message, e.ID
+		}
+	}
+	if !strings.Contains(latest, "Incompatible mods found") {
+		t.Fatalf("the second session reported the first box's reason: %q", latest)
+	}
+}
+
+// And a box whose log says nothing must not inherit the previous box's summary.
+func TestANewSecondsReasonIsNotTheLastBoxes(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.probeErr = errors.New("never comes up")
+	h.remote.out = "java.lang.IllegalStateException: first box problem\n"
+
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		h.tick(t)
+	}
+	h.clock = h.clock.Add(16 * time.Minute)
+	h.tick(t) // times out, reporting the first box's problem
+	h.tick(t) // tears down
+
+	// Second box: the log cannot be read at all.
+	h.remote.out = ""
+	h.remote.err = errors.New("ssh: no route to host")
 	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
 		t.Fatalf("second start: %v", err)
 	}
 	for i := 0; i < 6; i++ {
 		h.tick(t)
 	}
-	if got := crashes(); got < 2 {
-		t.Fatalf("the second session never asked why: %d crash event(s)", got)
+	h.clock = h.clock.Add(16 * time.Minute)
+	h.tick(t)
+
+	st, err := h.store.GetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(st.LastError, "first box problem") {
+		t.Fatalf("the second box inherited the first one's cause: %q", st.LastError)
+	}
+	if !strings.Contains(st.LastError, "timed out") {
+		t.Fatalf("lastError = %q, want the timeout", st.LastError)
 	}
 }
