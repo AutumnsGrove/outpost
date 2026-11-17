@@ -38,6 +38,9 @@ type Minecraft struct {
 var Minecrafts = []Minecraft{
 	{MC: "1.20.1", Java: 17},
 	{MC: "1.21.1", Java: 21},
+	// 26.x needs Java 25, which Ubuntu does not package: cloud-init fetches it
+	// from Adoptium for exactly this row (internal/cloudinit, javaTarballs).
+	{MC: "26.3", Java: 25},
 }
 
 // SupportedMC is the Minecraft version a pack that names none is assumed to be
