@@ -149,15 +149,20 @@ func TestBootableFollowsTheMinecraftTable(t *testing.T) {
 			bootable: true,
 		},
 		{
-			name:     "the second row, which is Java 21",
-			version:  Version{GameVersions: []string{"1.21.1"}, Loaders: []string{"fabric"}},
+			name:     "a version inside the 1.21 range that no button offers",
+			version:  Version{GameVersions: []string{"1.21.4"}, Loaders: []string{"fabric"}},
 			bootable: true,
 		},
 		{
-			name:     "a version outside the table",
-			version:  Version{GameVersions: []string{"1.21.4"}, Loaders: []string{"fabric"}},
+			name:     "a version inside the 26.x range, which is Java 25",
+			version:  Version{GameVersions: []string{"26.2"}, Loaders: []string{"fabric"}},
+			bootable: true,
+		},
+		{
+			name:     "a version between the ranges",
+			version:  Version{GameVersions: []string{"1.22.4"}, Loaders: []string{"fabric"}},
 			bootable: false,
-			inReason: "1.20.1 (Java 17), 1.21.1 (Java 21)",
+			inReason: "1.17–1.20.4 (Java 17)",
 		},
 		{
 			name:     "no Fabric build",

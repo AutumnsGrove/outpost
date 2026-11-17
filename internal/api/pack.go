@@ -34,10 +34,10 @@ type packOverview struct {
 	// number in the page. It is the default row of publish.Minecrafts, not the only
 	// version the image boots: Minecrafts is the rest of the answer.
 	SupportedMC string `json:"supportedMc"`
-	// Minecrafts is the table the vanilla picker offers: every version this image
-	// has a JDK for. It is the whole list rather than "the version besides the
-	// default" on purpose — the page renders one select from the table, and adding
-	// a row to packmeta.go should need no edit here or in the page.
+	// Minecrafts is what the vanilla picker offers, oldest first, each row marked
+	// with whether a real rent has booted it. It is a shortlist, not the limit:
+	// publish.JavaRanges decides what is bootable, so `--mc 1.19.4` works without a
+	// button, and adding a button should need no edit here or in the page.
 	Minecrafts []publish.Minecraft `json:"minecrafts"`
 	// VanillaProfile is the profile `Install Vanilla` writes when the page names
 	// none. The panel needs it to open the version select on the version that

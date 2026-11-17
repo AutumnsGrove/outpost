@@ -79,14 +79,30 @@ func TestBuildTrustsThePackOverTheClientOnlyList(t *testing.T) {
 	}
 }
 
-func TestBuildRefusesAPackForAVersionOutsideTheTable(t *testing.T) {
-	p := testPack()
-	p.MC = "1.21.4"
-	dir := writeModpack(t, p)
+func TestBuildRefusesAPackForAVersionOutsideTheRanges(t *testing.T) {
+	for _, mc := range []string{"1.16.5", "1.22.4"} {
+		p := testPack()
+		p.MC = mc
+		dir := writeModpack(t, p)
 
-	_, _, err := Build(context.Background(), Options{Dir: dir})
-	if err == nil || !strings.Contains(err.Error(), "1.20.1 (Java 17)") {
-		t.Fatalf("want a refusal naming the table, got %v", err)
+		_, _, err := Build(context.Background(), Options{Dir: dir})
+		if err == nil || !strings.Contains(err.Error(), MinecraftList()) {
+			t.Fatalf("%s should be refused naming the ranges, got %v", mc, err)
+		}
+	}
+}
+
+// A version inside a range is bootable whether or not it is one of the versions
+// the panel offers: the picker is a list of buttons, not the limit of the system.
+func TestBuildAcceptsAVersionBetweenTheOffers(t *testing.T) {
+	for _, mc := range []string{"1.19.4", "1.21.4", "1.20.6"} {
+		p := testPack()
+		p.MC = mc
+		dir := writeModpack(t, p)
+
+		if _, _, err := Build(context.Background(), Options{Dir: dir}); err != nil {
+			t.Fatalf("%s has a JDK and should build: %v", mc, err)
+		}
 	}
 }
 
@@ -750,8 +766,13 @@ func TestVanillaPackTakesARowOfTheTable(t *testing.T) {
 
 	// Anything outside the table has no JDK here, so it is refused in the words the
 	// panel shows rather than written and discovered at boot.
-	if err := CheckPack(VanillaPack("1.19.4")); err == nil || !strings.Contains(err.Error(), MinecraftList()) {
-		t.Fatalf("a version outside the table was not refused with the table: %v", err)
+	if err := CheckPack(VanillaPack("1.16.5")); err == nil || !strings.Contains(err.Error(), MinecraftList()) {
+		t.Fatalf("a version outside the ranges was not refused with them: %v", err)
+	}
+	// And one inside a range that no button offers is accepted: the offers are a
+	// shortlist, not the boundary.
+	if err := CheckPack(VanillaPack("1.19.4")); err != nil {
+		t.Fatalf("1.19.4 is Java 17 and should be accepted: %v", err)
 	}
 }
 

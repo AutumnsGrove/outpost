@@ -290,16 +290,17 @@ func TestFetchRefusesAnotherMinecraftVersionBeforeTheFileDownloads(t *testing.T)
 	api.stage(t)
 
 	// The manifest is only readable once the .mrpack is down, but the 300 mod
-	// files are not: a pack for a version outside the table should cost one
-	// archive, not the whole pack. 1.21.1 is in the table (Java 21); 1.21.4 is not,
-	// which is the case that must still be refused before the download.
+	// files are not: a pack for a version outside the ranges should cost one
+	// archive, not the whole pack. 1.21.4 is inside a range (Java 21); 1.22.4 is
+	// between ranges, which is the case that must still be refused before the
+	// download.
 	api.mrpack = zipBytes(t, Manifest{
 		FormatVersion: 1,
-		Dependencies:  map[string]string{"minecraft": "1.21.4", "fabric-loader": "0.16.0"},
+		Dependencies:  map[string]string{"minecraft": "1.22.4", "fabric-loader": "0.16.0"},
 	}, nil)
 
 	_, err := Fetch(context.Background(), Options{Source: "test-pack", Dir: t.TempDir(), MemoryGB: 4})
-	if err == nil || !strings.Contains(err.Error(), "1.20.1 (Java 17)") {
+	if err == nil || !strings.Contains(err.Error(), "1.17–1.20.4 (Java 17)") {
 		t.Fatalf("want a refusal naming the versions this image boots, got %v", err)
 	}
 	if got := api.downloads.Load(); got != 0 {
