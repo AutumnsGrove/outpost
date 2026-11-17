@@ -820,3 +820,67 @@ func TestVersionsSpendsTheBudgetOnTheVersionTheProfileCanInstall(t *testing.T) {
 		t.Fatalf("newer = %q, want the 1.20.1 update", out.Newer)
 	}
 }
+
+// A deleted profile leaves nothing behind: R2 is what the VPS boots from, and the
+// working copy on the potato is hundreds of megabytes that nothing will ever read.
+func TestDeletingAProfileRemovesItsLocalCopy(t *testing.T) {
+	m, store := newManager(t)
+	m.Dir = t.TempDir()
+	m.Store = store
+
+	profile := "test-pack"
+	dir := m.profileDir(profile)
+	if err := os.MkdirAll(filepath.Join(dir, "mods"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mods", "a.jar"), make([]byte, 4096), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pack.json"), []byte(`{"slug":"test-pack"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.objects["profiles/test-pack/mods/a.jar"] = []byte("x")
+
+	res, err := m.DeleteProfile(context.Background(), profile, "other", time.Now)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if res.LocalBytes < 4096 {
+		t.Fatalf("LocalBytes = %d, want the size of what was removed", res.LocalBytes)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("the working copy survived the delete")
+	}
+}
+
+// The archive cache ages out: one archive per pack version, forever, otherwise.
+func TestTheArchiveCachePrunesWhatIsPastItsRetention(t *testing.T) {
+	m, _ := newManager(t)
+	m.Dir = t.TempDir()
+	if err := os.MkdirAll(m.cacheDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	old := filepath.Join(m.cacheDir(), "old-pack-abc123.mrpack")
+	fresh := filepath.Join(m.cacheDir(), "fresh-pack-def456.mrpack")
+	for _, p := range []string{old, fresh} {
+		if err := os.WriteFile(p, make([]byte, 2048), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := time.Now().Add(-cacheRetention - time.Hour)
+	if err := os.Chtimes(old, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	freed, count := m.pruneCache(time.Now())
+	if count != 1 || freed != 2048 {
+		t.Fatalf("pruned %d file(s), %d bytes; want the stale one only", count, freed)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatal("the stale archive survived")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("a fresh archive was pruned: %v", err)
+	}
+}
