@@ -103,14 +103,21 @@ func (a *app) packVanillaCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("wrote %s: %s, no mods\n", filepath.Join(dir, publish.PackFile), pk.Describe())
-			// The world question belongs here, before the next command: `publish` is
-			// what refuses it, and the refusal arrives after a launcher download.
-			if mc != "" && mc != publish.SupportedMC {
-				fmt.Printf("next: outpost publish %s --profile %s\n", dir,
+			fmt.Printf("next: outpost publish %s\n", dir)
+			// A version that is not the default is the one case where a plain publish
+			// can refuse: the world guard will not carry a world across Minecraft
+			// versions. It is a condition, not a destination — this command has no R2
+			// access and cannot tell whether the profile holds a world, and the panel's
+			// button always targets `vanilla`, so steering a fresh install into a
+			// versioned profile is the two front doors disagreeing about where vanilla
+			// lives. Wording it as the guard's own answer keeps them one sentence.
+			//
+			// pk.MC rather than the flag: --mc "1.20.1 " is the default version, and
+			// VanillaPack is what canonicalised it.
+			if pk.MC != publish.SupportedMC {
+				fmt.Printf("      (%s is not the default %s: if profile %s already holds a world, publish refuses and names --profile %s)\n",
+					pk.MC, publish.SupportedMC, publish.ProfileFromSlug(pk.Slug),
 					publish.ProfileFromSlug(pk.Slug+"-"+strings.ReplaceAll(pk.MC, ".", "-")))
-				fmt.Println("      (a world does not survive a Minecraft version change, so this wants a profile of its own)")
-			} else {
-				fmt.Printf("next: outpost publish %s\n", dir)
 			}
 			// `publish` refuses a server nobody could join, and the roster in R2 is
 			// what it falls back to. Saying so here beats a refusal that looks like
