@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -218,6 +219,10 @@ type rosterCache struct {
 
 const rosterTTL = 30 * time.Second
 
+// rosterReadTimeout is the cache's own deadline for one read from R2. It is not
+// the page's: see get. A variable so the test can make it short.
+var rosterReadTimeout = 10 * time.Second
+
 func (c *rosterCache) invalidate() {
 	c.mu.Lock()
 	c.at = time.Time{}
@@ -230,8 +235,23 @@ func (c *rosterCache) get(ctx context.Context, r *roster.Roster) (roster.Snapsho
 	if !c.at.IsZero() && time.Since(c.at) < rosterTTL {
 		return c.snap, c.err
 	}
-	c.snap, c.err = r.List(ctx)
-	c.at = time.Now()
+
+	// The answer is shared, so it must not die with whoever asked first. Tying the
+	// read to the request meant a phone that closed the page mid-poll canceled the
+	// read, and the cached error — "context canceled" — was then served to every
+	// poll for the next thirty seconds, which the page drew as "Could not read the
+	// whitelist from R2" while R2 was fine. One deadline of the cache's own, and
+	// the caller's cancellation is only the caller's problem.
+	read, cancel := context.WithTimeout(context.WithoutCancel(ctx), rosterReadTimeout)
+	defer cancel()
+
+	snap, err := r.List(read)
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		// Nothing was learned, so nothing is cached: a read that ran out of time is
+		// not an answer, and the next poll should try again rather than inherit it.
+		return roster.Snapshot{}, err
+	}
+	c.snap, c.err, c.at = snap, err, time.Now()
 	return c.snap, c.err
 }
 
