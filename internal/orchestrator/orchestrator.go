@@ -500,6 +500,7 @@ func (o *Orchestrator) Start(ctx context.Context, region, serverType string) (st
 	_ = o.store.MetaSet("provision_misses", "0")
 	_ = o.store.MetaSet("why_reported", "")
 	_ = o.store.MetaSet("why_summary", "")
+	_ = o.store.MetaSet("why_tries", "0")
 
 	// The rate of the plan that was actually rented, which is not always the one
 	// asked for: a sold-out plan falls back, and a fallback size has its own price.
