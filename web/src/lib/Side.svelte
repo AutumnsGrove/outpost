@@ -4,6 +4,7 @@
 	import Check from '@lucide/svelte/icons/check';
 	import Circle from '@lucide/svelte/icons/circle';
 	import CircleCheck from '@lucide/svelte/icons/circle-check';
+	import CircleHelp from '@lucide/svelte/icons/circle-help';
 	import CircleSlash from '@lucide/svelte/icons/circle-slash';
 	import Clock from '@lucide/svelte/icons/clock';
 	import Globe from '@lucide/svelte/icons/globe';
@@ -56,6 +57,8 @@
 		fallback: Shuffle,
 		'no-capacity': Ban,
 		adopted: LinkIcon,
+		crash: TriangleAlert,
+		why: CircleHelp,
 		error: TriangleAlert
 	};
 
@@ -244,6 +247,7 @@
 		color: var(--moss-dim);
 	}
 	.kind[data-kind='error'],
+	.kind[data-kind='crash'],
 	.kind[data-kind='save-failed'],
 	.kind[data-kind='rcon-dead'],
 	.kind[data-kind='console-refused'] {
