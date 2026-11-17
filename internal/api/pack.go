@@ -29,11 +29,22 @@ type packOverview struct {
 	// profiles underneath a live server would file its world in the wrong drawer.
 	Editable bool   `json:"editable"`
 	State    string `json:"state"`
-	// SupportedMC is the Minecraft version `Install Vanilla` writes, so the panel
-	// can offer one without hardcoding a version number in the page. It is the
-	// default row of publish.Minecrafts, not the only version the image boots:
-	// a pack may be for another row, and its own pack.json is what says so.
+	// SupportedMC is the Minecraft version `Install Vanilla` writes when the page
+	// names none, so the panel can offer a default without hardcoding a version
+	// number in the page. It is the default row of publish.Minecrafts, not the only
+	// version the image boots: Minecrafts is the rest of the answer.
 	SupportedMC string `json:"supportedMc"`
+	// Minecrafts is the table the vanilla picker offers: every version this image
+	// has a JDK for. It is the whole list rather than "the version besides the
+	// default" on purpose — the page renders one select from the table, and adding
+	// a row to packmeta.go should need no edit here or in the page.
+	Minecrafts []publish.Minecraft `json:"minecrafts"`
+	// VanillaProfile is the profile `Install Vanilla` writes when the page names
+	// none. The panel needs it to open the version select on the version that
+	// profile already holds: reinstalling vanilla is common, and defaulting a select
+	// to a different Minecraft version is how a reinstall turns into a world
+	// replacement.
+	VanillaProfile string `json:"vanillaProfile"`
 	// Detail explains why the panel is read-only, when it is.
 	Detail string `json:"detail,omitempty"`
 }
@@ -68,6 +79,9 @@ func (s *Server) packGet(w http.ResponseWriter, r *http.Request) {
 	}
 	out.State = string(st.State)
 	out.SupportedMC = publish.SupportedMC
+	out.Minecrafts = publish.Minecrafts
+	vanilla := publish.VanillaPack("")
+	out.VanillaProfile = publish.ProfileFromSlug(vanilla.Slug)
 	out.Editable = st.State == store.Offline
 	if !out.Editable {
 		out.Detail = "the server is " + string(st.State) + ": installing or switching a pack now would file its world in the wrong profile"
@@ -151,9 +165,10 @@ func (s *Server) packInstall(w http.ResponseWriter, r *http.Request, raw []byte)
 }
 
 // packVanilla publishes a server with no mods: a pack.json that says source
-// "outpost", an empty mods/, and the launcher fetched for 1.20.1. The panel's
-// "Vanilla 1.20.1" button is the only caller, and it is a job because the
-// launcher download and the upload take as long as any other install.
+// "outpost", an empty mods/, and the launcher fetched for the Minecraft version
+// the body names (1.20.1 when it names none). The panel's "Install Vanilla"
+// button is the only caller, and it is a job because the launcher download and
+// the upload take as long as any other install.
 func (s *Server) packVanilla(w http.ResponseWriter, r *http.Request, raw []byte) {
 	var body pack.VanillaRequest
 	if len(raw) > 0 {
