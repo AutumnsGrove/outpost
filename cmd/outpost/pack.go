@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -55,22 +56,31 @@ func (a *app) packManager(rost *roster.Roster) (*pack.Manager, error) {
 }
 
 func (a *app) packVanillaCmd() *cobra.Command {
-	var dir string
+	var dir, mc string
 
 	cmd := &cobra.Command{
 		Use:   "vanilla",
-		Short: "Write a server with no mods: Fabric, 1.20.1, an empty mods/",
+		Short: "Write a server with no mods: Fabric, an empty mods/, and the Minecraft version you name",
 		Long: "Writes the pack.json that makes a directory a modless server, which is what\n" +
 			"\"vanilla\" means at Outpost: Fabric with nothing loaded. `outpost publish`\n" +
 			"fetches the launcher for it, so the next command is the only one left.\n\n" +
+			"--mc is the Minecraft version, and it has to be a row of the table the image\n" +
+			"boots (" + publish.MinecraftList() + "); without it the oldest row is\n" +
+			"written, which is what the page's Vanilla button defaults to as well.\n\n" +
 			"It is a pack like any other — a profile, a world, a name in the panel — and\n" +
 			"the page's Vanilla button does exactly this.",
-		Example: "  outpost pack vanilla && outpost publish packs/vanilla",
+		Example: "  outpost pack vanilla --mc 1.21.1 && outpost publish packs/vanilla --profile vanilla-1-21-1",
 		Args:    cobra.NoArgs,
 		// Modrinth is not involved and neither is R2: this writes one file.
 		Annotations: map[string]string{noConfig: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			pk := publish.VanillaPack()
+			pk := publish.VanillaPack(mc)
+			// The same refusal a fetched pack gets, and before anything is written: a
+			// pack.json naming a version with no JDK row is a boot that fails on the VPS
+			// twenty minutes into a rental.
+			if err := publish.CheckPack(pk); err != nil {
+				return err
+			}
 			if dir == "" {
 				dir = filepath.Join("packs", pk.Slug)
 			}
@@ -94,6 +104,21 @@ func (a *app) packVanillaCmd() *cobra.Command {
 			}
 			fmt.Printf("wrote %s: %s, no mods\n", filepath.Join(dir, publish.PackFile), pk.Describe())
 			fmt.Printf("next: outpost publish %s\n", dir)
+			// A version that is not the default is the one case where a plain publish
+			// can refuse: the world guard will not carry a world across Minecraft
+			// versions. It is a condition, not a destination — this command has no R2
+			// access and cannot tell whether the profile holds a world, and the panel's
+			// button always targets `vanilla`, so steering a fresh install into a
+			// versioned profile is the two front doors disagreeing about where vanilla
+			// lives. Wording it as the guard's own answer keeps them one sentence.
+			//
+			// pk.MC rather than the flag: --mc "1.20.1 " is the default version, and
+			// VanillaPack is what canonicalised it.
+			if pk.MC != publish.SupportedMC {
+				fmt.Printf("      (%s is not the default %s: if profile %s already holds a world, publish refuses and names --profile %s)\n",
+					pk.MC, publish.SupportedMC, publish.ProfileFromSlug(pk.Slug),
+					publish.ProfileFromSlug(pk.Slug+"-"+strings.ReplaceAll(pk.MC, ".", "-")))
+			}
 			// `publish` refuses a server nobody could join, and the roster in R2 is
 			// what it falls back to. Saying so here beats a refusal that looks like
 			// the vanilla directory is wrong.
@@ -103,6 +128,7 @@ func (a *app) packVanillaCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&dir, "dir", "", "where to write it (default packs/vanilla)")
+	cmd.Flags().StringVar(&mc, "mc", "", "Minecraft version to write (default "+publish.SupportedMC+"); one of "+publish.MinecraftList())
 	return cmd
 }
 

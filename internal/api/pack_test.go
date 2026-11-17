@@ -131,6 +131,58 @@ func TestPackPanelListsProfilesAndTheActiveOne(t *testing.T) {
 	}
 }
 
+// The vanilla picker is the table, not a version number: the page renders what
+// this answers, and the profile it names is the one the select's default comes
+// from.
+func TestPackPanelOffersTheWholeMinecraftTable(t *testing.T) {
+	f, _, _ := newPackFixture(t)
+
+	out := packGet(t, f)
+	if len(out.Minecrafts) != len(publish.Minecrafts) {
+		t.Fatalf("the panel offers %d versions, the table bootable %d", len(out.Minecrafts), len(publish.Minecrafts))
+	}
+	for i, m := range publish.Minecrafts {
+		if out.Minecrafts[i] != m {
+			t.Fatalf("row %d = %+v, table says %+v", i, out.Minecrafts[i], m)
+		}
+	}
+	if out.SupportedMC != publish.SupportedMC {
+		t.Fatalf("supportedMc = %q", out.SupportedMC)
+	}
+	if out.VanillaProfile != "vanilla" {
+		t.Fatalf("vanillaProfile = %q, want the profile an unnamed install lands in", out.VanillaProfile)
+	}
+}
+
+func TestPackVanillaTakesAVersionAndRefusesOneWithNoJDK(t *testing.T) {
+	f, _, blobs := newPackFixture(t)
+	token := f.formToken(t)
+
+	// A version from the table gets a job; the version is in the job's own name, so
+	// nothing has to run to see it arrived.
+	rec := f.do("POST", "/api/pack/vanilla", `{"token":"`+token+`","mc":"1.21.1"}`, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("install vanilla 1.21.1 = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Vanilla 1.21.1") {
+		t.Fatalf("the job does not name the version: %s", rec.Body.String())
+	}
+
+	// A version outside the table is a refusal, not a rental that dies at boot.
+	rec = f.do("POST", "/api/pack/vanilla", `{"token":"`+token+`","mc":"1.19.4"}`, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("install vanilla 1.19.4 = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), publish.MinecraftList()) {
+		t.Fatalf("the refusal should name the table: %s", rec.Body.String())
+	}
+	// And the first job was refused rather than half-done: no manifest was written
+	// for the version nobody can boot.
+	if _, ok := blobs.objects["profiles/vanilla/pack.json"]; ok {
+		t.Fatal("a refused vanilla install wrote a manifest")
+	}
+}
+
 func TestPackPanelIsReadOnlyWhileAServerIsRented(t *testing.T) {
 	f, _, _ := newPackFixture(t)
 	f.setLive(t)

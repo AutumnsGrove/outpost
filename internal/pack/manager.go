@@ -137,6 +137,12 @@ type InstallRequest struct {
 
 // VanillaRequest is "give me a plain server": no Modrinth project, no mods.
 type VanillaRequest struct {
+	// MC is the Minecraft version to write, and empty is publish.SupportedMC. It
+	// is the one thing a plain server still has to choose: the image boots every
+	// row of publish.Minecrafts, and a Fabric server with no mods is for whichever
+	// of them the world is. Refused here, before a job starts, when the table has
+	// no such row — that refusal is the same sentence a fetched pack gets.
+	MC string `json:"mc"`
 	// Profile is where it lands. Empty is the pack's own slug, which is the same
 	// rule a fetched pack follows, so the default is "vanilla".
 	Profile  string `json:"profile"`
@@ -367,7 +373,13 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 // not `packs/<profile>/`: that may still hold a pack fetched under the same
 // name, and publishing it would send those jars up as "vanilla".
 func (m *Manager) InstallVanilla(ctx context.Context, req VanillaRequest) (*Job, error) {
-	pk := publish.VanillaPack()
+	pk := publish.VanillaPack(req.MC)
+	// The version check belongs before the job slot is claimed, not inside the
+	// goroutine: a version the image has no JDK for is a refusal the page can show
+	// immediately, and the launcher fetch would otherwise fail on the VPS instead.
+	if err := publish.CheckPack(pk); err != nil {
+		return nil, err
+	}
 	profile := strings.TrimSpace(req.Profile)
 	if profile == "" {
 		profile = publish.ProfileFromSlug(pk.Slug)

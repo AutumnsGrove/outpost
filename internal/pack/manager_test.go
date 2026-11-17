@@ -518,6 +518,52 @@ func TestInstallVanillaRefusesANameThatCouldNotBeAKey(t *testing.T) {
 	}
 }
 
+// The version has to reach the pack before the job starts: the job's own name is
+// what the panel and the log show, and it is the only thing a test can check
+// without fetching a launcher.
+func TestInstallVanillaTakesTheVersionItWasAsked(t *testing.T) {
+	m, store := newManager(t)
+	// No roster, so the job fails before it fetches anything — the version is what
+	// this test is about, not the install.
+	job, err := m.InstallVanilla(context.Background(), VanillaRequest{MC: "1.21.1"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !strings.Contains(job.Source, "1.21.1") {
+		t.Fatalf("job = %q, want the version in its name", job.Source)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := m.Job(); got.Phase == "failed" {
+			if !strings.Contains(got.Error, "player list is empty") {
+				t.Fatalf("error = %q, want the roster refusal", got.Error)
+			}
+			if _, err := store.Get(context.Background(), "", "profiles/vanilla/pack.json"); err == nil {
+				t.Fatal("a failed vanilla install still wrote a manifest")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the job never reported a failure")
+}
+
+// A version with no JDK row is refused before the job slot is claimed, so the
+// page gets a sentence instead of a rental that dies at boot. The refusal is
+// publish's, not a second copy of it.
+func TestInstallVanillaRefusesAVersionWithNoJDK(t *testing.T) {
+	m, _ := newManager(t)
+
+	_, err := m.InstallVanilla(context.Background(), VanillaRequest{MC: "1.19.4"})
+	if err == nil || !strings.Contains(err.Error(), publish.MinecraftList()) {
+		t.Fatalf("want a refusal naming the table, got %v", err)
+	}
+	if job := m.Job(); job != nil {
+		t.Fatalf("a refused install claimed the job slot: %+v", job)
+	}
+}
+
 func TestInstallRefusesAnEmptyRosterBeforeDownloading(t *testing.T) {
 	m, store := newManager(t)
 	// The roster exists but holds nobody: what removing the last player leaves.

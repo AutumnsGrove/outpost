@@ -230,9 +230,19 @@ export interface PackOverview {
 	job?: PackJob;
 	editable: boolean;
 	state: ServerState;
-	/** The Minecraft version this image can boot; the vanilla button names it. */
+	/** The version `Install Vanilla` writes when none is chosen. */
 	supportedMc: string;
+	/** Every Minecraft version this image boots, so the vanilla select is the table. */
+	minecrafts: MinecraftRow[];
+	/** The profile `Install Vanilla` writes into; its version is the select's default. */
+	vanillaProfile: string;
 	detail?: string;
+}
+
+/** One row of the JDK table: a Minecraft version and the Java it needs. */
+export interface MinecraftRow {
+	mc: string;
+	java: number;
 }
 
 export type ActionKind = 'start' | 'stop' | 'update';
@@ -294,9 +304,11 @@ export const packDelete = (token: string, profile: string) =>
 export const packVersions = (source: string, token: string, profile = '') =>
 	post<PackVersions>('/api/pack/versions', { source, token, profile });
 
-/** A server with no mods: Fabric and nothing loaded. No project, no preview. */
-export const packVanilla = (token: string, profile = '', newWorld = false) =>
-	post<PackJob>('/api/pack/vanilla', { token, profile, activate: true, newWorld });
+/** A server with no mods: Fabric and nothing loaded. No project, no preview, but
+ *  it still names a Minecraft version — the one version a plain server has to
+ *  choose. Empty mc is the daemon's default (1.20.1). */
+export const packVanilla = (token: string, profile = '', newWorld = false, mc = '') =>
+	post<PackJob>('/api/pack/vanilla', { token, profile, activate: true, newWorld, mc });
 
 export const packPreview = (
 	source: string,
