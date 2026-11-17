@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"outpost/internal/store"
 )
@@ -165,5 +166,67 @@ func TestUnreadableLogIsReportedAsSuch(t *testing.T) {
 	}
 	if !strings.Contains(why, "could not be read") {
 		t.Fatalf("silence is not an answer: %q", why)
+	}
+}
+
+// A session that never booted ends in a timeout, and the *next* one is a different
+// VPS with its own reason to give: the misses counter used to carry over, so the
+// second session of the night climbed past the threshold without ever asking.
+func TestASecondSessionThatNeverBootsStillSaysWhy(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.remote.out = "Mod resolution failed\nImmediate reason: [HARD_DEP_NO_CANDIDATE chipped 3.0.7]\n"
+	h.probeErr = errors.New("never comes up")
+
+	crashes := func() int {
+		events, err := h.store.RecentEvents(50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, e := range events {
+			if e.Kind == "crash" {
+				n++
+			}
+		}
+		return n
+	}
+
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
+		t.Fatalf("first start: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		h.tick(t)
+	}
+	if got := crashes(); got != 1 {
+		t.Fatalf("first session reported %d times, want 1", got)
+	}
+
+	// Let it run past the provisioning timeout, which is also a reason to report —
+	// and the reason has to survive into lastError, not be overwritten by the
+	// symptom.
+	h.clock = h.clock.Add(16 * time.Minute)
+	h.tick(t)
+	st, err := h.store.GetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.LastError, "Mod resolution failed") {
+		t.Fatalf("the timeout threw away the reason: lastError = %q", st.LastError)
+	}
+	h.tick(t) // tear down
+	if got := h.mustState(t); got != store.Offline {
+		t.Fatalf("state = %s, want OFFLINE", got)
+	}
+
+	// A new rent, a new box, the same broken pack: it gets asked again.
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
+		t.Fatalf("second start: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		h.tick(t)
+	}
+	if got := crashes(); got < 2 {
+		t.Fatalf("the second session never asked why: %d crash event(s)", got)
 	}
 }

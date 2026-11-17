@@ -59,12 +59,24 @@ var whyCommand = fmt.Sprintf(`tail -n %[1]d /opt/minecraft/logs/latest.log 2>/de
 //
 // Once, because the caller is a loop: a crash loop would otherwise write the same
 // forty lines every twenty seconds, and the event trail exists to be readable.
-func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why string) {
+// It returns the one-line reason, so a caller that is about to write its own
+// lastError can keep both ("provisioning timed out after 15m0s: Mod resolution
+// failed") instead of overwriting the answer with the symptom.
+func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why string) string {
 	if o.deps.Remote == nil || st.VPSID == "" {
-		return
+		return ""
 	}
+	// Once per VPS, keyed on the id: a new rent is a new box and deserves its own
+	// question. A counter would drift across sessions — the misses from the last
+	// one carry into the next and the threshold is never hit at the same value again.
 	if seen, _ := o.store.MetaGet("why_reported"); seen == st.VPSID {
-		return
+		// Already asked on this box. Answer from what was learned then, so a caller
+		// that reports a later symptom (the timeout) can still carry the cause.
+		summary, _ := o.store.MetaGet("why_summary")
+		if summary == "" {
+			return ""
+		}
+		return summary
 	}
 	_ = o.store.MetaSet("why_reported", st.VPSID)
 
@@ -72,7 +84,7 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	if err != nil {
 		o.log.Warn("could not read the server's log", "host", st.TailnetHost, "err", err)
 		_ = o.store.Log("why", "%s; the log could not be read over SSH: %v", why, err)
-		return
+		return ""
 	}
 
 	summary, detail := distill(out)
@@ -80,14 +92,13 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 		// A log with nothing interesting in it is still an answer: the server did
 		// not fail, it is not there yet.
 		_ = o.store.Log("why", "%s; the server's log says nothing about a failure", why)
-		return
+		return ""
 	}
 
 	o.log.Error("the server says why", "host", st.TailnetHost, "why", summary)
 	_ = o.store.Log("crash", "%s: %s\n%s", why, summary, detail)
-
-	st.LastError = truncate(why+": "+summary, 240)
-	_ = o.store.SetState(st)
+	_ = o.store.MetaSet("why_summary", summary)
+	return summary
 }
 
 // distill turns a log tail into one line and a short excerpt.

@@ -692,8 +692,13 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 
 	if elapsed := o.now().Sub(st.StartedAt); elapsed > o.cfg.Server.ProvisionTimeout.Std() {
 		o.log.Error("provisioning timed out", "id", st.VPSID, "elapsed", elapsed)
-		o.reportWhy(ctx, st, fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second)))
-		st.LastError = fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second))
+		reason := fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second))
+		if summary := o.reportWhy(ctx, st, reason); summary != "" {
+			// The log's answer beats the symptom: "timed out" alone is what this
+			// session spent fifteen minutes learning nothing from.
+			reason += ": " + summary
+		}
+		st.LastError = truncate(reason, 240)
 		_ = o.store.SetState(st)
 		_ = o.store.Log("provision-timeout", "%s", st.LastError)
 		return o.transition(st, store.Terminating)
@@ -714,7 +719,10 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 		misses, _ := o.store.MetaInt("provision_misses")
 		misses++
 		_ = o.store.MetaSet("provision_misses", fmt.Sprint(misses))
-		if misses == 6 {
+		// "At least", not "exactly": the counter can start above zero (a new rent
+		// after a session that never came up), and the once-per-VPS guard inside
+		// reportWhy is what stops it repeating.
+		if misses >= 6 {
 			o.reportWhy(ctx, st, "the server never answered RCON while provisioning")
 		}
 		return nil
@@ -778,8 +786,13 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		_ = o.store.MetaSet("rcon_failures", fmt.Sprint(failures))
 		o.log.Warn("rcon probe failed", "host", st.TailnetHost, "attempt", failures, "err", probeErr)
 
-		if failures == whyAfterFailures {
-			o.reportWhy(ctx, st, "the server stopped answering RCON")
+		if failures >= whyAfterFailures {
+			if summary := o.reportWhy(ctx, st, "the server stopped answering RCON"); summary != "" {
+				// The hero shows lastError, so the reason a player was kicked belongs
+				// there and not only in the event trail.
+				st.LastError = truncate("the server stopped answering RCON: "+summary, 240)
+				_ = o.store.SetState(st)
+			}
 		}
 
 		if failures >= o.rconFailureLimit() {
