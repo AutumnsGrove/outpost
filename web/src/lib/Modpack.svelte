@@ -60,6 +60,10 @@
 	// it at that row, because a profile published as --profile potato is not named
 	// after its pack and deriving would install into a different one.
 	let targetProfile = $state('');
+	// The Minecraft version the vanilla button will write. Vanilla has no project
+	// and no versions to resolve, but it is still one game version or another, and
+	// the image boots more than one; empty until the panel has read the table.
+	let vanillaMC = $state('');
 
 	// A pack can only be installed or swapped while nothing is rented: a running
 	// server already pulled one profile's assets and will upload its world to that
@@ -81,10 +85,26 @@
 		busy = running;
 	});
 
+	// Vanilla's version comes from the table the daemon sends, not from a constant
+	// here: adding a Minecraft row to packmeta.go should not need an edit in the
+	// page, and a hardcoded version is how the button stayed on 1.20.1 alone.
+	const vanillaProfile = $derived(pack?.profiles.find((p) => p.id === pack?.vanillaProfile));
+	// What the vanilla profile already holds. The pack's version is what a reinstall
+	// should keep; only a saved world makes a version change destructive.
+	const vanillaHeld = $derived(vanillaProfile?.pack?.mc ?? '');
+	const vanillaHeldWorld = $derived(vanillaProfile?.hasWorld ? vanillaHeld : '');
+	const vanillaRows = $derived(pack?.minecrafts ?? []);
+	const vanillaJava = $derived(vanillaRows.find((m) => m.mc === vanillaMC)?.java ?? 0);
+
 	async function refresh() {
 		try {
 			pack = await getPack();
 			job = pack.job ?? null;
+			// The select opens on what the profile it overwrites already holds: a
+			// reinstall is the common case, and opening on a different Minecraft version
+			// is how one click turns into a world replacement. `||=` only fills it, so a
+			// choice already made on screen is never overwritten by a poll.
+			vanillaMC ||= vanillaHeld || pack.supportedMc;
 			if (job?.kind === 'preview' && job.phase === 'done' && job.result) preview = job;
 			if (job?.kind === 'install' && job.phase === 'done') {
 				preview = null;
@@ -255,8 +275,9 @@
 	}
 
 	// Vanilla is an install with no project behind it: the daemon writes the
-	// pack.json and publishes from it, so there is nothing to preview and no
-	// version to pick.
+	// pack.json and publishes from it, so there is nothing to preview. The version
+	// is not nothing, though — it is the only answer vanilla still has to give, and
+	// it is a select rather than a sentence because the image boots more than one.
 	async function installVanilla(newWorld = false) {
 		if (busy || running) return;
 		busy = true;
@@ -264,7 +285,7 @@
 		failed = false;
 		preview = null;
 		try {
-			job = await packVanilla(token, '', newWorld);
+			job = await packVanilla(token, '', newWorld, vanillaMC);
 			await refresh();
 		} catch (err) {
 			message = err instanceof Error ? err.message : String(err);
@@ -521,14 +542,35 @@
 
 	<p class="vanilla muted">
 		No mods at all?
+		<label class="vanillamc">
+			<span class="sr">Minecraft version</span>
+			<select
+				class="field"
+				bind:value={vanillaMC}
+				disabled={!pack || !editable || running || busy}
+				title={vanillaJava
+					? `The plain game, no mods. This version needs Java ${vanillaJava}.`
+					: 'The plain game, no mods.'}
+			>
+				{#each vanillaRows as m (m.mc)}
+					<option value={m.mc}>{m.mc}</option>
+				{/each}
+			</select>
+		</label>
 		<button
 			class="btn quiet small"
 			disabled={!pack || !editable || running || busy}
 			title="Fabric with an empty mods/ — the plain game, with nothing to resolve"
 			onclick={() => installVanilla()}
 		>
-			Install Vanilla {pack?.supportedMc}
+			Install Vanilla {vanillaMC}
 		</button>
+		{#if vanillaHeldWorld && vanillaMC && vanillaHeldWorld !== vanillaMC}
+			<span class="worldnote">
+				{pack?.vanillaProfile} holds a {vanillaHeldWorld} world, which does not open in {vanillaMC} —
+				the install will offer to replace it
+			</span>
+		{/if}
 	</p>
 
 	{#if worldQuestion}
@@ -787,6 +829,17 @@
 		gap: 0.5rem;
 		margin: 0.6rem 0 0;
 		font-size: 0.82rem;
+	}
+	/* One line, not a form: the version select sits at the height of the button
+	   beside it rather than at the height of a text field. */
+	.vanillamc select {
+		min-height: 0;
+		padding: 0.2rem 0.4rem;
+		border-radius: 6px;
+		font-size: 0.82rem;
+	}
+	.worldnote {
+		color: var(--clay);
 	}
 	.phase {
 		min-height: 1.4em;

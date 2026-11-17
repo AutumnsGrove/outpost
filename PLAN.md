@@ -542,7 +542,7 @@ the difference is invisible to a player, while the jar would mean a second jar n
 provisioning timeout and the orchestrator all have to tolerate. "No logic in bash" has a
 sibling: no second way to boot.
 
-What vanilla *does* get is an identity. `publish.VanillaPack()` is an ordinary
+What vanilla *does* get is an identity. `publish.VanillaPack(mc)` is an ordinary
 `pack.json` with `source: "outpost"` and `slug: "vanilla"`, so vanilla is a profile like
 any other — the world guard claims its world (`SamePack` is source+slug, so a vanilla
 world is never claimed by a Modrinth pack and vice versa), `prune` empties `mods/`, and
@@ -550,7 +550,18 @@ world is never claimed by a Modrinth pack and vice versa), `prune` empties `mods
 
 `loader: "fabric"` is the honest field. The pack is Fabricked and says so; "vanilla" is
 the absence of mods, which `mods: 0` and the name say plainly. The panel reads it as
-"Vanilla 1.20.1 · minecraft 1.20.1 · fabric", which is exactly what to match in Prism.
+"Vanilla 1.21.1 · minecraft 1.21.1 · fabric", which is exactly what to match in Prism.
+
+**The version is a parameter, and the default is still row zero.** Vanilla has no project
+and no versions to resolve, but it is still one game version or another, and the image
+boots every row of `Minecrafts` — so the panel's button carries a select of the table and
+`outpost pack vanilla --mc` takes the same answer, rather than hardcoding 1.20.1 into the
+one install path that has nothing else to ask. Empty means `SupportedMC`, for the reason
+`pickVersion` defaults to it: an unqualified command must not replace a world. The
+select's *initial* value is the version the vanilla profile already holds, so a reinstall
+is a reinstall; picking another one goes through the same world guard as a pack, which
+refuses and suggests a derived profile id (`vanilla-1-21-1`). A version outside the table
+is refused by `CheckPack` before the job starts, in the panel, in the CLI and in the API.
 
 The panel's install writes into `packs/_vanilla` and empties it first, deliberately not
 into `packs/vanilla`: that directory may still hold a pack fetched under the same name,
@@ -820,9 +831,6 @@ that property is what makes an image reproducible, wherever the bytes end up), a
   A *Minecraft* version change is refused (37); a pack that silently changed the world
   generator is not detectable from a `pack.json`. The backups in
   `profiles/<id>/backups/` are the answer for now.
-- Vanilla is offered at `SupportedMC` only: the panel's button and `outpost pack vanilla`
-  write `VanillaPack()`, which is the default row. A 1.21.1 vanilla profile is a
-  hand-rolled publish with `--fabric 1.21.1` away, not a button.
 - The old single-profile keys are left in place (see 30). `outpost world import` is the
   door to `mc-worlds/current/`, but nothing imports it on its own: a world moved without
   being asked for is a world moved by surprise.
