@@ -1,7 +1,6 @@
 package pack
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
@@ -144,39 +143,6 @@ func validSlug(s string) bool {
 		}
 	}
 	return true
-}
-
-// postJSON sends a body and decodes one API answer. Modrinth's batch endpoints take
-// a JSON array of ids, which turns a hundred lookups into one request.
-func postJSON(ctx context.Context, path string, body any, out any) error {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, modrinthBase+path, bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("modrinth %s: %s: %.160s", path, resp.Status, strings.TrimSpace(string(answer)))
-	}
-	if err := json.Unmarshal(answer, out); err != nil {
-		return fmt.Errorf("parse modrinth %s: %w", path, err)
-	}
-	return nil
 }
 
 // getJSON fetches and decodes one API answer.
