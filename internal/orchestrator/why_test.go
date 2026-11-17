@@ -305,3 +305,35 @@ func TestANewSecondsReasonIsNotTheLastBoxes(t *testing.T) {
 		t.Fatalf("lastError = %q, want the timeout", st.LastError)
 	}
 }
+
+// One unreadable log does not spend the session's question: SSH can be down and the
+// log can be unwritten, and both fix themselves.
+func TestATransientSSHFailureDoesNotSpendTheQuestion(t *testing.T) {
+	h := newHarness(t)
+	h.live(t)
+	h.probeErr = errors.New("connection refused")
+	h.remote.err = errors.New("ssh: no route to host")
+
+	for i := 0; i < whyAfterFailures; i++ {
+		h.tick(t)
+	}
+
+	// Now the box can answer.
+	h.remote.err = nil
+	h.remote.out = "java.lang.NoSuchMethodError: 'boolean CommandSourceStack.hasPermission(int)'\n"
+	h.tick(t)
+
+	events, err := h.store.RecentEvents(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crash string
+	for _, e := range events {
+		if e.Kind == "crash" {
+			crash = e.Message
+		}
+	}
+	if !strings.Contains(crash, "NoSuchMethodError") {
+		t.Fatalf("a transient SSH failure was the last word: %q", crash)
+	}
+}

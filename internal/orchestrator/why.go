@@ -24,6 +24,12 @@ const (
 	// failure count.
 	whyAfterFailures = 3
 
+	// whyTries is how many times one VPS is asked at most. Three, because the ask can
+	// land before the box can answer — SSH not up, the log not written yet — and a
+	// single transient failure must not be the last word on a session. Bounded,
+	// because the caller is a loop.
+	whyTries = 3
+
 	// whyLines is how much log is asked for, and whyKeep how much of the distilled
 	// wreckage is stored. The event trail is a phone screen, not a log viewer.
 	whyLines = 120
@@ -78,7 +84,15 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 		}
 		return summary
 	}
-	_ = o.store.MetaSet("why_reported", st.VPSID)
+
+	// A failed attempt does not spend the question. Asking can land before the box
+	// can answer — SSH still coming up, the log not written — and one of those is
+	// not a reason to go silent for the rest of the session.
+	tries, _ := o.store.MetaInt("why_tries")
+	if tries >= whyTries {
+		return ""
+	}
+	_ = o.store.MetaSet("why_tries", fmt.Sprint(tries+1))
 
 	out, err := o.deps.Remote.Run(ctx, o.dialHost(ctx, st), whyCommand)
 	if err != nil {
@@ -86,6 +100,7 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 		_ = o.store.Log("why", "%s; the log could not be read over SSH: %v", why, err)
 		return ""
 	}
+	_ = o.store.MetaSet("why_reported", st.VPSID)
 
 	summary, detail := distill(out)
 	if summary == "" {
