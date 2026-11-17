@@ -14,6 +14,7 @@
 		packVanilla,
 		packVersions,
 		packWorldDelete,
+		type MinecraftRow,
 		type PackJob,
 		type PackMeta,
 		type PackOverview,
@@ -93,7 +94,18 @@
 	// should keep; only a saved world makes a version change destructive.
 	const vanillaHeld = $derived(vanillaProfile?.pack?.mc ?? '');
 	const vanillaHeldWorld = $derived(vanillaProfile?.hasWorld ? vanillaHeld : '');
-	const vanillaRows = $derived(pack?.minecrafts ?? []);
+	// A profile can hold a version that is inside a range but not one of the buttons —
+	// 1.19.4 installed from the CLI, say. Adding it back keeps the select showing the
+	// version it is actually pointed at instead of opening blank.
+	const vanillaRows = $derived.by(() => {
+		const rows: MinecraftRow[] = pack?.minecrafts ?? [];
+		if (vanillaHeld && !rows.some((m) => m.mc === vanillaHeld)) {
+			// Not "booted": holding a pack.json is not evidence that a rent came up
+			// on this version, and the row should say so.
+			return [{ mc: vanillaHeld, java: 0, booted: false }, ...rows];
+		}
+		return rows;
+	});
 	const vanillaJava = $derived(vanillaRows.find((m) => m.mc === vanillaMC)?.java ?? 0);
 
 	async function refresh() {
@@ -553,7 +565,7 @@
 					: 'The plain game, no mods.'}
 			>
 				{#each vanillaRows as m (m.mc)}
-					<option value={m.mc}>{m.mc}</option>
+					<option value={m.mc}>{m.mc}{m.booted ? '' : ' · untested'}</option>
 				{/each}
 			</select>
 		</label>

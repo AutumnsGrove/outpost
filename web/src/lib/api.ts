@@ -239,10 +239,12 @@ export interface PackOverview {
 	detail?: string;
 }
 
-/** One row of the JDK table: a Minecraft version and the Java it needs. */
+/** One version the vanilla picker offers: the Java it needs, and whether a real rent
+ * has booted it. The offers are a shortlist — `--mc` accepts anything in a range. */
 export interface MinecraftRow {
 	mc: string;
 	java: number;
+	booted: boolean;
 }
 
 export type ActionKind = 'start' | 'stop' | 'update';

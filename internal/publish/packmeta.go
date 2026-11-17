@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -32,15 +33,54 @@ import (
 type Minecraft struct {
 	MC   string `json:"mc"`
 	Java int    `json:"java"`
+	// Booted says a real rent came up on this version. The panel shows the ones
+	// that have not been tried as untested instead of calling them supported.
+	Booted bool `json:"booted"`
 }
 
-// Minecrafts is every Minecraft version Outpost can boot.
+// Minecrafts is what the panel offers to install, oldest first.
+//
+// A row here is a button, not a limit: `outpost pack vanilla --mc 1.20.4` and the
+// API accept anything the JavaRanges below cover. The list is short on purpose —
+// the versions somebody might actually ask for, not all forty that exist — and
+// `Booted` is the honest part: a row is marked only after a real rent came up on
+// it (PLAN 37), so an untested version is offered as untested rather than dressed
+// up as supported.
 var Minecrafts = []Minecraft{
-	{MC: "1.20.1", Java: 17},
-	{MC: "1.21.1", Java: 21},
-	// 26.x needs Java 25, which Ubuntu does not package: cloud-init fetches it
-	// from Adoptium for exactly this row (internal/cloudinit, javaTarballs).
-	{MC: "26.3", Java: 25},
+	{MC: "1.20.1", Java: 17, Booted: true},
+	{MC: "1.20.4", Java: 17},
+	{MC: "1.21.1", Java: 21, Booted: true},
+	{MC: "1.21.4", Java: 21},
+	{MC: "1.21.8", Java: 21},
+	{MC: "1.21.11", Java: 21},
+	{MC: "26.1", Java: 25},
+	// 26.x needs Java 25, which Ubuntu does not package: cloud-init fetches it from
+	// Adoptium for these rows (internal/cloudinit, javaTarballs).
+	{MC: "26.3", Java: 25, Booted: true},
+}
+
+// JavaRange is a span of Minecraft versions that share a JDK.
+//
+// This is the fact the table above is a view of. Minecraft's Java requirement moves
+// in steps, not in rows — 1.17 through 1.20.4 are all Java 17 — and pretending
+// otherwise was a list of two versions in which everything else read as impossible.
+// The bounds come from the mods themselves: fabric-api declares `java >=17` for
+// 1.17–1.20.4, `>=21` for 1.20.5–1.21.x and `>=25` for 26.x, which is where the
+// boundaries are drawn (PLC 43). A range is not a promise — Minecrafts' Booted flag
+// is — it is the JDK the boot will be given.
+type JavaRange struct {
+	From string
+	// To is an inclusive ceiling, or a family when it ends in ".x": "1.21.x" matches
+	// every 1.21 version, which is what stops a new patch release needing an edit.
+	To   string
+	Java int
+}
+
+// JavaRanges is every Minecraft version this image knows the JDK of, oldest first.
+var JavaRanges = []JavaRange{
+	{From: "1.17", To: "1.20.4", Java: 17},
+	{From: "1.20.5", To: "1.21.x", Java: 21},
+	{From: "26.1", To: "26.x", Java: 25},
 }
 
 // SupportedMC is the Minecraft version a pack that names none is assumed to be
@@ -49,32 +89,46 @@ var Minecrafts = []Minecraft{
 // --version keeps resolving to it, so the default fetch does not move somebody's
 // world.
 //
-// It is a default, not a ceiling. Vanilla can be asked for any row of the table
-// (VanillaPack); naming none has to keep meaning this one, or the day a third row
-// is added is the day a plain `outpost pack vanilla` replaces a world.
+// It is a default, not a ceiling. Vanilla can be asked for any version the ranges
+// cover (VanillaPack); naming none has to keep meaning this one, or the day a new
+// version is added is the day a plain `outpost pack vanilla` replaces a world.
 const SupportedMC = "1.20.1"
 
-// MinecraftFor is the table's spelling of a Minecraft version, and whether the
-// table has it at all.
+// MinecraftFor is the canonical spelling of a Minecraft version, and whether this
+// image can boot it at all.
 //
 // The spelling matters: "1.21.1" and "1.21.1 " are the same game, but pack.json is
-// compared with ChangedMinecraft and shown in the panel, so a version reaches the
-// manifest as the table writes it rather than as somebody typed it.
+// compared with ChangedMinecraft and shown in the panel, so the version reaches the
+// manifest trimmed.
 func MinecraftFor(mc string) (string, bool) {
-	for _, m := range Minecrafts {
-		if strings.EqualFold(m.MC, strings.TrimSpace(mc)) {
-			return m.MC, true
-		}
+	mc = strings.TrimSpace(mc)
+	if _, ok := JavaFor(mc); !ok {
+		return "", false
 	}
-	return "", false
+	return mc, true
 }
 
-// JavaFor is the JDK a Minecraft version needs, and whether this image can boot
-// it at all.
+// validMC is the shape of a Minecraft version: dot-separated numbers, none with a
+// leading zero — Mojang has no "1.20.01", and Fabric's meta would 404 for it.
+//
+// Ordering alone is not validation: compareMC reads the digits it finds, so
+// "1.20.4x", "1.20.4." and "1.21.x" all sort inside a range. They would reach
+// pack.json and fail later — a Fabric-meta 404 inside the install job, or on the
+// VPS if the pack ships its own launcher — which is the failure the ranges exist to
+// catch early. The exact-match table refused these by accident; the check is
+// explicit now.
+var validMC = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,2}$`)
+
+// JavaFor is the JDK a Minecraft version needs, and whether this image can boot it
+// at all.
 func JavaFor(mc string) (int, bool) {
-	for _, m := range Minecrafts {
-		if strings.EqualFold(m.MC, mc) {
-			return m.Java, true
+	mc = strings.TrimSpace(mc)
+	if !validMC.MatchString(mc) {
+		return 0, false
+	}
+	for _, r := range JavaRanges {
+		if r.covers(mc) {
+			return r.Java, true
 		}
 	}
 	return 0, false
@@ -86,13 +140,66 @@ func Runnable(mc string) bool {
 	return ok
 }
 
-// MinecraftList is the table as prose, for the refusals and the panel: "1.20.1
-// (Java 17), 1.21.1 (Java 21)". One wording, because a refusal and a greyed-out
-// row that disagree are worse than either alone.
+// covers reports whether a version is inside the range.
+func (r JavaRange) covers(mc string) bool {
+	if mc == "" {
+		return false
+	}
+	if compareMC(mc, r.From) < 0 {
+		return false
+	}
+	if family, ok := strings.CutSuffix(r.To, ".x"); ok {
+		// "1.21.x" covers everything under 1.22, whatever the patch number, so a
+		// release nobody has heard of yet does not need a line here. The ceiling is
+		// the next family down, not a prefix test: a range can start mid-family, as
+		// 1.20.5 does.
+		return compareMC(mc, family+".999999") <= 0
+	}
+	return compareMC(mc, r.To) <= 0
+}
+
+// compareMC orders two Minecraft versions by their numeric components, so that
+// 1.20.4 < 1.20.10 and 26.3 > 1.21.11. Anything that is not a number sorts as
+// zero, which is unreachable in practice: a snapshot or a pre-release is refused
+// by the range that does not cover it rather than ordered against it.
+func compareMC(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y int
+		if i < len(as) {
+			x = atoiOrZero(as[i])
+		}
+		if i < len(bs) {
+			y = atoiOrZero(bs[i])
+		}
+		switch {
+		case x < y:
+			return -1
+		case x > y:
+			return 1
+		}
+	}
+	return 0
+}
+
+func atoiOrZero(s string) int {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return n
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+// MinecraftList is the ranges as prose, for the refusals and the panel: "1.17–1.20.4
+// (Java 17), 1.20.5–1.21.x (Java 21), 26.1–26.x (Java 25)". One wording, because a
+// refusal and a greyed-out row that disagree are worse than either alone.
 func MinecraftList() string {
-	out := make([]string, 0, len(Minecrafts))
-	for _, m := range Minecrafts {
-		out = append(out, fmt.Sprintf("%s (Java %d)", m.MC, m.Java))
+	out := make([]string, 0, len(JavaRanges))
+	for _, r := range JavaRanges {
+		out = append(out, fmt.Sprintf("%s–%s (Java %d)", r.From, r.To, r.Java))
 	}
 	return strings.Join(out, ", ")
 }
