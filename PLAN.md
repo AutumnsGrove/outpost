@@ -904,6 +904,8 @@ Two details worth writing down:
   backstop, and it is still silent — that gap is issue #49 territory, not this change.
 
 `{MC: "26.3", Java: 25}` is a row in `publish.Minecrafts` now, and per 37 a row is a
-promise: it stays marked as needing verification until a real vanilla 26.3 rent boots,
-which is the next thing on the list. The range table that makes 1.20.4 or 1.21.8 askable
+promise. It was earned the same night: `outpost pack vanilla --mc 26.3`, published to its
+own profile, rented — cloud-init installed Temurin 25.0.5 from Adoptium, and the log says
+`Starting minecraft server version 26.3` / `Done (4.265s)`, RCON answering on the next
+tick. The whole promise took one rent and about six minutes. The range table that makes 1.20.4 or 1.21.8 askable
 without a row each is issue #48's second half.
