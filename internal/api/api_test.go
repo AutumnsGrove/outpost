@@ -512,3 +512,72 @@ func TestOverviewCarriesTheWatchersAnswer(t *testing.T) {
 		t.Fatal("a stale answer did not ask the watcher to look again")
 	}
 }
+
+// ctxBlobs is an R2 stand-in that behaves like the real client at the one moment
+// that matters: a read handed a canceled context fails with context.Canceled.
+type ctxBlobs struct{ *memBlobs }
+
+func (b ctxBlobs) Get(ctx context.Context, _, key string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return b.memBlobs.Get(ctx, "", key)
+}
+
+// A page that closed mid-poll used to cancel the whitelist read and cache the
+// cancellation for thirty seconds, so every later poll was told the whitelist
+// could not be read while R2 was answering fine.
+func TestRosterCacheDoesNotInheritACancelledPoll(t *testing.T) {
+	blobs := ctxBlobs{&memBlobs{data: map[string][]byte{
+		"server/whitelist.json": []byte(`[{"uuid":"11111111-1111-1111-1111-111111111111","name":"AutumnsAdventure"}]`),
+		"server/ops.json":       []byte(`[]`),
+	}}}
+	rost := roster.New(blobs, "mc-assets", func(_ context.Context, name string) (publish.Player, error) {
+		return publish.Player{UUID: "11111111-1111-1111-1111-111111111111", Name: name}, nil
+	})
+
+	var cache rosterCache
+
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	snap, err := cache.get(gone, rost)
+	if err != nil {
+		t.Fatalf("the read died with the page that asked for it: %v", err)
+	}
+	if len(snap.Whitelist) != 1 || snap.Whitelist[0] != "AutumnsAdventure" {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+
+	// And a read that runs out of time is not an answer: it is not cached, so the
+	// next poll tries again instead of inheriting the failure for thirty seconds.
+	old := rosterReadTimeout
+	rosterReadTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { rosterReadTimeout = old })
+
+	blocked := &blockedBlobs{done: make(chan struct{})}
+	var slow rosterCache
+	if _, err := slow.get(context.Background(), roster.New(blocked, "mc-assets", nil)); err == nil {
+		t.Fatal("a read with no deadline escaped")
+	}
+	if !slow.at.IsZero() {
+		t.Fatal("a timed-out read was cached as an answer")
+	}
+	close(blocked.done)
+}
+
+// blockedBlobs never answers: its Get waits for the context or for the test to
+// release it, which is what a hung R2 connection looks like from here.
+type blockedBlobs struct{ done chan struct{} }
+
+func (b *blockedBlobs) Get(ctx context.Context, _, _ string) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-b.done:
+		return []byte(`[]`), nil
+	}
+}
+
+func (b *blockedBlobs) Put(context.Context, string, string, io.Reader, int64, string) error {
+	return nil
+}
