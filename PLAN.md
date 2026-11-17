@@ -857,3 +857,12 @@ downloads nothing more than before.
 Not covered: a mod that *recommends* something absent is normal and is still ignored
 (the Fabric loader only warns), CurseForge-hosted mods a pack cannot redistribute are
 not fetched from anywhere, and `--plan-only` cannot scan jars it did not download.
+
+Two things the first draft got wrong, found in review, are part of 40 rather than a
+follow-up: a jar that answers for more than one id is moved into `mods/` exactly once
+(it was renamed a second time from a path it had already left, which failed a pack that
+was satisfiable), and a nested jar is read whole rather than under the `fabric.mod.json`
+cap (a bundled library over 4 MiB was silently invisible, so its ids looked missing).
+A scan that could not read a jar is not evidence of a missing mod: `scanModDeps` reports
+whether it saw everything, and when it did not, unexplained gaps become warnings and the
+boot decides. Only a scan that saw every byte may refuse a pack.

@@ -15,6 +15,18 @@ import (
 	"strings"
 )
 
+const (
+	// modMetaLimit is how much of a fabric.mod.json is read. Every one in the wild
+	// is a few kilobytes; the cap is only so a crafted jar cannot ask for gigabytes.
+	modMetaLimit = 4 << 20
+
+	// nestedJarLimit is how much of a jar nested in META-INF/jars/ is read. A
+	// bundled library is megabytes, not kilobytes, so this is generous — and a
+	// nested jar past it marks the scan incomplete instead of being treated as
+	// empty, because an unreadable file is not evidence of a missing mod.
+	nestedJarLimit = 128 << 20
+)
+
 // loaderIDs are ids a mod may require that no jar in a pack provides: the loader
 // and the game itself do. Anything else has to come from a mod.
 var loaderIDs = map[string]bool{
@@ -42,6 +54,11 @@ type modMeta struct {
 // missing.
 type modJars struct {
 	Mods []modMeta
+	// Incomplete is set when a nested jar could not be read in full, so Mods is
+	// some of what this jar provides and not all of it. A scan that met one of
+	// these cannot be used to refuse a pack: "I did not see it" is not "it is not
+	// there".
+	Incomplete bool
 }
 
 // provides is every id this jar makes available.
@@ -71,7 +88,7 @@ func readModFiles(files []*zip.File, carrier string) (modJars, error) {
 	for _, f := range files {
 		switch {
 		case f.Name == "fabric.mod.json":
-			raw, err := readEntry(f)
+			raw, err := readEntry(f, modMetaLimit)
 			if err != nil {
 				return out, fmt.Errorf("%s: %w", carrier, err)
 			}
@@ -82,14 +99,25 @@ func readModFiles(files []*zip.File, carrier string) (modJars, error) {
 			mod.Carrier = carrier
 			out.Mods = append(out.Mods, mod)
 		case strings.HasPrefix(f.Name, "META-INF/jars/") && strings.HasSuffix(f.Name, ".jar"):
-			raw, err := readEntry(f)
-			if err != nil {
-				return out, fmt.Errorf("%s: %w", carrier, err)
+			// A nested jar is read whole. It used to share the metadata cap, which
+			// meant every bundled library over 4 MiB was silently cut in half: the
+			// zip would not open, its ids went unseen, and a pack that boots fine was
+			// refused for a dependency that was sitting right there.
+			if int64(f.UncompressedSize64) > nestedJarLimit {
+				out.Incomplete = true
+				continue
+			}
+			raw, err := readEntry(f, nestedJarLimit)
+			if err != nil || int64(len(raw)) == nestedJarLimit {
+				out.Incomplete = true
+				continue
 			}
 			sub, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
 			if err != nil {
 				// A nested jar that will not open is not a reason to refuse a pack;
-				// it just cannot vouch for the ids inside it.
+				// it just cannot vouch for the ids inside it, so say the scan is
+				// incomplete and let the boot be the judge.
+				out.Incomplete = true
 				continue
 			}
 			nested, err := readModFiles(sub.File, carrier+"!"+path.Base(f.Name))
@@ -97,18 +125,19 @@ func readModFiles(files []*zip.File, carrier string) (modJars, error) {
 				return out, err
 			}
 			out.Mods = append(out.Mods, nested.Mods...)
+			out.Incomplete = out.Incomplete || nested.Incomplete
 		}
 	}
 	return out, nil
 }
 
-func readEntry(f *zip.File) ([]byte, error) {
+func readEntry(f *zip.File, limit int64) ([]byte, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(io.LimitReader(rc, 4<<20))
+	return io.ReadAll(io.LimitReader(rc, limit))
 }
 
 // parseModMeta reads the three fields that matter. Every field is optional and
@@ -207,8 +236,13 @@ func (g depGap) String() string {
 // The pack's own word is the input, not a resolution algorithm: a mod that says
 // it requires something nothing provides is a mod that Fabric Loader will refuse
 // to load, which is a server that never answers RCON.
-func scanModDeps(dir string, files []string) (gaps []depGap, provided map[string]bool, err error) {
+//
+// complete is false when some jar could not be read in full, and then the gaps
+// are what was not *seen* rather than what is not *there*: the caller may warn
+// about them, but refusing a pack on that evidence would refuse bootable packs.
+func scanModDeps(dir string, files []string) (gaps []depGap, provided map[string]bool, complete bool, err error) {
 	provided = map[string]bool{}
+	complete = true
 	jars := make([]modJars, 0, len(files))
 
 	for _, rel := range files {
@@ -220,8 +254,10 @@ func scanModDeps(dir string, files []string) (gaps []depGap, provided map[string
 			// A jar we cannot read is not a pack we can reason about, but refusing
 			// the install over it is worse than letting the server try: the loader
 			// will say exactly what is wrong in a log a person can read.
+			complete = false
 			continue
 		}
+		complete = complete && !jarsIn.Incomplete
 		jars = append(jars, jarsIn)
 		for _, id := range jarsIn.provides() {
 			provided[id] = true
@@ -250,7 +286,7 @@ func scanModDeps(dir string, files []string) (gaps []depGap, provided map[string
 		}
 		return gaps[i].ID < gaps[j].ID
 	})
-	return gaps, provided, nil
+	return gaps, provided, complete, nil
 }
 
 // idsInJar is what a freshly downloaded jar provides, or nil if it is not a mod.
@@ -281,7 +317,7 @@ func rescueHardDeps(ctx context.Context, opts Options, skipped []ManifestFile, w
 	for rel := range written {
 		rels = append(rels, rel)
 	}
-	gaps, _, err := scanModDeps(opts.Dir, rels)
+	gaps, _, complete, err := scanModDeps(opts.Dir, rels)
 	if err != nil {
 		return err
 	}
@@ -313,6 +349,11 @@ func rescueHardDeps(ctx context.Context, opts Options, skipped []ManifestFile, w
 		}
 	}
 
+	// A jar is moved at most once, however many ids it answers for. One file that
+	// provides two needed ids used to be moved for the first gap and then renamed
+	// again for the second — from a path it had already left.
+	adopted := map[string]bool{}
+
 	// Closure, not one pass: the file that closes a gap can open one of its own.
 	// Ten rounds is far past anything a real pack needs and still bounded.
 	for round := 0; round < 10 && len(gaps) > 0; round++ {
@@ -322,29 +363,48 @@ func rescueHardDeps(ctx context.Context, opts Options, skipped []ManifestFile, w
 			if !ok {
 				continue
 			}
-			if err := adoptStaged(opts.Dir, st.rel, st.finalRel); err != nil {
-				return err
+			if !adopted[st.finalRel] {
+				if err := adoptStaged(opts.Dir, st.rel, st.finalRel); err != nil {
+					return err
+				}
+				adopted[st.finalRel] = true
+				written[st.finalRel] = true
+				res.Mods++
+				res.Bytes += st.size
+				res.Planned = append(res.Planned, PlannedFile{Path: st.finalRel, Size: st.size, Source: "pack"})
+				res.Skipped = withoutPath(res.Skipped, st.path)
+				res.Warnings = append(res.Warnings, fmt.Sprintf("%s is marked client-only by the pack, but %s requires it; kept so the server can start", st.path, gap.Mod))
+				log.Info("kept a client-only mod another mod requires", "file", st.path, "required_by", gap.Mod)
 			}
-			delete(inventory, gap.ID)
-			written[st.finalRel] = true
-			res.Mods++
-			res.Bytes += st.size
-			res.Planned = append(res.Planned, PlannedFile{Path: st.finalRel, Size: st.size, Source: "pack"})
-			res.Skipped = withoutPath(res.Skipped, st.path)
-			res.Warnings = append(res.Warnings, fmt.Sprintf("%s is marked client-only by the pack, but %s requires it; kept so the server can start", st.path, gap.Mod))
-			log.Info("kept a client-only mod another mod requires", "file", st.path, "required_by", gap.Mod)
+			// Every id that file provides is now installed, not just the one that
+			// pulled it in.
+			for id, provider := range inventory {
+				if provider.finalRel == st.finalRel {
+					delete(inventory, id)
+				}
+			}
 			moved = true
 		}
 		if !moved {
 			break
 		}
-		gaps, _, err = scanModDeps(opts.Dir, relsOf(written))
+		gaps, _, complete, err = scanModDeps(opts.Dir, relsOf(written))
 		if err != nil {
 			return err
 		}
 	}
 
 	if len(gaps) > 0 {
+		if !complete {
+			// Something in the pack could not be read, so these are gaps in the
+			// evidence rather than in the pack. Say so and let the boot decide: a
+			// refusal here would block a pack that is already installed and fine.
+			for _, gap := range gaps {
+				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: could not confirm %s is provided, because a jar could not be read in full", gap.Carrier, gap.ID))
+			}
+			log.Warn("could not check every dependency", "gaps", len(gaps))
+			return nil
+		}
 		return unmetDepsError(gaps)
 	}
 	return nil
