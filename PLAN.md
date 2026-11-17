@@ -874,3 +874,36 @@ cap (a bundled library over 4 MiB was silently invisible, so its ids looked miss
 A scan that could not read a jar is not evidence of a missing mod: `scanModDeps` reports
 whether it saw everything, and when it did not, unexplained gaps become warnings and the
 boot decides. Only a scan that saw every byte may refuse a pack.
+
+### 41. Java 25 arrives as a tarball, because Ubuntu stops at 21
+
+Minecraft 26.x needs Java 25. Fabric's own metadata says so (`fabric-api` for 26.1, 26.2
+and 26.3 declares `"java": ">=25"`, while 1.20.5 through 1.21.11 declare `>=21` and
+1.17 through 1.20.4 declare `>=17`), and Ubuntu 24.04 packages no JDK newer than 21. The
+old table said "only the majors Ubuntu ships are accepted", which was a true statement
+about apt and a false one about what can be installed: it made 26.x unbootable by
+construction, and the panel greyed out every pack build for it.
+
+So there are two ways to get a JDK and `internal/cloudinit` now knows both. A major in
+`javaMajors` (8, 11, 17, 21) is a package, as before. A major in `javaTarballs` (25) is
+fetched from Adoptium's API in `runcmd`, extracted to `/opt/jdk-<n>`, and linked into
+`/usr/local/bin/java`, which is ahead of `/usr/bin` on the default PATH — `scripts/start.sh`
+runs a bare `java`, so nothing else has to learn about it. Both tables are validated
+before anything is rendered: a major in neither is refused with the list, not with a boot
+failure twenty minutes into a rental.
+
+Two details worth writing down:
+
+- **The API's architecture names are not debian's.** `dpkg --print-architecture` says
+  `amd64`/`arm64`; Adoptium wants `x64`/`aarch64`. A rent may land on either, because the
+  server type follows capacity (`cx33` and `cax11` are both fallbacks), so the mapping is
+  in the template next to the rclone one, which learned the same lesson first.
+- **Adoptium is a URL we depend on.** The rclone step already does this and it has been
+  reliable; `--retry 3` and `set -e` mean a failure shows as a failed cloud-init rather
+  than a server that starts with the wrong java. The provisioning timeout is still the
+  backstop, and it is still silent — that gap is issue #49 territory, not this change.
+
+`{MC: "26.3", Java: 25}` is a row in `publish.Minecrafts` now, and per 37 a row is a
+promise: it stays marked as needing verification until a real vanilla 26.3 rent boots,
+which is the next thing on the list. The range table that makes 1.20.4 or 1.21.8 askable
+without a row each is issue #48's second half.
