@@ -24,9 +24,9 @@ const (
 	// failure count.
 	whyAfterFailures = 3
 
-	// whyTries is how many times one VPS is asked at most. Three, because the ask can
-	// land before the box can answer — SSH not up, the log not written yet — and a
-	// single transient failure must not be the last word on a session. Bounded,
+	// whyTries is how many times one VPS is asked at most, per phase of its life.
+	// Three, because the ask can land before the box can answer — SSH not up, the log
+	// not written yet — and neither may be the last word on a session. Bounded,
 	// because the caller is a loop.
 	whyTries = 3
 
@@ -75,7 +75,12 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	// Once per VPS, keyed on the id: a new rent is a new box and deserves its own
 	// question. A counter would drift across sessions — the misses from the last
 	// one carry into the next and the threshold is never hit at the same value again.
-	if seen, _ := o.store.MetaGet("why_reported"); seen == st.VPSID {
+	// Asked once per box *per phase*: a box that was slow to boot and then crashed is
+	// two different questions, and the answer to the first says nothing about the
+	// second. Keying on the state also keeps the provisioning budget from being spent
+	// by the time the server is up.
+	key := st.VPSID + "@" + string(st.State)
+	if seen, _ := o.store.MetaGet("why_reported"); seen == key {
 		// Already asked on this box. Answer from what was learned then, so a caller
 		// that reports a later symptom (the timeout) can still carry the cause.
 		summary, _ := o.store.MetaGet("why_summary")
@@ -88,7 +93,16 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	// A failed attempt does not spend the question. Asking can land before the box
 	// can answer — SSH still coming up, the log not written — and one of those is
 	// not a reason to go silent for the rest of the session.
+	// Only an answer spends the question, and only three attempts are made anyway.
+	// Asking can land before the box can answer: SSH still coming up, or — the case
+	// that matters most — a log that exists but has nothing in it yet, because the
+	// failure has not happened. A `tail` of a quiet log exits 0, so that is not an
+	// SSH error and used to mark the box as reported.
 	tries, _ := o.store.MetaInt("why_tries")
+	if forKey, _ := o.store.MetaGet("why_tries_for"); forKey != key {
+		tries = 0
+		_ = o.store.MetaSet("why_tries_for", key)
+	}
 	if tries >= whyTries {
 		return ""
 	}
@@ -100,15 +114,14 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 		_ = o.store.Log("why", "%s; the log could not be read over SSH: %v", why, err)
 		return ""
 	}
-	_ = o.store.MetaSet("why_reported", st.VPSID)
-
 	summary, detail := distill(out)
 	if summary == "" {
-		// A log with nothing interesting in it is still an answer: the server did
-		// not fail, it is not there yet.
-		_ = o.store.Log("why", "%s; the server's log says nothing about a failure", why)
+		// A log with nothing interesting in it is not an answer, it is a log taken too
+		// early: say so, and leave the question for the next attempt.
+		_ = o.store.Log("why", "%s; the server's log says nothing about a failure yet", why)
 		return ""
 	}
+	_ = o.store.MetaSet("why_reported", key)
 
 	o.log.Error("the server says why", "host", st.TailnetHost, "why", summary)
 	_ = o.store.Log("crash", "%s: %s\n%s", why, summary, detail)
