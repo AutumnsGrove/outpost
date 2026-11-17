@@ -169,7 +169,12 @@ the default is the newest release for Minecraft 1.20.1, and any version outside 
 table in `internal/publish` (1.20.1 on Java 17, 1.21.1 on Java 21) is refused rather
 than downloaded, because the VPS installs the JDK the pack's `pack.json` asks for and a
 version outside the table has no JDK to install. Files the pack marks
-`env.server: unsupported` are not fetched at all, so no client mod reaches the server.
+`env.server: unsupported` are not fetched at all, so no client mod reaches the server —
+except when a mod the pack keeps says it cannot load without one. `pack fetch` reads the
+dependencies out of every jar it installs, and a missing one it can satisfy from a file
+the pack skipped is kept instead, with a warning saying which mod wanted it (PLAN 40). A
+dependency nothing in the pack provides fails the fetch with the mod and the version
+range it asked for, rather than renting a box for a server that will not boot.
 
 What it writes is an ordinary pack directory plus `pack.json`, and everything else
 follows from that file:
