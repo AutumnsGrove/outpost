@@ -108,7 +108,8 @@ func MinecraftFor(mc string) (string, bool) {
 	return mc, true
 }
 
-// validMC is the shape of a Minecraft version: dot-separated numbers.
+// validMC is the shape of a Minecraft version: dot-separated numbers, none with a
+// leading zero — Mojang has no "1.20.01", and Fabric's meta would 404 for it.
 //
 // Ordering alone is not validation: compareMC reads the digits it finds, so
 // "1.20.4x", "1.20.4." and "1.21.x" all sort inside a range. They would reach
@@ -116,7 +117,7 @@ func MinecraftFor(mc string) (string, bool) {
 // VPS if the pack ships its own launcher — which is the failure the ranges exist to
 // catch early. The exact-match table refused these by accident; the check is
 // explicit now.
-var validMC = regexp.MustCompile(`^[0-9]+(\.[0-9]+){0,2}$`)
+var validMC = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){0,2}$`)
 
 // JavaFor is the JDK a Minecraft version needs, and whether this image can boot it
 // at all.
