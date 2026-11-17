@@ -96,7 +96,7 @@ three-minute rebuild.
 outpost serve            # the reconcile loop + JSON API (this is the daemon)
 outpost publish [dir]    # upload a server pack to R2
 outpost pack fetch <src> # resolve a Modrinth modpack into a pack directory
-outpost pack vanilla     # write a server with no mods: Fabric, empty mods/ (--mc for 1.21.1)
+outpost pack vanilla     # write a server with no mods: Fabric, empty mods/ (--mc for 1.21.1, 26.3)
 outpost pack list        # the installed profiles, and which one is active
 outpost pack use <id>    # switch which pack+world the next start boots
 outpost world list       # every profile's world, and any world no profile claims
@@ -166,9 +166,10 @@ repeating what the bucket already knows.
 `pack fetch` takes a Modrinth slug, a modpack URL (the one Prism's "open in browser"
 gives you), a `.mrpack` URL, or a `.mrpack` on disk. `--version` pins a pack version;
 the default is the newest release for Minecraft 1.20.1, and any version outside the
-table in `internal/publish` (1.20.1 on Java 17, 1.21.1 on Java 21) is refused rather
-than downloaded, because the VPS installs the JDK the pack's `pack.json` asks for and a
-version outside the table has no JDK to install. Files the pack marks
+table in `internal/publish` (1.20.1 on Java 17, 1.21.1 on Java 21, 26.3 on Java 25) is
+refused rather than downloaded, because the VPS installs the JDK the pack's `pack.json`
+asks for and a version outside the table has no JDK to install. Java 25 is not an Ubuntu
+package, so that row is the one that arrives as an Adoptium tarball instead of `apt`. Files the pack marks
 `env.server: unsupported` are not fetched at all, so no client mod reaches the server —
 except when a mod the pack keeps says it cannot load without one. `pack fetch` reads the
 dependencies out of every jar it installs, and a missing one it can satisfy from a file

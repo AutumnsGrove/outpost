@@ -69,6 +69,57 @@ func TestRenderInstallsTheJDKItIsGiven(t *testing.T) {
 	}
 }
 
+// A JDK Ubuntu does not package has to come from somewhere, and the somewhere is
+// Adoptium: 26.x needs Java 25 and 24.04's newest package is 21, so the alternative
+// is a VPS that boots into "no installation candidate" after it has been paid for.
+func TestRenderFetchesAJDKUbuntuDoesNotHave(t *testing.T) {
+	d := sample()
+	d.Java = 25
+	out, err := Render(d)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(out, "openjdk-25") {
+		t.Fatal("apt was asked for a JDK Ubuntu does not ship")
+	}
+	for _, want := range []string{
+		"api.adoptium.net/v3/binary/latest/25/ga/linux/$A/jdk/hotspot/normal/eclipse",
+		// The API's architecture names are not debian's, and the box may be either.
+		"amd64) A=x64",
+		"arm64) A=aarch64",
+		"tar -xzf /tmp/jdk.tar.gz -C /opt/jdk-25 --strip-components=1",
+		// scripts/start.sh runs a bare `java`.
+		"ln -sf /opt/jdk-25/bin/java /usr/local/bin/java",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("the Java 25 install has no %q:\n%s", want, out)
+		}
+	}
+
+	// And it is still a cloud-config, with the download inside runcmd rather than
+	// floating at document level where nothing would run it.
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not valid YAML: %v", err)
+	}
+	cmds, ok := doc["runcmd"].([]any)
+	if !ok || len(cmds) == 0 {
+		t.Fatal("no runcmd list")
+	}
+	var joined strings.Builder
+	for _, c := range cmds {
+		if s, ok := c.(string); ok {
+			joined.WriteString(s)
+		}
+	}
+	if !strings.Contains(joined.String(), "adoptium") {
+		t.Fatal("the JDK download is not in runcmd, so nothing runs it")
+	}
+	if _, ok := doc["packages"]; !ok {
+		t.Fatal("packages went missing")
+	}
+}
+
 func TestRenderRefusesAJavaThatIsNotAPackage(t *testing.T) {
 	d := sample()
 	d.Java = 0
@@ -77,7 +128,7 @@ func TestRenderRefusesAJavaThatIsNotAPackage(t *testing.T) {
 	}
 	d.Java = 18
 	if _, err := Render(d); err == nil {
-		t.Fatal("Java 18 is not an Ubuntu package and must not reach the apt line")
+		t.Fatal("Java 18 is neither an Ubuntu package nor an Adoptium major this image fetches")
 	}
 }
 
