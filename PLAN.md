@@ -973,3 +973,20 @@ Two things are deliberately still a list:
 What a range does **not** promise is that a version works. It promises the JDK the boot
 will be given, which was the expensive unknown; whether 1.21.8 comes up is the boot's
 answer, and the daemon now says what happened when it does not (41, #53).
+
+### 44. A profile owns its working copy, so deleting one gives the space back
+
+`PACK` uploads a directory, so `pack fetch` has to write one: `data/packs/<profile>/`, with
+the archives it downloaded kept in `data/packs/_cache/`. Two things about that were true
+and unstated — the copy outlives the profile by design (nothing removed it), and nothing
+ever pruned the cache. A box that had hosted four packs held a gigabyte of them, two
+directories of which belonged to profiles that no longer existed in either bucket.
+
+A delete now removes the directory too and reports the bytes, because "removed 83 asset
+keys" describes somebody else's disk and the useful sentence is "and 27 MB on the box".
+The cache is swept on install, at 14 days, matching the trash: one archive per pack version
+forever is a museum, and re-downloading is cheap next to keeping every archive.
+
+A directory is only removed when the manager owns it (`Dir` set, profile named). A fetch
+into a hand-picked directory is somebody's own folder, and this is not the code that should
+delete it.
