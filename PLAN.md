@@ -834,3 +834,43 @@ that property is what makes an image reproducible, wherever the bytes end up), a
 - The old single-profile keys are left in place (see 30). `outpost world import` is the
   door to `mc-worlds/current/`, but nothing imports it on its own: a world moved without
   being asked for is a world moved by surprise.
+
+### 40. A mod that says it cannot load without another wins over a client-only label
+
+Homestead 2.0.1 marks `chipped` required on both sides and `athena`, which Chipped
+declares it will not load without, `server: unsupported`. Obeying the pack's side
+annotation (24) therefore produced a mod set that Fabric Loader refuses, which is a
+server that never answers RCON: a rent that reads "Building" until the provisioning
+timeout deletes it, with nothing in the daemon's log saying why.
+
+`pack fetch` now reads the dependency block out of every jar it installs — including
+the jars nested in `META-INF/jars/`, because that is where Fabric API's thirty-odd
+modules and every bundled dependency live — and asks whether anything in the pack
+provides what those mods say they require. `minecraft`, `java` and `fabricloader` are
+not mods and do not have to be installed.
+
+- A gap that a *skipped* file can close is closed: that file is fetched, read for the
+  ids it provides, and kept only if it is needed. The rest of the staging directory is
+  deleted. The pack's annotation is overruled, the warning says so, and the server
+  boots. A client mod that is present and unused costs a few hundred kilobytes; a
+  server that will not boot costs a session and a rent.
+- A gap nothing in the pack can close is an error, and the fetch fails with the mod,
+  the file it came from, and the version range it wanted. That is the expensive case
+  turned into a message: it costs a re-read of the source, not a VPS.
+
+The extra download is paid only by a pack that has a gap, because the scan runs on what
+was already fetched. A pack whose kept mods are satisfied — nearly all of them —
+downloads nothing more than before.
+
+Not covered: a mod that *recommends* something absent is normal and is still ignored
+(the Fabric loader only warns), CurseForge-hosted mods a pack cannot redistribute are
+not fetched from anywhere, and `--plan-only` cannot scan jars it did not download.
+
+Two things the first draft got wrong, found in review, are part of 40 rather than a
+follow-up: a jar that answers for more than one id is moved into `mods/` exactly once
+(it was renamed a second time from a path it had already left, which failed a pack that
+was satisfiable), and a nested jar is read whole rather than under the `fabric.mod.json`
+cap (a bundled library over 4 MiB was silently invisible, so its ids looked missing).
+A scan that could not read a jar is not evidence of a missing mod: `scanModDeps` reports
+whether it saw everything, and when it did not, unexplained gaps become warnings and the
+boot decides. Only a scan that saw every byte may refuse a pack.

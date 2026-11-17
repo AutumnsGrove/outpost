@@ -172,11 +172,11 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 		return res, err
 	}
 
-	wanted, skipped, err := manifest.Wanted(opts.SkipOptional)
+	wanted, skippedFiles, err := manifest.Wanted(opts.SkipOptional)
 	if err != nil {
 		return res, fmt.Errorf("%s: %w", pk.Describe(), err)
 	}
-	res.Skipped = skipped
+	res.Skipped = Paths(skippedFiles)
 
 	// A pack that says nothing about sides is a pack where every client mod lands
 	// on the server. Fabulously Optimized is one; most server-capable packs are
@@ -255,6 +255,14 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	if _, err := download(ctx, opts, targets, log); err != nil {
+		return res, err
+	}
+
+	// A pack's own side annotations can contradict each other: Homestead marks
+	// Chipped required on both sides and Athena, which Chipped says it cannot load
+	// without, client-only. Dropping Athena is the pack's word and keeping it is
+	// the mod's, and only one of those ends in a server that boots.
+	if err := rescueHardDeps(ctx, opts, skippedFiles, written, &res, log); err != nil {
 		return res, err
 	}
 

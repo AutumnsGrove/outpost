@@ -62,8 +62,8 @@ func TestWantedUsesThePacksOwnEnvField(t *testing.T) {
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("wanted = %v, want %v", paths, want)
 	}
-	if len(skipped) != 1 || skipped[0] != "mods/sodium-0.5.13.jar" {
-		t.Fatalf("skipped = %v, want the client-only mod", skipped)
+	if len(skipped) != 1 || skipped[0].Path != "mods/sodium-0.5.13.jar" {
+		t.Fatalf("skipped = %v, want the client-only mod", Paths(skipped))
 	}
 
 	// --skip-optional drops the optional one as well.
@@ -72,7 +72,7 @@ func TestWantedUsesThePacksOwnEnvField(t *testing.T) {
 		t.Fatalf("wanted: %v", err)
 	}
 	if len(wanted) != 2 || len(skipped) != 2 {
-		t.Fatalf("wanted %d, skipped %v; optional should be skipped too", len(wanted), skipped)
+		t.Fatalf("wanted %d, skipped %v; optional should be skipped too", len(wanted), Paths(skipped))
 	}
 }
 
