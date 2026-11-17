@@ -170,7 +170,11 @@ table in `internal/publish` (1.20.1 on Java 17, 1.21.1 on Java 21, 26.3 on Java 
 refused rather than downloaded, because the VPS installs the JDK the pack's `pack.json`
 asks for and a version outside the table has no JDK to install. Java 25 is not an Ubuntu
 package, so that row is the one that arrives as an Adoptium tarball instead of `apt`. Files the pack marks
-`env.server: unsupported` are not fetched at all, so no client mod reaches the server —
+`env.server: unsupported` are not fetched at all, and neither is a file Modrinth reports
+as `server_side: unsupported` even when the pack claims otherwise — a pack's side
+annotations are often just what the author's launcher exported (Fabulously Optimized marks
+all fifty of its files server-required), while Modrinth's are curated against how the mod
+actually behaves —
 except when a mod the pack keeps says it cannot load without one. `pack fetch` reads the
 dependencies out of every jar it installs, and a missing one it can satisfy from a file
 the pack skipped is kept instead, with a warning saying which mod wanted it (PLAN 40). A
