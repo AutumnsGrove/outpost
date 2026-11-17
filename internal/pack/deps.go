@@ -333,7 +333,7 @@ func rescueHardDeps(ctx context.Context, opts Options, skipped []ManifestFile, w
 	}
 	defer cleanup()
 	if len(targets) == 0 {
-		return unmetDepsError(gaps)
+		return refuseOrWarn(gaps, complete, res, log)
 	}
 	if _, err := download(ctx, opts, targets, log); err != nil {
 		return err
@@ -395,18 +395,26 @@ func rescueHardDeps(ctx context.Context, opts Options, skipped []ManifestFile, w
 	}
 
 	if len(gaps) > 0 {
-		if !complete {
-			// Something in the pack could not be read, so these are gaps in the
-			// evidence rather than in the pack. Say so and let the boot decide: a
-			// refusal here would block a pack that is already installed and fine.
-			for _, gap := range gaps {
-				res.Warnings = append(res.Warnings, fmt.Sprintf("%s: could not confirm %s is provided, because a jar could not be read in full", gap.Carrier, gap.ID))
-			}
-			log.Warn("could not check every dependency", "gaps", len(gaps))
-			return nil
-		}
+		return refuseOrWarn(gaps, complete, res, log)
+	}
+	return nil
+}
+
+// refuseOrWarn is the one place that decides whether gaps may refuse a pack, so no
+// exit from rescueHardDeps can skip the question.
+//
+// An incomplete scan has gaps in its evidence, not in the pack: something could not
+// be read in full, so "nothing provides it" is "nothing I could see provides it".
+// Refusing on that would block packs that boot, which is the failure this whole
+// change exists to prevent — so it warns, and the boot is the judge.
+func refuseOrWarn(gaps []depGap, complete bool, res *Result, log *slog.Logger) error {
+	if complete {
 		return unmetDepsError(gaps)
 	}
+	for _, gap := range gaps {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("%s: could not confirm %s is provided, because a jar could not be read in full", gap.Carrier, gap.ID))
+	}
+	log.Warn("could not check every dependency", "gaps", len(gaps))
 	return nil
 }
 

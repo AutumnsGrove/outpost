@@ -364,3 +364,29 @@ func modJarWithPayload(t *testing.T, id string, payload []byte) []byte {
 	}
 	return buf.Bytes()
 }
+
+// An unreadable jar means the gaps are in the evidence, not in the pack. That
+// held only on the path that had skipped files to stage: with nothing to stage,
+// the fetch refused before it asked whether it had seen everything.
+func TestFetchDoesNotRefuseOnAnIncompleteScan(t *testing.T) {
+	api := newModrinth(t)
+	api.stageJars(t, map[string]stagedMod{
+		"chipped-3.0.7.jar": {
+			body:   modJar(t, "chipped", map[string]string{"athena": ">=3.1.1"}, nil),
+			client: "required", server: "required",
+		},
+		// Nothing can read this one, so nothing can say what it provides.
+		"corrupt-1.0.jar": {
+			body:   []byte("this is not a zip"),
+			client: "required", server: "required",
+		},
+	})
+
+	res, err := Fetch(context.Background(), Options{Source: "test-pack", Dir: t.TempDir(), MemoryGB: 4})
+	if err != nil {
+		t.Fatalf("a pack was refused on evidence the scan admitted was incomplete: %v", err)
+	}
+	if !warningsContain(res.Warnings, "could not confirm athena") {
+		t.Fatalf("the gap should be reported as unconfirmed, not closed: %v", res.Warnings)
+	}
+}
