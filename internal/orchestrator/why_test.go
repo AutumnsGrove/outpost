@@ -337,3 +337,40 @@ func TestATransientSSHFailureDoesNotSpendTheQuestion(t *testing.T) {
 		t.Fatalf("a transient SSH failure was the last word: %q", crash)
 	}
 }
+
+// The most likely early ask: the log exists and is quiet, because the failure has
+// not happened yet. `tail` of a quiet log exits 0, so this is not an SSH error, and
+// it used to spend the question — the athena shape exactly.
+func TestAQuietLogIsNotTheLastWord(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.probeErr = errors.New("never comes up")
+
+	// First ask: a log with nothing wrong in it yet.
+	h.remote.out = "[21:51:55] [main/INFO]: Preparing spawn area: 12%\n"
+	for i := 0; i < 6; i++ {
+		h.tick(t)
+	}
+
+	// The pack then fails to resolve.
+	h.remote.out = "Mod resolution failed\nImmediate reason: [HARD_DEP_NO_CANDIDATE chipped 3.0.7]\n"
+	for i := 0; i < 3; i++ {
+		h.tick(t)
+	}
+
+	events, err := h.store.RecentEvents(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crash string
+	for _, e := range events {
+		if e.Kind == "crash" {
+			crash = e.Message
+		}
+	}
+	if !strings.Contains(crash, "Mod resolution failed") {
+		t.Fatalf("a quiet log spent the question: %q", crash)
+	}
+}
