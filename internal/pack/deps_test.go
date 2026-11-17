@@ -7,9 +7,11 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +20,14 @@ import (
 // that only has a file name would prove nothing about a dependency check.
 func modJar(t *testing.T, id string, depends map[string]string, nested map[string][]byte) []byte {
 	t.Helper()
+	return modJarProviding(t, id, nil, depends, nested)
+}
+
+// modJarProviding also declares `provides`: one file answering for more than one
+// mod id is how a library ships its own add-ons, and it is the case a rescue has
+// to move exactly once.
+func modJarProviding(t *testing.T, id string, provides []string, depends map[string]string, nested map[string][]byte) []byte {
+	t.Helper()
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -25,6 +35,9 @@ func modJar(t *testing.T, id string, depends map[string]string, nested map[strin
 	meta := map[string]any{"schemaVersion": 1, "id": id, "version": "1.0.0"}
 	if depends != nil {
 		meta["depends"] = depends
+	}
+	if provides != nil {
+		meta["provides"] = provides
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -198,9 +211,12 @@ func TestScanModDepsCountsNestedAndProvidedIDs(t *testing.T) {
 	mk("fabric-api-0.92.jar", api)
 	mk("create-1.0.jar", modJar(t, "create", map[string]string{"fabric-api-base": "*"}, nil))
 
-	gaps, provided, err := scanModDeps(dir, []string{"mods/fabric-api-0.92.jar", "mods/create-1.0.jar"})
+	gaps, provided, complete, err := scanModDeps(dir, []string{"mods/fabric-api-0.92.jar", "mods/create-1.0.jar"})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+	}
+	if !complete {
+		t.Fatal("every jar was readable, so the scan should be complete")
 	}
 	if len(gaps) != 0 {
 		t.Fatalf("nested and provided ids should satisfy a dependency, gaps = %v", gaps)
@@ -213,7 +229,7 @@ func TestScanModDepsCountsNestedAndProvidedIDs(t *testing.T) {
 
 	// And a jar that is not a mod is not a reason to refuse a pack.
 	mk("not-a-mod.jar", []byte("not a zip"))
-	if _, _, err := scanModDeps(dir, []string{"mods/not-a-mod.jar"}); err != nil {
+	if _, _, _, err := scanModDeps(dir, []string{"mods/not-a-mod.jar"}); err != nil {
 		t.Fatalf("an unreadable jar stopped the scan: %v", err)
 	}
 }
@@ -228,7 +244,7 @@ func TestScanModDepsReportsWhatEachModWants(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gaps, _, err := scanModDeps(dir, []string{"mods/chipped-3.0.7.jar"})
+	gaps, _, _, err := scanModDeps(dir, []string{"mods/chipped-3.0.7.jar"})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -241,4 +257,110 @@ func TestScanModDepsReportsWhatEachModWants(t *testing.T) {
 	if got := gaps[0].String(); got != "chipped (chipped-3.0.7.jar) requires athena >=3.1.1" {
 		t.Fatalf("message = %q", got)
 	}
+}
+
+// One skipped jar can answer for two gaps: its own id and something it provides.
+// It was moved for the first gap and then renamed again for the second, from a
+// path it had already left, so a pack that was satisfiable was refused.
+func TestFetchMovesAJarThatClosesTwoGapsOnce(t *testing.T) {
+	api := newModrinth(t)
+	api.stageJars(t, map[string]stagedMod{
+		"chipped-3.0.7.jar": {
+			body:   modJar(t, "chipped", map[string]string{"athena": ">=3.1.1", "athena-core": "*"}, nil),
+			client: "required", server: "required",
+		},
+		"athena-3.1.2.jar": {
+			body:   modJarProviding(t, "athena", []string{"athena-core"}, nil, nil),
+			client: "required", server: "unsupported",
+		},
+	})
+
+	dir := t.TempDir()
+	res, err := Fetch(context.Background(), Options{Source: "test-pack", Dir: dir, MemoryGB: 4})
+	if err != nil {
+		t.Fatalf("a satisfiable pack was refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "mods", "athena-3.1.2.jar")); err != nil {
+		t.Fatalf("athena was not kept: %v", err)
+	}
+	if res.Mods != 2 {
+		t.Fatalf("mods = %d, want 2 — one rescue, counted once", res.Mods)
+	}
+	var rescues int
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "athena-3.1.2.jar is marked client-only") {
+			rescues++
+		}
+	}
+	if rescues != 1 {
+		t.Fatalf("the rescue was reported %d times, want 1: %v", rescues, res.Warnings)
+	}
+}
+
+// A bundled library bigger than the metadata cap used to be cut off mid-file: the
+// nested zip would not open, its ids went unseen, and a pack that boots fine was
+// refused for a dependency sitting right there in it.
+func TestScanModDepsReadsANestedJarPastTheMetadataCap(t *testing.T) {
+	big := make([]byte, 5<<20)
+	rng := rand.New(rand.NewSource(1))
+	if _, err := rng.Read(big); err != nil {
+		t.Fatal(err)
+	}
+	nested := modJarWithPayload(t, "biglib", big)
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "mods"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mods", "carrier.jar"), modJar(t, "carrier", nil, map[string][]byte{"biglib.jar": nested}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mods", "wants.jar"), modJar(t, "wants", map[string]string{"biglib": "*"}, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gaps, provided, complete, err := scanModDeps(dir, []string{"mods/carrier.jar", "mods/wants.jar"})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !complete {
+		t.Fatal("a 5 MiB nested jar is readable; the scan called itself incomplete")
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("a bundled library was reported missing: %v", gaps)
+	}
+	if !provided["biglib"] {
+		t.Fatal("the nested jar's id was not counted")
+	}
+}
+
+// modJarWithPayload is a jar carrying id, its metadata and size bytes of filler,
+// so its own bytes are bigger than a metadata cap.
+func modJarWithPayload(t *testing.T, id string, payload []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	raw, err := json.Marshal(map[string]any{"schemaVersion": 1, "id": id, "version": "1.0.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := zw.Create("fabric.mod.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	w, err = zw.Create("assets/filler.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
