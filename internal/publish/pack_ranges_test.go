@@ -96,3 +96,24 @@ func TestMinecraftListNamesTheRanges(t *testing.T) {
 		}
 	}
 }
+
+// Ordering is not validation: compareMC reads the digits it finds, so a string that
+// is not a version at all would sort inside a range and reach pack.json.
+func TestAVersionThatIsNotAVersionIsRefused(t *testing.T) {
+	// Surrounding whitespace is trimmed on purpose (MinecraftFor's doc), so it is not
+	// in this list; everything else is a string that is not a version.
+	for _, mc := range []string{"1.20.4x", "1.20.4.", ".1.20", "1.21.x", "latest", "1.20.1.0.1"} {
+		if _, ok := JavaFor(mc); ok {
+			t.Fatalf("JavaFor(%q) accepted something that is not a Minecraft version", mc)
+		}
+		if _, ok := MinecraftFor(mc); ok {
+			t.Fatalf("MinecraftFor(%q) accepted something that is not a Minecraft version", mc)
+		}
+	}
+	// The shapes that are versions, with and without a patch number.
+	for _, mc := range []string{"1.20", "1.20.1", "26.3"} {
+		if _, ok := JavaFor(mc); !ok {
+			t.Fatalf("JavaFor(%q) refused a real version shape", mc)
+		}
+	}
+}
