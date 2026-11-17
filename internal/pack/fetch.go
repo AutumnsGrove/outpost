@@ -185,7 +185,7 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 	wanted, clientOnly = dropServerUnsupported(ctx, wanted, &res, log)
 	skippedFiles = append(skippedFiles, clientOnly...)
 	if len(wanted) == 0 && len(skippedFiles) > 0 {
-		return res, fmt.Errorf("%s: every file this pack would install is client-only, so there is nothing to run on a server", pk.Describe())
+		return res, fmt.Errorf("%s: nothing would be installed on a server — every file it lists is client-only, marked optional and skipped, or unsupported on a server", pk.Describe())
 	}
 
 	// A pack that says nothing about sides is a pack where every client mod lands
