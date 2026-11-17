@@ -79,7 +79,7 @@ func (m Manifest) Loader() (name, version string, err error) {
 // filenames, and optional files are kept unless skipOptional says otherwise:
 // server packs routinely mark "nice to have" mods that the pack's own configs
 // then reference.
-func (m Manifest) Wanted(skipOptional bool) (wanted []ManifestFile, skipped []string, err error) {
+func (m Manifest) Wanted(skipOptional bool) (wanted []ManifestFile, skipped []ManifestFile, err error) {
 	for _, f := range m.Files {
 		if f.Path == "" {
 			return nil, nil, fmt.Errorf("modrinth.index.json has a file with no path")
@@ -90,11 +90,11 @@ func (m Manifest) Wanted(skipOptional bool) (wanted []ManifestFile, skipped []st
 		}
 		switch side {
 		case "unsupported":
-			skipped = append(skipped, f.Path)
+			skipped = append(skipped, f)
 			continue
 		case "optional":
 			if skipOptional {
-				skipped = append(skipped, f.Path)
+				skipped = append(skipped, f)
 				continue
 			}
 		}
@@ -107,6 +107,16 @@ func (m Manifest) Wanted(skipOptional bool) (wanted []ManifestFile, skipped []st
 	}
 	sort.Slice(wanted, func(i, j int) bool { return wanted[i].Path < wanted[j].Path })
 	return wanted, skipped, nil
+}
+
+// Paths is the skip list as names, which is what a page prints and what
+// Result.Skipped carries. The files themselves are what rescueHardDeps needs.
+func Paths(files []ManifestFile) []string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		out = append(out, f.Path)
+	}
+	return out
 }
 
 // Hash returns the strongest checksum the pack recorded for a file. Every
