@@ -927,7 +927,9 @@ that theory twice over:
   `NoSuchMethodError: CommandSourceStack.hasPermission(int)` and the server exited. The
   player saw "kicked, then the server closed".
 
-What does know is Modrinth's per-project `server_side`, and it is already reachable: the
+What knows better is Modrinth's per-project `server_side` — author-declared too, so not an
+oracle, but written once by the person who wrote the mod rather than exported per pack by
+whoever assembled one. It is already reachable: the
 download URL carries the project id (`cdn.modrinth.com/data/<project>/versions/<version>/…`).
 Of Fabulously Optimized's 50 files, 36 are `server_side: unsupported` — sodium, iris, the
 entity-texture mods, both of its resource packs. `pack fetch` now drops those before
