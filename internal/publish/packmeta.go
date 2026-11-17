@@ -27,10 +27,11 @@ import (
 // not open in 1.21.1, which is why the version a profile holds is checked and not
 // just the pack (see worldGuard).
 //
-// Oldest first, so [0] is the default and vanilla's version.
+// Oldest first, so [0] is the default and vanilla's version, and tagged because
+// the panel renders the table rather than hardcoding a version of its own.
 type Minecraft struct {
-	MC   string
-	Java int
+	MC   string `json:"mc"`
+	Java int    `json:"java"`
 }
 
 // Minecrafts is every Minecraft version Outpost can boot.
@@ -40,10 +41,30 @@ var Minecrafts = []Minecraft{
 }
 
 // SupportedMC is the Minecraft version a pack that names none is assumed to be
-// for, and the one vanilla is: the oldest row, which is also the one every world
-// saved so far was made in. `pack fetch` without --version keeps resolving to it,
-// so the default fetch does not move somebody's world.
+// for, and the one vanilla is when nobody says otherwise: the oldest row, which
+// is also the one every world saved so far was made in. `pack fetch` without
+// --version keeps resolving to it, so the default fetch does not move somebody's
+// world.
+//
+// It is a default, not a ceiling. Vanilla can be asked for any row of the table
+// (VanillaPack); naming none has to keep meaning this one, or the day a third row
+// is added is the day a plain `outpost pack vanilla` replaces a world.
 const SupportedMC = "1.20.1"
+
+// MinecraftFor is the table's spelling of a Minecraft version, and whether the
+// table has it at all.
+//
+// The spelling matters: "1.21.1" and "1.21.1 " are the same game, but pack.json is
+// compared with ChangedMinecraft and shown in the panel, so a version reaches the
+// manifest as the table writes it rather than as somebody typed it.
+func MinecraftFor(mc string) (string, bool) {
+	for _, m := range Minecrafts {
+		if strings.EqualFold(m.MC, strings.TrimSpace(mc)) {
+			return m.MC, true
+		}
+	}
+	return "", false
+}
 
 // JavaFor is the JDK a Minecraft version needs, and whether this image can boot
 // it at all.
@@ -203,7 +224,8 @@ func WritePack(dir string, p Pack) error {
 }
 
 // VanillaPack is the identity of a server with no mods: Fabric, an empty
-// mods/, the Minecraft version this image can boot.
+// mods/, and the Minecraft version it was asked for — SupportedMC when nobody
+// names one.
 //
 // It is a pack.json like any other, with source "outpost" instead of
 // "modrinth", which is what makes vanilla a first-class profile rather than a
@@ -213,14 +235,24 @@ func WritePack(dir string, p Pack) error {
 // vanilla and accepts vanilla clients, so a second jar name and a second
 // start.sh would buy a difference no player can see, at the cost of a second
 // boot path that nothing else in the system knows about.
-func VanillaPack() Pack {
+//
+// The version is a parameter rather than a constant because the image boots more
+// than one (Minecrafts) and the panel offers the table. CheckPack is what refuses
+// a version outside it; this function only spells it the way the table does.
+func VanillaPack(mc string) Pack {
+	if canonical, ok := MinecraftFor(mc); ok {
+		mc = canonical
+	}
+	if strings.TrimSpace(mc) == "" {
+		mc = SupportedMC
+	}
 	return Pack{
 		Source:        "outpost",
 		Slug:          "vanilla",
 		Name:          "Vanilla",
-		VersionID:     SupportedMC,
-		VersionNumber: SupportedMC,
-		MC:            SupportedMC,
+		VersionID:     mc,
+		VersionNumber: mc,
+		MC:            mc,
 		Loader:        "fabric",
 		FetchedAt:     time.Now().UTC().Format(time.RFC3339),
 	}

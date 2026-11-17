@@ -693,7 +693,7 @@ func TestAHandRolledPublishOwnsModsButNotConfigs(t *testing.T) {
 }
 
 func TestVanillaIsAPackThisServerCanBoot(t *testing.T) {
-	pk := VanillaPack()
+	pk := VanillaPack("")
 	// It goes through the same door every pack does: the same Minecraft version
 	// check, the same loader check, the same world guard, the same prune.
 	if err := CheckPack(pk); err != nil {
@@ -708,11 +708,50 @@ func TestVanillaIsAPackThisServerCanBoot(t *testing.T) {
 	if pk.Source == "" || pk.Slug == "" {
 		t.Fatal("vanilla has no identity")
 	}
-	if !pk.SamePack(VanillaPack()) {
+	if !pk.SamePack(VanillaPack("")) {
 		t.Fatal("a vanilla world is not claimed by a vanilla pack")
 	}
 	if pk.SamePack(Pack{Source: "modrinth", Slug: "cobblemon-fabric"}) {
 		t.Fatal("a vanilla pack claims a Modrinth pack's world")
+	}
+}
+
+// Vanilla is one pack that can be any row of the table. The two facts pull in
+// opposite directions on purpose: SamePack stays true across Minecraft versions so
+// a reinstall is an update of the same profile, and ChangedMinecraft is what stops
+// that update from carrying a 1.20.1 world into 1.21.1. A version that made
+// SamePack false would turn a reinstall into "someone else's pack" and lose the
+// world without ever asking.
+func TestVanillaPackTakesARowOfTheTable(t *testing.T) {
+	for _, m := range Minecrafts {
+		pk := VanillaPack(m.MC)
+		if err := CheckPack(pk); err != nil {
+			t.Fatalf("%s: %v", m.MC, err)
+		}
+		if pk.MC != m.MC || pk.VersionID != m.MC || pk.VersionNumber != m.MC {
+			t.Fatalf("%s landed as %+v", m.MC, pk)
+		}
+		if !pk.SamePack(VanillaPack("")) {
+			t.Fatalf("a %s vanilla install is not the same pack as a plain one", m.MC)
+		}
+		if pk.MC != SupportedMC && !ChangedMinecraft(VanillaPack(""), pk) {
+			t.Fatalf("1.20.1 → %s is not seen as a Minecraft change", m.MC)
+		}
+	}
+
+	// The table's spelling wins, because pack.json is compared with ChangedMinecraft
+	// and shown in the panel: "1.21.1 " and "1.21.1" are one game.
+	if pk := VanillaPack(" 1.21.1 "); pk.MC != "1.21.1" {
+		t.Fatalf("whitespace survived into pack.json: %q", pk.MC)
+	}
+	if pk := VanillaPack(""); pk.MC != SupportedMC {
+		t.Fatalf("an unnamed version moved the default to %q", pk.MC)
+	}
+
+	// Anything outside the table has no JDK here, so it is refused in the words the
+	// panel shows rather than written and discovered at boot.
+	if err := CheckPack(VanillaPack("1.19.4")); err == nil || !strings.Contains(err.Error(), MinecraftList()) {
+		t.Fatalf("a version outside the table was not refused with the table: %v", err)
 	}
 }
 
