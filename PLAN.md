@@ -909,3 +909,36 @@ own profile, rented — cloud-init installed Temurin 25.0.5 from Adoptium, and t
 `Starting minecraft server version 26.3` / `Done (4.265s)`, RCON answering on the next
 tick. The whole promise took one rent and about six minutes. The range table that makes 1.20.4 or 1.21.8 askable
 without a row each is issue #48's second half.
+
+### 42. Modrinth's per-project sides decide, and the pack's annotations do not
+
+The first draft of this was "read each jar's `environment` field", on the theory that a
+pack which annotates nothing leaves the jars' own word as the fallback. Testing it against
+the pack that caused the bug (`fabulously-optimized` 15.0.0-beta.4, Minecraft 26.3) killed
+that theory twice over:
+
+- The pack **does** annotate, and annotates everything identically: all fifty files are
+  `env.client: required, env.server: required`. That is not a judgement about sides, it is
+  what a launcher export writes when nobody said otherwise — and it made `env.server`
+  useless as evidence in exactly the case it was needed.
+- The jar that crashed the server, `e4mc`, declares `environment: "*"`. Its own metadata
+  says it runs on a dedicated server, it registers a server command, and it was built
+  against an API that no longer exists, so the first player's login threw
+  `NoSuchMethodError: CommandSourceStack.hasPermission(int)` and the server exited. The
+  player saw "kicked, then the server closed".
+
+What does know is Modrinth's per-project `server_side`, and it is already reachable: the
+download URL carries the project id (`cdn.modrinth.com/data/<project>/versions/<version>/…`).
+Of Fabulously Optimized's 50 files, 36 are `server_side: unsupported` — sodium, iris, the
+entity-texture mods, both of its resource packs. `pack fetch` now drops those before
+anything is downloaded: 64 files and 21.7 MB instead of 100 and 42.1 MB, and the skipped
+list says why. Files with no Modrinth project behind them (a GitHub release, a mirror) get
+no opinion and are installed as the pack says, and a project we could not ask about is
+*not* dropped — an API hiccup must not empty a server.
+
+`e4mc` is still installed, because Modrinth says `required` and it is wrong about a mod
+that no longer matches the server API it targets. That residue is not detectable from
+metadata, and the answer to it is not another filter but a daemon that says why a server
+died — issue #51, which is the next thing after this. Until then, a client pack installed
+on a server carries the risk that one of its mods is broken on that version, and the way to
+find out is a log the daemon currently will not show you.
