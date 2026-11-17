@@ -178,6 +178,16 @@ func Fetch(ctx context.Context, opts Options) (Result, error) {
 	}
 	res.Skipped = Paths(skippedFiles)
 
+	// Modrinth knows which of these mods cannot run on a dedicated server, which is
+	// a question neither the pack nor the jar answers honestly: see sides.go. The
+	// drops join skippedFiles so the dependency rescue can still put one back.
+	var clientOnly []ManifestFile
+	wanted, clientOnly = dropServerUnsupported(ctx, wanted, &res, log)
+	skippedFiles = append(skippedFiles, clientOnly...)
+	if len(wanted) == 0 && len(skippedFiles) > 0 {
+		return res, fmt.Errorf("%s: every file this pack would install is client-only, so there is nothing to run on a server", pk.Describe())
+	}
+
 	// A pack that says nothing about sides is a pack where every client mod lands
 	// on the server. Fabulously Optimized is one; most server-capable packs are
 	// not. The warning is the only honest thing to do when the pack has no opinion
