@@ -155,11 +155,17 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 		if installed {
 			seenInstalled = true
 		}
-		if run && sameGameVersion(v, heldMC) && !installed && !seenInstalled && out.Newer == "" {
+		if run && sameGameVersion(v, focus) && !installed && !seenInstalled && out.Newer == "" {
 			// Newest-first order, so the first runnable version before the installed
 			// one is the update. Anything after it is a downgrade, and anything for
 			// another Minecraft version is a different game: a 1.21.1 build is not an
 			// update of a 1.20.1 world, it is a world replacement.
+			//
+			// Scoped to focus, not to heldMC: a pack.json that names no Minecraft
+			// version made heldMC empty, and sameGameVersion answers that with yes to
+			// everything — so the row offered "an update" that was another game's
+			// world replacement. Nobody noticed with two rows; a third one made it say
+			// a 26.3 beta was an update for a 1.20.1 profile.
 			out.Newer = v.VersionNumber
 		}
 
@@ -213,11 +219,11 @@ func (m *Manager) Versions(ctx context.Context, source, profile string) (Version
 // sameGameVersion reports whether a version is for the Minecraft version the
 // profile already holds. No held version means no opinion: a profile with nothing
 // installed has no world to keep.
-func sameGameVersion(v Version, heldMC string) bool {
-	if heldMC == "" {
+func sameGameVersion(v Version, mc string) bool {
+	if mc == "" {
 		return true
 	}
-	return contains(v.GameVersions, heldMC)
+	return contains(v.GameVersions, mc)
 }
 
 // bootable answers "can this server run this version", in the same terms
