@@ -245,6 +245,12 @@ func (m *Manager) Preview(ctx context.Context, req PreviewRequest) (*Job, error)
 		Log:          m.Log,
 		Progress:     m.progress(job),
 	}
+	// The cache grows by one archive per new pack version, and nothing else ever
+	// looks at it. Sweeping here means it is pruned on the only path that adds to it.
+	if freed, n := m.pruneCache(time.Now()); n > 0 {
+		m.Log.Info("pruned cached pack archives", "count", n, "bytes", freed)
+	}
+
 	m.run(ctx, job, func(ctx context.Context) (*JobResult, error) {
 		res, err := Fetch(ctx, opts)
 		if err != nil {
@@ -303,6 +309,12 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*Job, error)
 		CacheDir:     m.cacheDir(),
 		Log:          m.Log,
 		Progress:     m.progress(job),
+	}
+
+	// The cache grows by one archive per new pack version, and nothing else ever
+	// looks at it. Sweeping here means it is pruned on the only path that adds to it.
+	if freed, n := m.pruneCache(time.Now()); n > 0 {
+		m.Log.Info("pruned cached pack archives", "count", n, "bytes", freed)
 	}
 
 	m.run(ctx, job, func(ctx context.Context) (*JobResult, error) {
@@ -391,6 +403,12 @@ func (m *Manager) InstallVanilla(ctx context.Context, req VanillaRequest) (*Job,
 	job, err := m.begin("install", pk.Describe(), profile)
 	if err != nil {
 		return nil, err
+	}
+
+	// The cache grows by one archive per new pack version, and nothing else ever
+	// looks at it. Sweeping here means it is pruned on the only path that adds to it.
+	if freed, n := m.pruneCache(time.Now()); n > 0 {
+		m.Log.Info("pruned cached pack archives", "count", n, "bytes", freed)
 	}
 
 	m.run(ctx, job, func(ctx context.Context) (*JobResult, error) {
@@ -589,6 +607,9 @@ type ProfileDelete struct {
 	// pack's files, and the world bucket's other things (the marker, the backups).
 	Assets    int
 	Leftovers int
+	// LocalBytes is how much the potato's working copy of the pack was taking. It
+	// exists so a page can say what was given back instead of only what left R2.
+	LocalBytes int64
 }
 
 // DeleteProfile removes a profile: its world (through the trash), its backups,
@@ -651,7 +672,86 @@ func (m *Manager) DeleteProfile(ctx context.Context, profile, active string, now
 			}
 		}
 	}
+
+	// Then the potato's own copy. R2 is what the VPS boots from, so a directory under
+	// the packs root stops being useful the moment the profile is gone — and it is
+	// not small: a modpack directory is hundreds of megabytes on a box shared with
+	// every other service. Deleting it is also the only way back to a clean disk
+	// without an SSH session. The next install downloads it again; that is what the
+	// archive cache is for.
+	out.LocalBytes, err = m.removePackDir(profile)
+	if err != nil {
+		return out, err
+	}
 	return out, nil
+}
+
+// removePackDir deletes a profile's working copy and reports how much it held.
+//
+// Nothing happens when Dir is empty: that is a fetch into a hand-picked directory,
+// or a test, and in neither case does this manager own the files.
+func (m *Manager) removePackDir(profile string) (int64, error) {
+	if m.Dir == "" || profile == "" {
+		return 0, nil
+	}
+	dir := m.profileDir(profile)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+
+	var size int64
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // a file that vanished mid-walk is not a failed delete
+		}
+		if !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				size += info.Size()
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return size, fmt.Errorf("the profile is gone from R2, but %s could not be removed: %w", dir, err)
+	}
+	return size, nil
+}
+
+// cacheRetention is how long a downloaded .mrpack is kept. It matches the trash's
+// retention: long enough that re-installing the same pack a fortnight later does not
+// re-download a hundred megabytes, short enough that the cache is not a museum.
+const cacheRetention = 14 * 24 * time.Hour
+
+// pruneCache drops cached .mrpack archives past their retention, and reports what it
+// freed. Age rather than "unreferenced", because one archive can belong to several
+// profiles and the cache exists to save a download, not to be complete.
+func (m *Manager) pruneCache(now time.Time) (int64, int) {
+	dir := m.cacheDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, 0
+	}
+	var (
+		freed int64
+		count int
+	)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".mrpack") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) < cacheRetention {
+			continue
+		}
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+			freed += info.Size()
+			count++
+		}
+	}
+	return freed, count
 }
 
 // Lease claims the single slot the jobs use, for work that is short enough to

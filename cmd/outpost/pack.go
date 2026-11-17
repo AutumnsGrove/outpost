@@ -231,6 +231,9 @@ func (a *app) packDeleteCmd() *cobra.Command {
 				fmt.Printf("world   none saved, nothing to trash\n")
 			}
 			fmt.Printf("removed %d asset key(s) and %d world key(s) (marker, backups)\n", res.Assets, res.Leftovers)
+			if res.LocalBytes > 0 {
+				fmt.Printf("freed   %s on the box (its working copy of the pack)\n", humanSize(res.LocalBytes))
+			}
 			fmt.Printf("profile %s is gone\n", profile)
 			return nil
 		},
