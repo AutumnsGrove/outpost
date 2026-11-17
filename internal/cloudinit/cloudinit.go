@@ -26,6 +26,19 @@ var (
 // boot that fails on "no installation candidate".
 var javaMajors = map[int]bool{8: true, 11: true, 17: true, 21: true}
 
+// javaTarballs are the majors this image installs from Adoptium because Ubuntu
+// has no package for them. A Minecraft version can need one of these: 26.x needs
+// Java 25, and 24.04's newest JDK is 21, so the apt line would be "no installation
+// candidate" after the orchestrator has already paid for a VPS.
+//
+// Two tables rather than one with a "how" column: the template needs exactly this
+// decision — package or tarball — and a map to a bool is the smallest thing that
+// cannot be half-filled.
+var javaTarballs = map[int]bool{25: true}
+
+// JavaTarball reports whether this JDK comes from Adoptium rather than apt.
+func (d Data) JavaTarball() bool { return javaTarballs[d.Java] }
+
 // Data is everything the template needs. Secrets arrive here already read from
 // the orchestrator's environment and are never written to disk anywhere else.
 type Data struct {
@@ -94,11 +107,14 @@ func (d Data) Validate() error {
 			return fmt.Errorf("cloud-init: %s has characters outside A-Z a-z 0-9 . _ ~ + = / : -", name)
 		}
 	}
-	// A JDK is a package name in the template: "openjdk-<n>-jdk-headless". Only
-	// the majors Ubuntu ships are accepted, so a pack cannot name a package that
-	// does not exist and fail the boot on "no installation candidate".
+	// A JDK is either a package name in the template ("openjdk-<n>-jdk-headless")
+	// or an Adoptium tarball. Only the majors here are accepted, so a pack cannot
+	// name one that does not exist and fail the boot on "no installation candidate"
+	// — or on a 404 from Adoptium.
 	if _, ok := javaMajors[d.Java]; !ok {
-		return fmt.Errorf("cloud-init: Java %d is not a JDK Ubuntu installs (have 8, 11, 17, 21)", d.Java)
+		if _, ok := javaTarballs[d.Java]; !ok {
+			return fmt.Errorf("cloud-init: Java %d is not a JDK this image installs (Ubuntu packages 8, 11, 17, 21; Adoptium serves 25)", d.Java)
+		}
 	}
 	for _, v := range []string{d.Hostname, d.Profile, d.AssetBucket, d.WorldBucket, d.R2AccountID} {
 		if !safeName.MatchString(v) {

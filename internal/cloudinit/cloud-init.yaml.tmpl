@@ -16,8 +16,13 @@ package_upgrade: true
 # (publish.Minecrafts). Two would be 200 MB on every rental and a second way for
 # the boot to pick the wrong one; none would be a 1.21 pack dying on "Unsupported
 # class file major version 65" after the orchestrator has already paid for a VPS.
+#
+# It comes from apt when Ubuntu packages it, and from Adoptium below when it does
+# not: 24.04 stops at JDK 21 and a 26.x server needs 25.
 packages:
+{{- if not .JavaTarball }}
   - openjdk-{{ .Java }}-jdk-headless
+{{- end }}
   - curl
   - tar
   - unzip
@@ -59,7 +64,32 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
-runcmd:
+runcmd:{{- if .JavaTarball }}
+
+  # --- JDK {{ .Java }} from Adoptium. Ubuntu packages nothing newer than 21, and
+  # the server dies on "Unsupported class file major version" without this. The
+  # API serves the current GA build for this machine's architecture, which is not
+  # the debian name for it: amd64 is x64 there and arm64 is aarch64. The box may
+  # be either, depending on which server type had capacity.
+  - |
+    set -e
+    ARCH=$(dpkg --print-architecture)
+    case "$ARCH" in
+      amd64) A=x64 ;;
+      arm64) A=aarch64 ;;
+      *) echo "no Adoptium build for $ARCH" >&2; exit 1 ;;
+    esac
+    mkdir -p /opt/jdk-{{ .Java }}
+    curl -fsSL --retry 3 --retry-delay 2 -o /tmp/jdk.tar.gz \
+      "https://api.adoptium.net/v3/binary/latest/{{ .Java }}/ga/linux/$A/jdk/hotspot/normal/eclipse"
+    tar -xzf /tmp/jdk.tar.gz -C /opt/jdk-{{ .Java }} --strip-components=1
+    rm -f /tmp/jdk.tar.gz
+    # /usr/local/bin comes before /usr/bin, so scripts/start.sh's bare `java`
+    # finds this one without a JAVA_HOME or an alternatives entry.
+    ln -sf /opt/jdk-{{ .Java }}/bin/java /usr/local/bin/java
+    java -version
+{{- end }}
+
   # --- rclone from Ubuntu is 1.60 and too old for R2: every upload answers 501
   # NotImplemented. Take the current static build for this machine's
   # architecture instead (the box may be amd64 or arm64, depending on which
