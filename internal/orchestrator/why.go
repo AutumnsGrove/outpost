@@ -185,7 +185,13 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 		// A log with nothing interesting in it is not an answer, it is a log taken too
 		// early: say so, and leave the question for the next attempt. If this box has
 		// already told us why (a slow boot before the timeout), that answer stands.
-		_ = o.store.Log("why", "%s; the server's log says nothing about a failure yet", why)
+		event := "why"
+		if crash {
+			// Same rule as an unreadable log: a death is a death, whatever the log has
+			// to say about it.
+			event = "crash"
+		}
+		_ = o.store.Log(event, "%s; the server's log says nothing about a failure yet", why)
 		return o.knownCause(st)
 	}
 	_ = o.store.MetaSet("why_reported", key)
@@ -220,11 +226,19 @@ func (o *Orchestrator) knownCause(st store.ServerState) string {
 	return summary
 }
 
-// forgetCause drops the remembered cause. Called on every answered probe, so a stall
-// that recovered cannot be blamed for a death an hour later.
+// forgetCause drops everything remembered about a server that was not answering, and
+// hands it a fresh question. Called on every answered probe: a box that is up has no
+// pending question, and a stall that recovered cannot be blamed for a death an hour
+// later — nor can it spend the budget for a stall that comes after it.
 func (o *Orchestrator) forgetCause() {
-	_ = o.store.MetaSet("why_summary", "")
-	_ = o.store.MetaSet("why_summary_key", "")
+	for _, key := range []string{"why_summary", "why_summary_key", "why_reported", "why_tries_for"} {
+		if v, err := o.store.MetaGet(key); err == nil && v != "" {
+			_ = o.store.MetaSet(key, "")
+		}
+	}
+	if v, err := o.store.MetaInt("why_tries"); err == nil && v != 0 {
+		_ = o.store.MetaSet("why_tries", "0")
+	}
 }
 
 // distill turns a log tail into one line and a short excerpt.

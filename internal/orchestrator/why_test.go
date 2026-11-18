@@ -524,3 +524,33 @@ func TestABootCauseIsNotBlamedForALaterDeath(t *testing.T) {
 		t.Fatal("a death with an unreadable log logged no crash")
 	}
 }
+
+// A stall that recovers and then stalls again gets a second question: the first one's
+// budget was spent on a server that came back.
+func TestASecondStallGetsItsOwnQuestion(t *testing.T) {
+	h := newHarness(t)
+	h.live(t)
+	h.remote.out = "java.lang.OutOfMemoryError: Java heap space\n"
+
+	stall := func() {
+		h.probeErr = errors.New("connection refused")
+		for i := 0; i < whyAfterFailures; i++ {
+			h.tick(t)
+		}
+	}
+
+	stall()
+	reported := len(eventsOfKind(t, h, "why"))
+
+	// It comes back.
+	h.probeErr = nil
+	h.players = 1
+	h.tick(t)
+
+	// And stalls again, with a different cause.
+	h.remote.out = "java.lang.IllegalStateException: second stall\n"
+	stall()
+	if got := len(eventsOfKind(t, h, "why")); got <= reported {
+		t.Fatalf("the second stall was not reported: %d reports, was %d", got, reported)
+	}
+}
