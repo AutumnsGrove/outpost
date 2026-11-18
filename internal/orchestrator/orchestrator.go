@@ -502,6 +502,7 @@ func (o *Orchestrator) Start(ctx context.Context, region, serverType string) (st
 	_ = o.store.MetaSet("why_summary", "")
 	_ = o.store.MetaSet("why_tries", "0")
 	_ = o.store.MetaSet("why_tries_for", "")
+	_ = o.store.MetaSet("why_summary_vps", "")
 
 	// The rate of the plan that was actually rented, which is not always the one
 	// asked for: a sold-out plan falls back, and a fallback size has its own price.
@@ -809,7 +810,14 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		if failures >= o.rconFailureLimit() {
 			_ = o.store.MetaSet("rcon_failures", "0")
 			_ = o.store.Log("rcon-dead", "%d consecutive failures, shutting down", failures)
-			st.LastError = fmt.Sprintf("rcon unreachable: %v", probeErr)
+			reason := fmt.Sprintf("rcon unreachable: %v", probeErr)
+			// This is the terminal path, so it is the one that may call it a crash — and
+			// the trail should say why the session ended, even when a slow-boot `why`
+			// already reported something about the same box.
+			if summary := o.reportWhy(ctx, st, "the server died and stopped answering RCON", true); summary != "" {
+				reason = "the server died: " + summary
+			}
+			st.LastError = truncate(reason, 240)
 			_ = o.store.SetState(st)
 			return o.transition(st, store.Terminating)
 		}
