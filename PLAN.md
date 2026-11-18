@@ -990,3 +990,33 @@ forever is a museum, and re-downloading is cheap next to keeping every archive.
 A directory is only removed when the manager owns it (`Dir` set, profile named). A fetch
 into a hand-picked directory is somebody's own folder, and this is not the code that should
 delete it.
+
+### 45. A slow boot is not a crash, and a warning is not an error
+
+41 and #53 shipped "the server says why" and the first long session produced a clean
+example of it lying: a 47-mod pack took three minutes to boot, the provisioning ask landed
+at two, and the trail said
+
+```
+01:51:21  crash  … : Mod dev_isxander_sdl uses the version release-3.4.14-7 which isn't
+                 compatible with Loader's extended semantic version format …
+01:51:41  ready  … is up at 94.130.181.83
+```
+
+Two mistakes, both about knowing what a line means rather than what it says.
+
+**Severity is in the line.** Minecraft's log prefixes every line with its thread and level,
+so the distiller parses it and ranks: an exception's own line (`java.lang.NoSuchMethodError:
+…`) beats an `ERROR` headline ("Encountered an unexpected exception"), which beats a `WARN`,
+which beats nothing. Before, a keyword list decided, and "isn't compatible with Loader's
+extended semantic version format" is a keyword match on `incompatible` — a warning every mod
+with a non-semver version emits, presented as the reason a server died.
+
+**`crash` is terminal.** Before the timeout or the `rcon-dead` transition, what the daemon
+knows is "it has not answered yet", so the event is a `why` — informational, worded that
+way — and the once-only bookkeeping is keyed per kind, because a slow boot and a subsequent
+death are different questions about the same box. A phone showing "crashed" for a server
+that came up twenty seconds later is the same dishonesty as showing nothing.
+
+The lesson generalises past this feature: a report is only worth having if it is right about
+*when* as well as *what*.
