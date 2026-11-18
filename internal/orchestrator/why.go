@@ -137,7 +137,7 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	// two different questions, and the answer to the first says nothing about the
 	// second. Keying on the state also keeps the provisioning budget from being spent
 	// by the time the server is up.
-	key := st.VPSID + "@" + string(st.State) + "@" + kind
+	key := phaseKey(st) + "@" + kind
 	if seen, _ := o.store.MetaGet("why_reported"); seen == key {
 		// Already asked on this box. Answer from what was learned then, so a caller
 		// that reports a later symptom (the timeout) can still carry the cause.
@@ -169,7 +169,13 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	out, err := o.deps.Remote.Run(ctx, o.dialHost(ctx, st), whyCommand)
 	if err != nil {
 		o.log.Warn("could not read the server's log", "host", st.TailnetHost, "err", err)
-		_ = o.store.Log("why", "%s; the log could not be read over SSH: %v", why, err)
+		event := "why"
+		if crash {
+			// The death is known even when the log is not: an OOM-killed box answers
+			// no SSH. The kind should follow what we know, not what we could fetch.
+			event = "crash"
+		}
+		_ = o.store.Log(event, "%s; the log could not be read over SSH: %v", why, err)
 		// A failed read does not discard what this box already said. The terminal path
 		// asks with a different key, and it must not lose a cause we already have.
 		return o.knownCause(st)
@@ -191,8 +197,14 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	}
 	_ = o.store.Log(kind, "%s: %s\n%s", why, summary, detail)
 	_ = o.store.MetaSet("why_summary", summary)
-	_ = o.store.MetaSet("why_summary_vps", st.VPSID)
+	_ = o.store.MetaSet("why_summary_key", phaseKey(st))
 	return summary
+}
+
+// phaseKey is what a remembered cause belongs to: one box, in one phase of its life.
+// A cause found while booting says nothing about what killed the same box hours later.
+func phaseKey(st store.ServerState) string {
+	return st.VPSID + "@" + string(st.State)
 }
 
 // knownCause is the last thing this box said about itself, if it was this box.
@@ -201,11 +213,18 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 // after a stall) starts fresh — correctly, because the log has moved on — but a fresh
 // read that fails must not throw away an answer we already have about the same VPS.
 func (o *Orchestrator) knownCause(st store.ServerState) string {
-	if vps, _ := o.store.MetaGet("why_summary_vps"); vps != st.VPSID || vps == "" {
+	if key, _ := o.store.MetaGet("why_summary_key"); key != phaseKey(st) {
 		return ""
 	}
 	summary, _ := o.store.MetaGet("why_summary")
 	return summary
+}
+
+// forgetCause drops the remembered cause. Called on every answered probe, so a stall
+// that recovered cannot be blamed for a death an hour later.
+func (o *Orchestrator) forgetCause() {
+	_ = o.store.MetaSet("why_summary", "")
+	_ = o.store.MetaSet("why_summary_key", "")
 }
 
 // distill turns a log tail into one line and a short excerpt.
