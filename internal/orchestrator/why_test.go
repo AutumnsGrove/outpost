@@ -550,7 +550,12 @@ func TestASecondStallGetsItsOwnQuestion(t *testing.T) {
 	// And stalls again, with a different cause.
 	h.remote.out = "java.lang.IllegalStateException: second stall\n"
 	stall()
-	if got := len(eventsOfKind(t, h, "why")); got <= reported {
-		t.Fatalf("the second stall was not reported: %d reports, was %d", got, reported)
+	second := eventsOfKind(t, h, "why")
+	if len(second) <= reported {
+		t.Fatalf("the second stall was not reported: %d reports, was %d", len(second), reported)
+	}
+	// The newest report names the new cause, not the first stall's.
+	if !strings.Contains(second[0], "second stall") {
+		t.Fatalf("the second stall reported the first one's cause: %q", second[0])
 	}
 }
