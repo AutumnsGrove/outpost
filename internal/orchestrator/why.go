@@ -49,9 +49,9 @@ var exceptionLine = regexp.MustCompile(`^([A-Za-z_$][\w$]*\.)*[A-Za-z0-9_$]*(Exc
 // warnings, and a line with no recognisable level sits between the two — it might be
 // a stack frame of the error above it, or it might be noise.
 func severity(line string) (rank int) {
-	if exceptionLine.MatchString(withoutLevel(line)) {
-		return 4
-	}
+	// A line with a level is ranked by that level and nothing else. Mixin's
+	// "[main/WARN]: Error loading class: …" starts with the word "Error" and would
+	// otherwise look like an exception and outrank the real one below it.
 	if m := logLine.FindStringSubmatch(line); m != nil {
 		switch strings.ToUpper(m[1]) {
 		case "FATAL", "ERROR":
@@ -61,6 +61,10 @@ func severity(line string) (rank int) {
 		default:
 			return 0
 		}
+	}
+	// No level: a stack frame or an exception's own line.
+	if exceptionLine.MatchString(line) {
+		return 4
 	}
 	switch {
 	case loadBearing.MatchString(line):
@@ -166,14 +170,17 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	if err != nil {
 		o.log.Warn("could not read the server's log", "host", st.TailnetHost, "err", err)
 		_ = o.store.Log("why", "%s; the log could not be read over SSH: %v", why, err)
-		return ""
+		// A failed read does not discard what this box already said. The terminal path
+		// asks with a different key, and it must not lose a cause we already have.
+		return o.knownCause(st)
 	}
 	summary, detail := distill(out)
 	if summary == "" {
 		// A log with nothing interesting in it is not an answer, it is a log taken too
-		// early: say so, and leave the question for the next attempt.
+		// early: say so, and leave the question for the next attempt. If this box has
+		// already told us why (a slow boot before the timeout), that answer stands.
 		_ = o.store.Log("why", "%s; the server's log says nothing about a failure yet", why)
-		return ""
+		return o.knownCause(st)
 	}
 	_ = o.store.MetaSet("why_reported", key)
 
@@ -184,6 +191,20 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	}
 	_ = o.store.Log(kind, "%s: %s\n%s", why, summary, detail)
 	_ = o.store.MetaSet("why_summary", summary)
+	_ = o.store.MetaSet("why_summary_vps", st.VPSID)
+	return summary
+}
+
+// knownCause is the last thing this box said about itself, if it was this box.
+//
+// The per-kind key means a later question (the timeout after a slow boot, the death
+// after a stall) starts fresh — correctly, because the log has moved on — but a fresh
+// read that fails must not throw away an answer we already have about the same VPS.
+func (o *Orchestrator) knownCause(st store.ServerState) string {
+	if vps, _ := o.store.MetaGet("why_summary_vps"); vps != st.VPSID || vps == "" {
+		return ""
+	}
+	summary, _ := o.store.MetaGet("why_summary")
 	return summary
 }
 

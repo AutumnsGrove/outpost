@@ -409,3 +409,71 @@ java.lang.NoSuchMethodError: 'boolean net.minecraft.commands.CommandSourceStack.
 		t.Fatalf("summary = %q, want the error over the warning", summary)
 	}
 }
+
+// Mixin's most common line starts with the word "Error" and is a warning. It must not
+// outrank the real error below it — the same "a warning is the headline" failure, one
+// level down.
+func TestAWarningThatStartsWithErrorIsStillAWarning(t *testing.T) {
+	summary, _ := distill(`[20:30:42] [main/WARN]: Error loading class: dev/ftb/mods/ftbchunks/client/gui/LargeMapScreen (java.lang.ClassNotFoundException: dev/ftb/mods/ftbchunks/client/gui/LargeMapScreen)
+[20:31:10] [main/ERROR]: Incompatible mods found!
+net.fabricmc.loader.impl.FormattedException: Some of your mods are incompatible with the game or each other!
+`)
+	if !strings.Contains(summary, "FormattedException") && !strings.Contains(summary, "Incompatible mods found") {
+		t.Fatalf("summary = %q, want the error over the mixin warning", summary)
+	}
+	if strings.Contains(summary, "LargeMapScreen") {
+		t.Fatalf("summary = %q, a warning beat the error", summary)
+	}
+}
+
+// A live session that dies ends at rcon-dead, which is the terminal path and so the one
+// that may call it a crash — the most common real death should not render as a `why`.
+func TestALiveDeathIsACrash(t *testing.T) {
+	h := newHarness(t)
+	h.live(t)
+	h.probeErr = errors.New("connection refused")
+	h.remote.out = "java.lang.OutOfMemoryError: Java heap space\n"
+
+	for i := 0; i < 20; i++ {
+		h.tick(t)
+		if got := h.mustState(t); got != store.Running {
+			break
+		}
+	}
+
+	crashes := eventsOfKind(t, h, "crash")
+	if len(crashes) == 0 {
+		t.Fatal("a server that died logged no crash")
+	}
+	if !strings.Contains(crashes[0], "OutOfMemoryError") {
+		t.Fatalf("the crash does not say why: %q", crashes[0])
+	}
+}
+
+// And the timeout keeps a cause the box already gave, even if the second read fails.
+func TestTheTimeoutKeepsAnAnswerTheBoxAlreadyGave(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.probeErr = errors.New("never comes up")
+
+	// The slow-boot ask finds a real error.
+	h.remote.out = "[01:51:00] [main/ERROR]: Failed to start the minecraft server\n"
+	for i := 0; i < 6; i++ {
+		h.tick(t)
+	}
+
+	// The timeout's own read fails.
+	h.remote.err = errors.New("ssh: no route to host")
+	h.clock = h.clock.Add(16 * time.Minute)
+	h.tick(t)
+
+	st, err := h.store.GetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(st.LastError, "Failed to start") {
+		t.Fatalf("the timeout threw away a cause we already had: %q", st.LastError)
+	}
+}
