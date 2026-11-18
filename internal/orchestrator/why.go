@@ -36,6 +36,52 @@ const (
 	whyKeep  = 1500
 )
 
+// logLine is one line of a Minecraft log, split into the part that says how bad it
+// is and the part that says what happened.
+var logLine = regexp.MustCompile(`^\[(?:[^\]]*)\]\s*\[[^\]]*/([A-Z]+)\]:?\s*(.*)$`)
+
+// exceptionLine is an exception's own line: "java.lang.NoSuchMethodError: …". It
+// outranks even an ERROR, because Minecraft's error line is a headline ("Encountered
+// an unexpected exception") and this is the news underneath it.
+var exceptionLine = regexp.MustCompile(`^([A-Za-z_$][\w$]*\.)*[A-Za-z0-9_$]*(Exception|Error)\b`)
+
+// severity ranks a line: an exception outranks an ERROR, which outranks any number of
+// warnings, and a line with no recognisable level sits between the two — it might be
+// a stack frame of the error above it, or it might be noise.
+func severity(line string) (rank int) {
+	if exceptionLine.MatchString(withoutLevel(line)) {
+		return 4
+	}
+	if m := logLine.FindStringSubmatch(line); m != nil {
+		switch strings.ToUpper(m[1]) {
+		case "FATAL", "ERROR":
+			return 3
+		case "WARN", "WARNING":
+			return 1
+		default:
+			return 0
+		}
+	}
+	switch {
+	case loadBearing.MatchString(line):
+		return 2
+	default:
+		return 0
+	}
+}
+
+// withoutLevel strips the "[12:34:56] [main/ERROR]: " prefix: it is the same on every
+// line, and the message is the point.
+func withoutLevel(line string) string {
+	if m := logLine.FindStringSubmatch(line); m != nil && m[2] != "" {
+		return strings.TrimSpace(m[2])
+	}
+	if i := strings.Index(line, "]: "); strings.HasPrefix(line, "[") && i > 0 && i < 60 {
+		return strings.TrimSpace(line[i+3:])
+	}
+	return line
+}
+
 // loadBearing is the line that answers "why" by itself: an exception class, a mod
 // resolution failure, a refusal. The first of these is the summary, because
 // "Encountered an unexpected exception" is a headline and the next line is the news.
@@ -68,7 +114,15 @@ var whyCommand = fmt.Sprintf(`tail -n %[1]d /opt/minecraft/logs/latest.log 2>/de
 // It returns the one-line reason, so a caller that is about to write its own
 // lastError can keep both ("provisioning timed out after 15m0s: Mod resolution
 // failed") instead of overwriting the answer with the symptom.
-func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why string) string {
+func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why string, crash bool) string {
+	// "crash" is reserved for the terminal path — the timeout, the dead-RCON
+	// transition — because a server that is merely slow boots twenty seconds after a
+	// slow-boot report and the panel should not have said it died. Everything earlier
+	// is a `why`: what the log is saying while we wait.
+	kind := "why"
+	if crash {
+		kind = "crash"
+	}
 	if o.deps.Remote == nil || st.VPSID == "" {
 		return ""
 	}
@@ -79,7 +133,7 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	// two different questions, and the answer to the first says nothing about the
 	// second. Keying on the state also keeps the provisioning budget from being spent
 	// by the time the server is up.
-	key := st.VPSID + "@" + string(st.State)
+	key := st.VPSID + "@" + string(st.State) + "@" + kind
 	if seen, _ := o.store.MetaGet("why_reported"); seen == key {
 		// Already asked on this box. Answer from what was learned then, so a caller
 		// that reports a later symptom (the timeout) can still carry the cause.
@@ -123,8 +177,12 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 	}
 	_ = o.store.MetaSet("why_reported", key)
 
-	o.log.Error("the server says why", "host", st.TailnetHost, "why", summary)
-	_ = o.store.Log("crash", "%s: %s\n%s", why, summary, detail)
+	if crash {
+		o.log.Error("the server says why", "host", st.TailnetHost, "why", summary)
+	} else {
+		o.log.Warn("the server's log says", "host", st.TailnetHost, "why", summary)
+	}
+	_ = o.store.Log(kind, "%s: %s\n%s", why, summary, detail)
 	_ = o.store.MetaSet("why_summary", summary)
 	return summary
 }
@@ -137,32 +195,31 @@ func (o *Orchestrator) reportWhy(ctx context.Context, st store.ServerState, why 
 // a second SSH session.
 func distill(raw string) (summary, detail string) {
 	var kept []string
-	summary = ""
+	best, bestRank := "", 0
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimRight(line, "\r")
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		if trimmed == "" || !interesting.MatchString(line) {
 			continue
 		}
-		if !interesting.MatchString(line) {
-			continue
-		}
-		// Strip the "[20:26:49] [main/ERROR]: " prefix Minecraft puts in front of
-		// everything: it is the same on every line and the message is the point.
-		if i := strings.Index(trimmed, "]: "); strings.HasPrefix(trimmed, "[") && i > 0 && i < 60 {
-			trimmed = strings.TrimSpace(trimmed[i+3:])
-		}
-		if summary == "" && loadBearing.MatchString(trimmed) {
-			summary = trimmed
+		rank := severity(line)
+		trimmed = withoutLevel(trimmed)
+		// The summary is the most severe line, not the first one that matched a word:
+		// a benign "Mod x isn't compatible with Loader's extended semantic version
+		// format" warning must not outrank the ERROR with the stack trace in it, and a
+		// warning is not a reason to report a crash at all.
+		if rank > bestRank && (rank >= 3 || (rank == 2 && loadBearing.MatchString(trimmed))) {
+			best, bestRank = trimmed, rank
 		}
 		kept = append(kept, trimmed)
 	}
+	summary = best
 	if len(kept) == 0 {
 		return "", ""
 	}
 	if summary == "" {
 		// Nothing stood out: the first thing the log complained about is the best
-		// available answer.
+		// available answer, and the caller decides whether it is worth an event.
 		summary = kept[0]
 	}
 	detail = truncate(strings.Join(kept, "\n"), whyKeep)

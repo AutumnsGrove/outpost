@@ -704,7 +704,7 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 	if elapsed := o.now().Sub(st.StartedAt); elapsed > o.cfg.Server.ProvisionTimeout.Std() {
 		o.log.Error("provisioning timed out", "id", st.VPSID, "elapsed", elapsed)
 		reason := fmt.Sprintf("provisioning timed out after %s", elapsed.Round(time.Second))
-		if summary := o.reportWhy(ctx, st, reason); summary != "" {
+		if summary := o.reportWhy(ctx, st, reason, true); summary != "" {
 			// The log's answer beats the symptom: "timed out" alone is what this
 			// session spent fifteen minutes learning nothing from.
 			reason += ": " + summary
@@ -734,7 +734,7 @@ func (o *Orchestrator) tickProvisioning(ctx context.Context, st store.ServerStat
 		// after a session that never came up), and the once-per-VPS guard inside
 		// reportWhy is what stops it repeating.
 		if misses >= 6 {
-			o.reportWhy(ctx, st, "the server never answered RCON while provisioning")
+			o.reportWhy(ctx, st, "the server has not answered RCON yet; it is still booting", false)
 		}
 		return nil
 	}
@@ -798,7 +798,7 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 		o.log.Warn("rcon probe failed", "host", st.TailnetHost, "attempt", failures, "err", probeErr)
 
 		if failures >= whyAfterFailures {
-			if summary := o.reportWhy(ctx, st, "the server stopped answering RCON"); summary != "" {
+			if summary := o.reportWhy(ctx, st, "the server stopped answering RCON", false); summary != "" {
 				// The hero shows lastError, so the reason a player was kicked belongs
 				// there and not only in the event trail.
 				st.LastError = truncate("the server stopped answering RCON: "+summary, 240)
