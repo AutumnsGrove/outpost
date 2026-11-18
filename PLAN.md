@@ -1020,3 +1020,53 @@ that came up twenty seconds later is the same dishonesty as showing nothing.
 
 The lesson generalises past this feature: a report is only worth having if it is right about
 *when* as well as *what*.
+
+### 46. The tree chopper is in the profile, not the pack
+
+The ask was two server-side mods — fell a tree from one log, and clear the leaves right
+after — with no client install. "Server-side only" is not a jar property that Fabric
+enforces; it is a claim about where the work happens, so the evidence has to be the code
+that does it, not the tag:
+
+- **FallingTree** mixes into `AbstractBlockMixin` and `LevelMixin`;
+  **Leaves Us In Peace** mixes into `ServerLevel`, `WorldChunk`, `PackedTicks`,
+  `SerializableChunkData` and `LeavesBlock`. Neither jar ships a `client` mixin group, so
+  a vanilla client connects to a server that has them and sees logs and leaves vanish.
+- The alternatives lost on different grounds: Leaves Be Gone is `client_side: required`
+  and drags `puzzles-lib` and `forge-config-api-port` with it; Modern Leaf Decay never got
+  a 26.3 build; Server Tree Feller is 17 KB and 17K downloads with no source or issue
+  tracker; Tree Harvester does both jobs in one jar but is all-rights-reserved and wants
+  `collective` beside it. It stays the answer if the two-jar pair ever misbehaves.
+
+Then the judge call: the mods went into the **profile**, not the pack. Patching a `.mrpack`
+is the right shape on paper, and one was built and fetched to prove the manifest accepts
+it, but it is not the deployed path —
+`pack fetch` reads Modrinth, and `pruneLocal` (`internal/pack/download.go:194`) deletes
+anything under `mods/` a fetch did not write, which is the same code that stops two
+versions of one mod from coexisting. So there is no place a jar can be dropped that a
+fetch will respect, and the jars were added to a copy of the working directory
+(`data/packs/fo-26-3-trees`) and published with `--profile fabulously-optimized-26-3`.
+
+`--profile` is load-bearing, and not for tidiness. A pack's profile id comes from
+`pack.json`'s slug, so a fresh fetch names `fabulously-optimized` while the live profile is
+`fabulously-optimized-26-3`: the default would have created a second profile with a second,
+empty world. Keeping the same profile is also what makes `SamePack` — source and slug —
+hold the world, so the publish was an update and never a question about the world.
+
+What was *not* done, on purpose: publishing the fresh fetch, which is 16 mods, over a
+profile that runs 47. That fetch is what PLAN 42 correctly produces from Fabulously
+Optimized — 36 of its 50 files are `server_side: unsupported` — but this profile predates
+that drop, so publishing it would have pruned 31 jars from a server that was working. The
+request was two mods; a cleanup wearing the same commit is how a pleasant evening becomes
+an afternoon of bisecting a modpack. The corollary is uncomfortable and stated rather than
+hidden: `data/packs/fo-26-3` is not the source of truth for what the server runs, only R2
+and the published profile are.
+
+The debt: nothing in the repository reproduces this. The two jars exist in R2 and in one
+directory on the Potato, and the next `pack fetch` deletes them. Issue #59 is the fix —
+`pack fetch --extra` resolving the mods per Minecraft version and writing them into the
+manifest with `env.client: unsupported` — and until it lands, the rule for the next
+Fabulously Optimized beta is *re-merge*, not *refetch*.
+
+Verified on a real session rather than by inference: trees fell from one log, the canopy
+cleared seconds later, and the client was stock Fabulously Optimized.
