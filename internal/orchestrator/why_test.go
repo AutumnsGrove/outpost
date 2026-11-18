@@ -477,3 +477,50 @@ func TestTheTimeoutKeepsAnAnswerTheBoxAlreadyGave(t *testing.T) {
 		t.Fatalf("the timeout threw away a cause we already had: %q", st.LastError)
 	}
 }
+
+// The leak review found: a cause found while booting must not be blamed for a death
+// hours later, on the same box. Nothing about a boot warning is true of an OOM kill.
+func TestABootCauseIsNotBlamedForALaterDeath(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.o.Start(context.Background(), "eu", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.probeErr = errors.New("never comes up")
+	h.remote.out = slowBootLog
+	for i := 0; i < 6; i++ {
+		h.tick(t) // records the boot-time cause
+	}
+
+	// It comes up after all and somebody is playing, so the idle clock does not end
+	// the session underneath the test.
+	h.probeErr = nil
+	h.players = 1
+	h.tick(t)
+	if got := h.mustState(t); got != store.Running {
+		t.Fatalf("state = %s, want RUNNING", got)
+	}
+	h.clock = h.clock.Add(2 * time.Hour)
+	h.tick(t)
+
+	// Then it dies, and the log cannot be read.
+	h.probeErr = errors.New("connection refused")
+	h.remote.err = errors.New("ssh: no route to host")
+	for i := 0; i < 20; i++ {
+		h.tick(t)
+		if h.mustState(t) != store.Running {
+			break
+		}
+	}
+
+	st, err := h.store.GetState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(st.LastError, "dev_isxander_sdl") || strings.Contains(st.LastError, "semantic version") {
+		t.Fatalf("a boot warning was blamed for a death: %q", st.LastError)
+	}
+	// And a death is a crash even when the log could not be fetched.
+	if crashes := eventsOfKind(t, h, "crash"); len(crashes) == 0 {
+		t.Fatal("a death with an unreadable log logged no crash")
+	}
+}
