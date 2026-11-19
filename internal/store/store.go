@@ -47,6 +47,14 @@ type ServerState struct {
 	StartedAt time.Time
 	IdleSince time.Time
 
+	// IdleExtensionSec is how long this session's empty period lasts when the
+	// page's "keep it up" button has asked for more than the configured grace +
+	// timeout. Zero means the usual clock. It is session state and not config on
+	// purpose: Reset wipes it with everything else, so an extension cannot be
+	// inherited by the next start, which is the whole difference between a hold
+	// and a sticky setting.
+	IdleExtensionSec int64
+
 	// Profile is the pack+world pair this session booted, recorded at rent time so
 	// the shutdown upload lands in the same place the boot pulled from even if the
 	// active profile is switched an hour later.
@@ -125,6 +133,7 @@ func Open(path string) (*Store, error) {
 // ADD COLUMN with a non-null default is instant and rewrites no rows.
 var addedColumns = []struct{ table, column, ddl string }{
 	{"server_state", "profile", `ALTER TABLE server_state ADD COLUMN profile TEXT NOT NULL DEFAULT ''`},
+	{"server_state", "idle_extension_sec", `ALTER TABLE server_state ADD COLUMN idle_extension_sec INTEGER NOT NULL DEFAULT 0`},
 	{"sessions", "hourly_rate", `ALTER TABLE sessions ADD COLUMN hourly_rate REAL NOT NULL DEFAULT 0`},
 }
 
@@ -271,11 +280,11 @@ func (s *Store) GetState() (ServerState, error) {
 	err := s.db.QueryRow(`
 		SELECT state, vps_id, vps_ip, tailnet_host, region, server_type,
 		       rcon_password, started_at, idle_since, players, dns_value,
-		       last_error, updated_at, profile
+		       last_error, updated_at, profile, idle_extension_sec
 		  FROM server_state WHERE id = 1`).
 		Scan(&st.State, &st.VPSID, &st.VPSIP, &st.TailnetHost, &st.Region,
 			&st.ServerType, &st.RCONPassword, &started, &idle, &st.Players,
-			&st.DNSValue, &st.LastError, &updated, &st.Profile)
+			&st.DNSValue, &st.LastError, &updated, &st.Profile, &st.IdleExtensionSec)
 	if err != nil {
 		return st, fmt.Errorf("read state: %w", err)
 	}
@@ -300,11 +309,12 @@ func (s *Store) SetState(st ServerState) error {
 			state = ?, vps_id = ?, vps_ip = ?, tailnet_host = ?, region = ?,
 			server_type = ?, rcon_password = ?, started_at = ?, idle_since = ?,
 			players = ?, dns_value = ?, last_error = ?, updated_at = ?,
-			profile = ?
+			profile = ?, idle_extension_sec = ?
 		 WHERE id = 1`,
 		string(st.State), st.VPSID, st.VPSIP, st.TailnetHost, st.Region,
 		st.ServerType, st.RCONPassword, stamp(st.StartedAt), stamp(st.IdleSince),
-		st.Players, st.DNSValue, st.LastError, stamp(st.UpdatedAt), st.Profile)
+		st.Players, st.DNSValue, st.LastError, stamp(st.UpdatedAt), st.Profile,
+		st.IdleExtensionSec)
 	if err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}

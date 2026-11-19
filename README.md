@@ -86,9 +86,13 @@ goes there. The two timings worth knowing:
 |---|---|---|
 | `server.idle_grace` | `10m` | empty before the state flips to `IDLE` |
 | `server.idle_timeout` | `20m` | extra empty time before the server dies |
+| `server.max_extend` | `12h` | the longest one session may be kept up on purpose |
 
 Thirty minutes total after the last logout, so a quick AFK drop does not cost you a
-three-minute rebuild.
+three-minute rebuild. When that is not enough — playing before work, somebody else
+due in the afternoon — the hero has a **keep it up** stepper: pick the hours, press
+once, and this session stays up that long after the last player leaves. The next
+start is back to thirty minutes; the hold is session state and is wiped with it.
 
 ## Commands
 
@@ -105,6 +109,7 @@ outpost world delete <id>  # move a world to trash/, where it waits 14 days
 outpost pack delete <id>   # remove a profile: its world, backups and files
 outpost start [region]   # rent a server (default region: eu; --type for the plan)
 outpost stop             # save the world, delete the server
+outpost extend 6h        # keep this session up 6h after the last player leaves (off for usual)
 outpost status           # what it is doing, and what it has cost
 outpost update           # ask the host watcher for the newest image — see "Deploying"
 outpost tick             # one reconcile pass, for cron

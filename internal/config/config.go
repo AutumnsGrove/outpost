@@ -65,6 +65,12 @@ type Server struct {
 	IdleGrace   Duration `yaml:"idle_grace"`
 	IdleTimeout Duration `yaml:"idle_timeout"`
 
+	// MaxExtend is the longest a single session may be kept up with nobody on it
+	// when somebody asks for more than IdleGrace + IdleTimeout. The page's button
+	// and `outpost extend` both refuse beyond it and name it, because a hold with
+	// no ceiling is a typo away from a month of billing.
+	MaxExtend Duration `yaml:"max_extend"`
+
 	// ProvisionTimeout is how long to wait for RCON to answer before deciding
 	// the VPS is a lemon and tearing it down.
 	ProvisionTimeout Duration `yaml:"provision_timeout"`
@@ -202,6 +208,13 @@ func (c *Config) applyDefaults() {
 	if c.Server.IdleTimeout == 0 {
 		c.Server.IdleTimeout = Duration(20 * time.Minute)
 	}
+	if c.Server.MaxExtend == 0 {
+		// Twelve hours is a working day plus slack: long enough to play before
+		// work and hand the evening to somebody else, short enough that a
+		// forgotten session cannot reach tomorrow's. At €0.0096/h the whole cap
+		// is about 12 cents, so the ceiling exists to bound a mistake, not a bill.
+		c.Server.MaxExtend = Duration(12 * time.Hour)
+	}
 	if c.Server.ProvisionTimeout == 0 {
 		c.Server.ProvisionTimeout = Duration(15 * time.Minute)
 	}
@@ -271,6 +284,7 @@ func (c *Config) Validate() error {
 	for name, d := range map[string]Duration{
 		"server.idle_grace":        c.Server.IdleGrace,
 		"server.idle_timeout":      c.Server.IdleTimeout,
+		"server.max_extend":        c.Server.MaxExtend,
 		"server.provision_timeout": c.Server.ProvisionTimeout,
 		"server.tick_interval":     c.Server.TickInterval,
 	} {
@@ -283,6 +297,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.RCONFailureLimit < 1 {
 		return fmt.Errorf("server.rcon_failure_limit must be at least 1")
+	}
+	if c.Server.MaxExtend.Std() < c.Server.IdleGrace.Std()+c.Server.IdleTimeout.Std() {
+		// The cap is the ceiling of a deliberate extension, and the usual clock is
+		// longer than it: every press would be refused, which reads as broken.
+		return fmt.Errorf("server.max_extend (%s) must be at least idle_grace + idle_timeout (%s)",
+			c.Server.MaxExtend.Std(), c.Server.IdleGrace.Std()+c.Server.IdleTimeout.Std())
 	}
 	for name, r := range c.Regions {
 		if r.Location == "" || r.ServerType == "" {

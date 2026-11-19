@@ -8,9 +8,10 @@
 	import Play from '@lucide/svelte/icons/play';
 	import Power from '@lucide/svelte/icons/power';
 	import Save from '@lucide/svelte/icons/save';
+	import Timer from '@lucide/svelte/icons/timer';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import X from '@lucide/svelte/icons/x';
-	import { bytes, ago, duration, euros, mmss, type Overview } from './api';
+	import { bytes, ago, clock, duration, euros, mmss, type Overview } from './api';
 
 	let {
 		o,
@@ -20,7 +21,8 @@
 		installing,
 		plan = $bindable(''),
 		onstart,
-		onstop
+		onstop,
+		onkeep
 	}: {
 		o: Overview;
 		elapsed: number;
@@ -32,6 +34,8 @@
 		plan: string;
 		onstart: () => void;
 		onstop: () => void;
+		/** Keep this session up for this many seconds after the last player leaves. */
+		onkeep: (seconds: number) => void;
 	} = $props();
 
 	const s = $derived(o.status);
@@ -84,7 +88,31 @@
 
 	const typical = 240;
 	const timeout = $derived(o.health.provisionTimeoutSeconds || 900);
-	const idleTotal = $derived(s.idleGraceSeconds + s.idleLimitSeconds);
+	// What a session shuts down after if nobody touches this control.
+	const usual = $derived(s.idleGraceSeconds + s.idleLimitSeconds);
+
+	// The hold in force. Zero is the configured clock, and that is the whole
+	// difference between a hold and a setting: nothing here outlives the session.
+	const ext = $derived(o.extend);
+	const held = $derived(ext.seconds > 0);
+	const heldLabel = $derived(duration(ext.seconds));
+	const capHours = $derived(Math.max(1, Math.round(ext.capSeconds / 3600)));
+	// The progress bar has to be measured against the window actually in force,
+	// or a held server would draw as a bar that emptied hours ago.
+	const idleTotal = $derived(Math.max(usual, ext.seconds));
+
+	// The stepper's draft, in hours, until the button is pressed. It follows the
+	// daemon only when the hold itself changed: a poll that landed mid-step must
+	// not yank the number out from under the finger.
+	let hours = $state(2);
+	let synced = $state(-1);
+	$effect(() => {
+		if (ext.seconds !== synced) {
+			synced = ext.seconds;
+			hours = ext.seconds > 0 ? Math.round(ext.seconds / 3600) : Math.min(2, capHours);
+		}
+	});
+	const ask = $derived(hours * 3600);
 </script>
 
 <section class="hero {s.state.toLowerCase()}" aria-labelledby="hero-title">
@@ -148,7 +176,15 @@
 			{/if}
 			<p class="sub">
 				{#if s.players > 0}
-					Shuts down {duration(idleTotal)} after the last player leaves.
+					{#if held}
+						Kept up for <span class="num">{heldLabel}</span> after the last player leaves, instead of {duration(
+							usual
+						)}.
+					{:else}
+						Shuts down {duration(usual)} after the last player leaves.
+					{/if}
+				{:else if held}
+					The idle clock is running: <span class="num">{duration(ttl)}</span> left of the {heldLabel} hold.
 				{:else}
 					The idle clock is running: <span class="num">{duration(ttl)}</span> until it saves and
 					deletes itself.
@@ -159,7 +195,11 @@
 		<div class="copy">
 			<p class="eyebrow"><Moon aria-hidden="true" />Idle · nobody playing</p>
 			<h2 id="hero-title">
-				Shutting down in <span class="clock num">{mmss(ttl)}</span>
+				{#if held && ext.until}
+					Up until about <span class="clock num">{clock(ext.until)}</span>
+				{:else}
+					Shutting down in <span class="clock num">{mmss(ttl)}</span>
+				{/if}
 			</h2>
 			<div
 				class="track drain"
@@ -172,7 +212,13 @@
 				<i style="width: {Math.min(100, (ttl / idleTotal) * 100)}%"></i>
 			</div>
 			<p class="sub">
-				Empty for {duration(s.idleSeconds + elapsed)}. Someone joining resets the clock.
+				Empty for {duration(s.idleSeconds + elapsed)}.
+				{#if held}
+					Kept up for {heldLabel} — the usual {duration(usual)} would have saved and shut it down by
+					now.
+				{:else}
+					Someone joining resets the clock.
+				{/if}
 			</p>
 		</div>
 	{:else if s.state === 'TERMINATING'}
@@ -267,6 +313,51 @@
 
 	{#if planNote}
 		<p class="plannote" role="status">{planNote}</p>
+	{/if}
+
+	{#if ['RUNNING', 'IDLE'].includes(s.state)}
+		<div class="keep" data-held={held}>
+			<div class="keep-copy">
+				<span class="keep-title"><Timer aria-hidden="true" />Keep it up</span>
+				<span class="keep-hint">
+					{#if held && ext.until}
+						Now {heldLabel} after the last player leaves, so about {clock(ext.until)}.
+					{:else if held}
+						Now {heldLabel} after the last player leaves.
+					{:else}
+						This session only — a new start goes back to {duration(usual)}.
+					{/if}
+				</span>
+			</div>
+			<div class="stepper" role="group" aria-label="Hours to keep the server up">
+				<button
+					type="button"
+					aria-label="One hour less"
+					disabled={hours <= 1 || pending !== null}
+					onclick={() => (hours = Math.max(1, hours - 1))}>−</button
+				>
+				<output class="num" aria-live="polite">{hours}h</output>
+				<button
+					type="button"
+					aria-label="One hour more"
+					disabled={hours >= capHours || pending !== null}
+					onclick={() => (hours = Math.min(capHours, hours + 1))}>+</button
+				>
+			</div>
+			<button
+				class="btn primary small"
+				onclick={() => onkeep(ask)}
+				disabled={pending !== null || (held && ask === ext.seconds)}
+				aria-busy={pending === 'extend'}
+			>
+				{pending === 'extend' ? 'Holding…' : held && ask === ext.seconds ? 'Held' : `Keep up ${hours}h`}
+			</button>
+			{#if held}
+				<button class="btn quiet small" onclick={() => onkeep(0)} disabled={pending !== null}>
+					Usual clock
+				</button>
+			{/if}
+		</div>
 	{/if}
 
 	{#if ['RUNNING', 'IDLE', 'PROVISIONING'].includes(s.state)}
@@ -455,6 +546,80 @@
 		font-size: 0.85rem;
 		color: var(--clay);
 	}
+	/* Keeping a dead-empty server alive is a deliberate exception to the whole
+	   premise, so it reads as a quiet aside with a live state, not a third
+	   primary action competing with Start and Stop. */
+	.keep {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.6rem 0.8rem;
+		padding: 0.6rem 0.7rem;
+		border: 1px dashed var(--line);
+		border-radius: 12px;
+		background: color-mix(in srgb, var(--gold) 4%, transparent);
+	}
+	.keep[data-held='true'] {
+		border-style: solid;
+		border-color: color-mix(in srgb, var(--gold) 42%, transparent);
+		background: color-mix(in srgb, var(--gold) 9%, transparent);
+	}
+	.keep-copy {
+		display: grid;
+		gap: 0.1rem;
+		margin-right: auto;
+		min-width: 0;
+	}
+	.keep-title {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-weight: 600;
+		font-size: 0.92rem;
+	}
+	.keep[data-held='true'] .keep-title {
+		color: var(--gold);
+	}
+	.keep-hint {
+		color: var(--dim);
+		font-size: 0.83rem;
+	}
+	/* One target per press, 44px tall like every other button on the page. */
+	.stepper {
+		display: flex;
+		align-items: stretch;
+		border: 1px solid var(--line);
+		border-radius: 10px;
+		overflow: hidden;
+		background: var(--bg-glow);
+	}
+	.stepper button {
+		min-width: 44px;
+		min-height: 44px;
+		border: 0;
+		background: transparent;
+		color: var(--text);
+		font-size: 1.15rem;
+		line-height: 1;
+	}
+	.stepper button:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--moss) 16%, transparent);
+		color: var(--moss);
+	}
+	.stepper button:disabled {
+		opacity: 0.35;
+		cursor: not-allowed;
+	}
+	.stepper output {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 3.6rem;
+		font-weight: 650;
+		font-variant-numeric: tabular-nums;
+		border-left: 1px solid var(--line-soft);
+		border-right: 1px solid var(--line-soft);
+	}
 	.facts {
 		display: flex;
 		flex-wrap: wrap;
@@ -482,6 +647,15 @@
 		}
 		.actions .btn {
 			flex: 1 1 100%;
+		}
+		.keep-copy {
+			margin-right: 0;
+		}
+		.keep .stepper {
+			flex: 1 1 8rem;
+		}
+		.keep .btn {
+			flex: 1 1 6rem;
 		}
 	}
 </style>

@@ -43,6 +43,12 @@ server:
   # Total time billed after the last player logs off is idle_grace + idle_timeout.
   idle_grace: "10m"           # empty -> IDLE
   idle_timeout: "20m"         # IDLE -> TERMINATING
+  # The longest this session can be kept up with nobody on it when somebody presses
+  # "keep it up" on the page (or runs `outpost extend 6h`). Measured from the last
+  # player leaving, and it replaces the total above rather than adding to it. 12h
+  # because the day it exists for is "played before work, friend plays after"; at
+  # €0.0096/h the whole cap is about 12 cents, so this bounds a mistake, not a bill.
+  max_extend: "12h"
   provision_timeout: "15m"    # give up on a VPS that never answers RCON
   tick_interval: "20s"
   rcon_failure_limit: 15      # consecutive failed probes before a live server

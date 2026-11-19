@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -78,6 +79,7 @@ func rootCmd() *cobra.Command {
 		a.serveCmd(),
 		a.startCmd(),
 		a.stopCmd(),
+		a.extendCmd(),
 		a.statusCmd(),
 		a.tickCmd(),
 		a.resetCmd(),
@@ -293,6 +295,44 @@ func (a *app) stopCmd() *cobra.Command {
 	}
 }
 
+// extendCmd is the page's button from a shell. It is here because every other
+// verb is: a control that exists only in a browser tab is a control you cannot
+// reach from the machine that is actually running the thing.
+func (a *app) extendCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "extend <duration|off>",
+		Short: "Keep the server up with nobody on it, this session only",
+		Long: "Keeps the current session alive with nobody playing for the given duration\n" +
+			"(6h, 90m), measured from the last player leaving. `off` goes back to the\n" +
+			"configured idle clock. It is not sticky: the next start is normal again.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			defer a.store.Close()
+
+			var d time.Duration
+			switch strings.ToLower(args[0]) {
+			case "off", "none", "0":
+			default:
+				parsed, err := time.ParseDuration(args[0])
+				if err != nil {
+					return fmt.Errorf("read %q as a duration: %w (try 6h, 90m, or off)", args[0], err)
+				}
+				d = parsed
+			}
+
+			if err := a.orch.Extend(cmd.Context(), d); err != nil {
+				return err
+			}
+			if d <= 0 {
+				fmt.Println("back to the usual idle clock")
+				return nil
+			}
+			fmt.Printf("kept up for %s after the last player leaves\n", d.Round(time.Minute))
+			return nil
+		},
+	}
+}
+
 func (a *app) statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
@@ -322,6 +362,14 @@ func (a *app) statusCmd() *cobra.Command {
 			}
 			if st.TTLSec > 0 {
 				fmt.Printf("shuts down  in %s\n", (time.Duration(st.TTLSec) * time.Second).Round(time.Second))
+			}
+			if ext, err := a.orch.ExtendInfo(); err == nil && ext.Seconds > 0 {
+				fmt.Printf("kept up     %s after the last player leaves (most allowed %s)\n",
+					(time.Duration(ext.Seconds) * time.Second).Round(time.Minute),
+					(time.Duration(ext.CapSeconds) * time.Second).Round(time.Minute))
+				if ext.Until != "" {
+					fmt.Printf("until       %s\n", ext.Until)
+				}
 			}
 			if st.LastError != "" {
 				fmt.Printf("last error  %s\n", st.LastError)

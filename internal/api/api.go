@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"outpost/internal/orchestrator"
 	"outpost/internal/pack"
@@ -247,6 +248,10 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request, raw []byte) {
 		// Type is the plan the Start button rents. It is remembered, so the next
 		// start — from the page or the CLI — rents the same one.
 		Type string `json:"type"`
+		// Seconds is what the extend button asks for, and zero means "back to the
+		// usual clock". A number of seconds rather than "6h" because the stepper
+		// already counts in hours and a duration string would only be parsed back.
+		Seconds int64 `json:"seconds"`
 	}
 	_ = json.Unmarshal(raw, &body)
 
@@ -271,12 +276,39 @@ func (s *Server) action(w http.ResponseWriter, r *http.Request, raw []byte) {
 			"message": "saving the world and deleting the server",
 		})
 
+	case "extend":
+		d := time.Duration(body.Seconds) * time.Second
+		if err := s.orch.Extend(ctx, d); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		// The reply stays in durations and the page turns the deadline into a
+		// clock time locally: the daemon's idea of a time zone is not the
+		// reader's, and "up until 16:40" must mean the 16:40 in the room.
+		if d <= 0 {
+			writeJSON(w, http.StatusOK, map[string]string{"message": "back to the usual idle clock"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{
+			"message": "kept up for " + shortDuration(d) + " after the last player leaves",
+		})
+
 	case "update":
 		s.updateFromPage(ctx, w)
 
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown action"})
 	}
+}
+
+// shortDuration is a button-sized duration: "6h0m0s" trimmed to "6h".
+func shortDuration(d time.Duration) string {
+	if d >= time.Minute {
+		d = d.Round(time.Minute)
+	} else {
+		d = d.Round(time.Second)
+	}
+	return d.String()
 }
 
 // updateFromPage asks the host watcher for the newest image.

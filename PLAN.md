@@ -1070,3 +1070,53 @@ Fabulously Optimized beta is *re-merge*, not *refetch*.
 
 Verified on a real session rather than by inference: trees fell from one log, the canopy
 cleared seconds later, and the client was stock Fabulously Optimized.
+
+## Decisions from the keep-it-up branch (2026-11-19)
+
+### 47. A hold is session state, and it is measured from the last player out
+
+The premise is that the server bills only while somebody is playing, and the 30-minute
+idle clock is the mechanism. That mechanism is wrong on exactly the days it matters: an
+hour before work and a friend with the afternoon free is a nine-hour gap with nobody on
+it, and the buttons that could bridge it live behind a page nobody is sitting in front of.
+Issue #61 asked for a way to extend the window from the page; issue #13 had already specced
+the same idea in-game and named the Fabric jar as the expensive part. This is #13's page
+half, built first.
+
+**A hold is session state, not configuration.** It lives on `server_state`
+(`idle_extension_sec`) and `finalize` → `store.Reset` wipes it with everything else, so the
+next start is 30 minutes again without anyone remembering a rule. "Not sticky" is then not
+a promise the UI makes, it is what the schema does. Persisting it in the row rather than in
+memory is deliberate: a daemon restart mid-session must not quietly take a server down
+early.
+
+**It replaces the total, and it is measured from the last player out.** Pressing it during
+`RUNNING` with people on sets the limit the *next* empty period gets — that is the whole
+workflow, because the thing you cannot do from work is press it after you have gone. Pressing
+it during `IDLE` raises the limit for the period already counting and does **not** reset
+`IdleSince`: a 6h hold pressed at hour five of six does not buy a fresh six, because the
+clock it is promising is the one the page is showing. An extension shorter than the empty
+time already run would terminate the server on the next tick, so it is refused rather than
+obeyed — a shorter hold must never be a faster shutdown.
+
+**The ceiling exists to bound a mistake, not a bill.** `server.max_extend`, 12h, because
+the scenario that motivated this needs nine. Twelve idle hours on a cx23 is €0.12: the
+whole cap is about a tenth of a normal evening and cheaper than the four-minute boot that
+follows a shutdown. A forgotten server costs €0.23 a day, which is survivable; a server
+that went away while somebody was loading in is the failure worth designing against. So the
+guard is surprise, not money: the hero says the deadline as a clock time, and the events
+table gets an `extend` row so "why is this still billing" has an answer that is not a log
+file.
+
+**The readout is not in `/api/status`.** The first attempt added three fields there and
+`TestStatusKeepsTheShapeMeridianReads` failed within a second, which is what it is for.
+Status is pinned to the shape another service reads; `Status.TTLSec` already carries the
+extension for anyone who only wants the countdown, so the page's control reads
+`overview.extend` (`{seconds, capSeconds, until}`) and `internal/orchestrator` keeps the one
+copy of the limit rule in `idleLimit`, used by `Tick`, `Status` and `ExtendInfo` alike.
+`outpost extend 6h` / `outpost extend off` exist because every other control does: a button
+only in a browser tab is unreachable from the machine running the thing.
+
+Deliberately not done: the in-game command surface (#13) and its per-session token, and any
+form of absolute "until 16:00" hold. The relative form is one number and one subtraction;
+the page is free to render the deadline it implies, and does.
