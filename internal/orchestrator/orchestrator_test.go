@@ -421,6 +421,142 @@ func TestFullLifecycleStartsIdlesAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestExtendKeepsTheServerUpAfterTheLastPlayerLeaves(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.players = 2
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t) // RCON answers, so this pass lands in RUNNING with people on
+	if got := h.mustState(t); got != store.Running {
+		t.Fatalf("state = %s, want RUNNING", got)
+	}
+
+	// Pressing it while people are still playing is the point: the plan is to log
+	// off afterwards, and the button is for before you go.
+	if err := h.o.Extend(ctx, 6*time.Hour); err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	st, _ := h.store.GetState()
+	if want := int64((6 * time.Hour).Seconds()); st.IdleExtensionSec != want {
+		t.Fatalf("extension = %ds, want %ds", st.IdleExtensionSec, want)
+	}
+	if !st.IdleSince.IsZero() {
+		t.Fatalf("extending must not start or reset the idle clock, got %s", st.IdleSince)
+	}
+	// Before the last player leaves there is no deadline to show, only a promise.
+	if ext, err := h.o.ExtendInfo(); err != nil || ext.Until != "" {
+		t.Fatalf("deadline while people are on = %q (%v), want empty", ext.Until, err)
+	}
+
+	// Everybody leaves.
+	h.players = 0
+	h.tick(t)
+	if ext, _ := h.o.ExtendInfo(); ext.Until == "" {
+		t.Fatal("the extended clock is running and there is no deadline to show")
+	}
+
+	// Half an hour in, the usual clock would have taken it down. It is still up.
+	h.clock = h.clock.Add(31 * time.Minute)
+	h.tick(t)
+	if got := h.mustState(t); got != store.Idle {
+		t.Fatalf("state 31m after the last logout = %s, want IDLE", got)
+	}
+
+	// Nearly six hours in, still up.
+	h.clock = h.clock.Add(5 * time.Hour)
+	h.tick(t)
+	if got := h.mustState(t); got != store.Idle {
+		t.Fatalf("state 5h31m after the last logout = %s, want IDLE", got)
+	}
+
+	// Past six hours: the extension expires into the normal path, which saves the
+	// world and deletes the server.
+	h.clock = h.clock.Add(31 * time.Minute)
+	h.tick(t)
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state past the extension = %s, want TERMINATING", got)
+	}
+	h.tick(t)
+	if got := h.mustState(t); got != store.Offline {
+		t.Fatalf("state after shutdown = %s, want OFFLINE", got)
+	}
+	if !h.remote.savedWorld() {
+		t.Fatal("a held server must still save its world before it is deleted")
+	}
+
+	// Not sticky: the row that outlived the session carries no extension, so the
+	// next start is back to the configured clock.
+	st, _ = h.store.GetState()
+	if st.IdleExtensionSec != 0 {
+		t.Fatalf("the extension survived the session: %ds", st.IdleExtensionSec)
+	}
+}
+
+func TestExtendRefusesWhatItCannotDoAndCancels(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// Nothing rented, nothing to keep up.
+	if err := h.o.Extend(ctx, time.Hour); err == nil {
+		t.Fatal("extending an offline server should be refused")
+	}
+
+	h.players = 1
+	if _, err := h.o.Start(ctx, "eu", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	h.tick(t)
+
+	// The cap is the cap, and a refusal names it rather than being mysterious.
+	if err := h.o.Extend(ctx, 13*time.Hour); err == nil || !strings.Contains(err.Error(), "12h") {
+		t.Fatalf("a 13h request should be refused naming the 12h cap, got %v", err)
+	}
+
+	// A second press replaces the first rather than adding to it.
+	if err := h.o.Extend(ctx, 2*time.Hour); err != nil {
+		t.Fatalf("extend 2h: %v", err)
+	}
+	if err := h.o.Extend(ctx, 6*time.Hour); err != nil {
+		t.Fatalf("extend 6h: %v", err)
+	}
+	if st, _ := h.store.GetState(); st.IdleExtensionSec != int64((6 * time.Hour).Seconds()) {
+		t.Fatalf("extension = %ds, want 6h: two presses added up", st.IdleExtensionSec)
+	}
+
+	// Nobody is on, and the extended clock has been running for five hours.
+	h.players = 0
+	h.tick(t)
+	h.clock = h.clock.Add(5 * time.Hour)
+	h.tick(t)
+
+	// Asking for less than has already elapsed would end the session on the very
+	// next tick, so it is refused rather than obeyed.
+	if err := h.o.Extend(ctx, 4*time.Hour); err == nil {
+		t.Fatal("an extension shorter than the empty time already run should be refused")
+	}
+	if err := h.o.Extend(ctx, 7*time.Hour); err != nil {
+		t.Fatalf("extend past what has already elapsed: %v", err)
+	}
+	if st, _ := h.store.GetState(); st.IdleExtensionSec != int64((7 * time.Hour).Seconds()) {
+		t.Fatalf("extension = %ds, want 7h", st.IdleExtensionSec)
+	}
+
+	// Off hands back to the configured clock, which this session is long past.
+	if err := h.o.Extend(ctx, 0); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if st, _ := h.store.GetState(); st.IdleExtensionSec != 0 {
+		t.Fatalf("cancel left %ds behind", st.IdleExtensionSec)
+	}
+	h.tick(t)
+	if got := h.mustState(t); got != store.Terminating {
+		t.Fatalf("state after cancelling a hold already past the usual limit = %s, want TERMINATING", got)
+	}
+}
+
 func TestWorldSaveFailureKeepsTheServerAlive(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

@@ -211,6 +211,57 @@ func TestPageEndpointsNeedTheFormToken(t *testing.T) {
 	}
 }
 
+func TestTheExtendButtonHoldsThisSessionOnly(t *testing.T) {
+	f := newFixture(t, "")
+	f.setLive(t)
+	token := f.formToken(t)
+
+	// Nothing is held yet, and the page is told what the ceiling is so the
+	// stepper cannot offer a number the daemon would refuse.
+	ext := decode(t, f.do("GET", "/api/overview", "", nil))["extend"].(map[string]any)
+	if ext["seconds"].(float64) != 0 {
+		t.Fatalf("a fresh session is already held for %v", ext["seconds"])
+	}
+	if want := float64(12 * time.Hour / time.Second); ext["capSeconds"].(float64) != want {
+		t.Fatalf("capSeconds = %v, want %v", ext["capSeconds"], want)
+	}
+
+	// Six hours, from the page.
+	body := `{"action":"extend","seconds":21600,"token":"` + token + `"}`
+	rec := f.do("POST", "/api/action", body, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("extend = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "6h") {
+		t.Fatalf("the reply does not say how long: %s", rec.Body.String())
+	}
+	if st, _ := f.store.GetState(); st.IdleExtensionSec != 21600 {
+		t.Fatalf("extension = %ds, want 6h", st.IdleExtensionSec)
+	}
+	ext = decode(t, f.do("GET", "/api/overview", "", nil))["extend"].(map[string]any)
+	if ext["seconds"].(float64) != 21600 {
+		t.Fatalf("overview extension = %v, want 21600", ext["seconds"])
+	}
+
+	// Zero is the way back to the configured clock.
+	rec = f.do("POST", "/api/action", `{"action":"extend","seconds":0,"token":"`+token+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel = %d: %s", rec.Code, rec.Body.String())
+	}
+	if st, _ := f.store.GetState(); st.IdleExtensionSec != 0 {
+		t.Fatalf("cancel left %ds behind", st.IdleExtensionSec)
+	}
+}
+
+func TestExtendIsRefusedWhenThereIsNothingToKeepUp(t *testing.T) {
+	f := newFixture(t, "")
+	token := f.formToken(t)
+	rec := f.do("POST", "/api/action", `{"action":"extend","seconds":3600,"token":"`+token+`"}`, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("extend while offline = %d, want 409", rec.Code)
+	}
+}
+
 func TestBearerTokenIsRequiredWhenConfiguredAndAcceptedWhenRight(t *testing.T) {
 	f := newFixture(t, "s3cret")
 	if rec := f.do("GET", "/api/status", "", nil); rec.Code != http.StatusUnauthorized {
