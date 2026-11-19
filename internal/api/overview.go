@@ -128,6 +128,9 @@ type overviewResponse struct {
 	// PackMemoryGB is what the active pack asks for, so the page can say why a
 	// plan is greyed out.
 	PackMemoryGB int `json:"packMemoryGb"`
+	// Extend is this session's hold: what the hero's keep-it-up control shows,
+	// and what it is allowed to ask for.
+	Extend orchestrator.Extend `json:"extend"`
 }
 
 func stamp(t time.Time) string {
@@ -303,6 +306,11 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	health := s.orch.Health()
+	extend, err := s.orch.ExtendInfo()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	out := overviewResponse{
 		Status:    statusResponse{Status: status, FormToken: s.formToken},
 		Health:    health,
@@ -314,6 +322,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		Players:   s.playersState(ctx),
 		Build:     buildInfo(),
 		CanUpdate: s.updates.Configured(),
+		Extend:    extend,
 	}
 	if s.updates.Configured() {
 		// This is also the once-a-page-load "is there anything new" question: it

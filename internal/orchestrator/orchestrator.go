@@ -43,6 +43,11 @@ const rconPort = 25575
 // wedged server before it is taken down and its world saved.
 const maxRCONFailures = 15
 
+// defaultMaxExtend is the fallback for a config that does not set
+// server.max_extend: twelve hours, which is the ceiling the page's stepper is
+// built against.
+const defaultMaxExtend = 12 * time.Hour
+
 // maxWorldSaveAttempts is how many times the shutdown path will retry the world
 // upload before giving up. Giving up leaves the VPS alive on purpose: a running
 // server you pay for is better than a deleted world.
@@ -189,6 +194,27 @@ func (o *Orchestrator) rconFailureLimit() int {
 	return maxRCONFailures
 }
 
+// extendCap is the ceiling on one deliberate extension, tolerating a config
+// built without defaults the same way rconFailureLimit does.
+func (o *Orchestrator) extendCap() time.Duration {
+	if d := o.cfg.Server.MaxExtend.Std(); d > 0 {
+		return d
+	}
+	return defaultMaxExtend
+}
+
+// idleLimit is how long the server survives with nobody on it. The configured
+// grace + timeout is the answer unless this session has been extended past it:
+// the extension replaces the total rather than adding to it, because the page
+// asks "keep it up for six hours", not "six more hours".
+func (o *Orchestrator) idleLimit(st store.ServerState) time.Duration {
+	limit := o.cfg.Server.IdleGrace.Std() + o.cfg.Server.IdleTimeout.Std()
+	if ext := time.Duration(st.IdleExtensionSec) * time.Second; ext > limit {
+		limit = ext
+	}
+	return limit
+}
+
 // Status is the snapshot the API and the CLI both render.
 type Status struct {
 	State        string  `json:"state"`
@@ -210,6 +236,22 @@ type Status struct {
 	DNSName      string  `json:"dnsName"`
 	IdleGraceSec int64   `json:"idleGraceSeconds"`
 	IdleLimitSec int64   `json:"idleLimitSeconds"`
+}
+
+// Extend is this session's hold, as the page and the shell both render it.
+//
+// It lives beside Status rather than inside it because /api/status is pinned to
+// the shape Meridian's tile reads, and adding to it is how that shape moves by
+// accident. TTLSec already reflects a hold, so a reader that only wants the
+// countdown needs nothing here.
+type Extend struct {
+	// Seconds is the hold in force, 0 for the configured clock.
+	Seconds int64 `json:"seconds"`
+	// CapSeconds is the most the button may ask for.
+	CapSeconds int64 `json:"capSeconds"`
+	// Until is when the extended empty period ends: empty unless the clock is
+	// running, because before the last player leaves there is no deadline yet.
+	Until string `json:"until"`
 }
 
 // Status reads the current state and decorates it with costs and timers.
@@ -248,8 +290,7 @@ func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 	out.SessionCost = out.HourlyRate * float64(out.UptimeSec) / 3600
 	if !st.IdleSince.IsZero() {
 		out.IdleSec = int64(o.now().Sub(st.IdleSince).Seconds())
-		limit := int64(o.cfg.Server.IdleGrace.Std().Seconds() + o.cfg.Server.IdleTimeout.Std().Seconds())
-		if remaining := limit - out.IdleSec; remaining > 0 {
+		if remaining := int64(o.idleLimit(st).Seconds()) - out.IdleSec; remaining > 0 {
 			out.TTLSec = remaining
 		}
 	}
@@ -257,6 +298,21 @@ func (o *Orchestrator) Status(ctx context.Context) (Status, error) {
 	if hours, cost, _, err := o.store.Totals(); err == nil {
 		out.TotalHours = hours
 		out.TotalCost = cost
+	}
+	return out, nil
+}
+
+// ExtendInfo is this session's hold, for the page and for `outpost status`.
+// It reads the same rule Tick does, so the countdown on the page and the
+// deadline the state machine enforces cannot disagree.
+func (o *Orchestrator) ExtendInfo() (Extend, error) {
+	st, err := o.store.GetState()
+	if err != nil {
+		return Extend{}, err
+	}
+	out := Extend{Seconds: st.IdleExtensionSec, CapSeconds: int64(o.extendCap().Seconds())}
+	if !st.IdleSince.IsZero() {
+		out.Until = st.IdleSince.Add(o.idleLimit(st)).UTC().Format(time.RFC3339)
 	}
 	return out, nil
 }
@@ -604,6 +660,68 @@ func (o *Orchestrator) lockForWrite(ctx context.Context) (func(), error) {
 	}, nil
 }
 
+// Extend keeps this session alive with nobody on it for d, or drops back to the
+// configured clock when d is zero.
+//
+// It is the page's button and `outpost extend`, and it changes exactly one
+// number: how long the empty period lasts. It never touches IdleSince, so
+// pressing it at hour five of a six-hour hold does not buy a fresh six: the
+// deadline stays measured from the last player out, which is the claim the
+// button makes. It also never survives the session — finalize resets the row, so
+// nothing inherits it (PLAN 47).
+func (o *Orchestrator) Extend(ctx context.Context, d time.Duration) error {
+	unlock, err := o.lockForWrite(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	st, err := o.store.GetState()
+	if err != nil {
+		return err
+	}
+	switch st.State {
+	case store.Running, store.Idle:
+	default:
+		return fmt.Errorf("nothing to keep up: the server is %s", st.State)
+	}
+
+	if d <= 0 {
+		if st.IdleExtensionSec == 0 {
+			return nil
+		}
+		st.IdleExtensionSec = 0
+		_ = o.store.Log("extend", "back to the usual clock")
+		return o.store.SetState(st)
+	}
+
+	if cap := o.extendCap(); d > cap {
+		return fmt.Errorf("the longest a session can be kept up is %s; asked for %s", round(cap), round(d))
+	}
+
+	// An extension shorter than the empty period already run would terminate the
+	// server on the next tick: a shorter hold must never be a faster shutdown.
+	if !st.IdleSince.IsZero() {
+		if idle := o.now().Sub(st.IdleSince); d <= idle {
+			return fmt.Errorf("nobody has been on for %s already, so %s would end the session at once; pick something longer",
+				round(idle), round(d))
+		}
+	}
+
+	st.IdleExtensionSec = int64(d.Seconds())
+	_ = o.store.Log("extend", "up for %s after the last player leaves", round(d))
+	return o.store.SetState(st)
+}
+
+// round trims a duration to a whole minute, so a message says "6h" and not
+// "6h0m0.000000001s".
+func round(d time.Duration) time.Duration {
+	if d >= time.Minute {
+		return d.Round(time.Minute)
+	}
+	return d.Round(time.Second)
+}
+
 // Stop asks for a graceful shutdown. Tick does the work.
 func (o *Orchestrator) Stop(ctx context.Context) error {
 	unlock, err := o.lockForWrite(ctx)
@@ -847,7 +965,7 @@ func (o *Orchestrator) tickLive(ctx context.Context, st store.ServerState) error
 	}
 
 	grace := o.cfg.Server.IdleGrace.Std()
-	limit := grace + o.cfg.Server.IdleTimeout.Std()
+	limit := o.idleLimit(st)
 
 	if players.Online > 0 {
 		if st.State == store.Idle {
