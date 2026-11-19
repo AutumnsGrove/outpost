@@ -19,6 +19,7 @@
 	import Save from '@lucide/svelte/icons/save';
 	import Shuffle from '@lucide/svelte/icons/shuffle';
 	import Terminal from '@lucide/svelte/icons/terminal';
+	import Timer from '@lucide/svelte/icons/timer';
 	import TimerOff from '@lucide/svelte/icons/timer-off';
 	import Trash from '@lucide/svelte/icons/trash-2';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
@@ -44,6 +45,7 @@
 		'provision-timeout': TimerOff,
 		idle: Moon,
 		'idle-limit': TimerOff,
+		extend: Timer,
 		empty: UserX,
 		resume: UserCheck,
 		player: UserRound,
@@ -255,6 +257,7 @@
 	}
 	.kind[data-kind='idle'],
 	.kind[data-kind='idle-limit'],
+	.kind[data-kind='extend'],
 	.kind[data-kind='no-capacity'] {
 		color: var(--amber);
 	}

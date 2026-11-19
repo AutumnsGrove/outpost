@@ -3,7 +3,7 @@
 	import Check from '@lucide/svelte/icons/check';
 	import Copy from '@lucide/svelte/icons/copy';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-	import { act, getOverview, type ActionKind, type Overview, type ServerState } from '$lib/api';
+	import { act, keepUp, getOverview, type ActionKind, type Overview, type ServerState } from '$lib/api';
 	import Hero from '$lib/Hero.svelte';
 	import Players from '$lib/Players.svelte';
 	import Console from '$lib/Console.svelte';
@@ -66,7 +66,7 @@
 		}
 	}
 
-	async function run(action: ActionKind) {
+	async function run(action: ActionKind, opts: { type?: string; seconds?: number } = {}) {
 		if (!o || pending) return;
 		if (packBusy) {
 			error = 'a pack is being installed — wait for it to finish before starting a server';
@@ -76,7 +76,11 @@
 		notice = '';
 		error = '';
 		try {
-			const res = await act(action, o.status.formToken, action === 'start' ? plan || o.selectedType : '');
+			const token = o.status.formToken;
+			const res =
+				action === 'extend'
+					? await keepUp(opts.seconds ?? 0, token)
+					: await act(action, token, opts.type || o.selectedType);
 			notice = res.message || 'done';
 			confirmStop = false;
 			await refresh();
@@ -180,8 +184,9 @@
 					{confirmStop}
 					installing={packBusy}
 					bind:plan
-					onstart={() => run('start')}
+					onstart={() => run('start', { type: plan })}
 					onstop={askStop}
+					onkeep={(seconds) => run('extend', { seconds })}
 				/>
 				<Console {live} token={o.status.formToken} />
 				<Players players={o.players} token={o.status.formToken} onchanged={refresh} />

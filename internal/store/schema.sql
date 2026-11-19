@@ -13,7 +13,11 @@ CREATE TABLE IF NOT EXISTS server_state (
     dns_value     TEXT    NOT NULL DEFAULT '',
     last_error    TEXT    NOT NULL DEFAULT '',
     updated_at    TEXT    NOT NULL DEFAULT '',
-    profile       TEXT    NOT NULL DEFAULT ''
+    profile       TEXT    NOT NULL DEFAULT '',
+    -- How long this session's empty period lasts when the page has been asked
+    -- to keep the server up past the usual grace + timeout. Zero is the usual.
+    -- Cleared with the rest of the row, so no start inherits another's hold.
+    idle_extension_sec INTEGER NOT NULL DEFAULT 0
 );
 
 INSERT OR IGNORE INTO server_state (id) VALUES (1);

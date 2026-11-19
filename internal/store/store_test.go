@@ -41,6 +41,8 @@ func TestStateRoundTrip(t *testing.T) {
 		RCONPassword: "secret",
 		StartedAt:    started,
 		Players:      2,
+		// A hold in force, so the column round-trips with the rest of the row.
+		IdleExtensionSec: 6 * 3600,
 	}
 	if err := s.SetState(want); err != nil {
 		t.Fatalf("set: %v", err)
@@ -55,6 +57,9 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	if !got.StartedAt.Equal(started) {
 		t.Fatalf("started_at = %s, want %s", got.StartedAt, started)
+	}
+	if got.IdleExtensionSec != want.IdleExtensionSec {
+		t.Fatalf("idle_extension_sec = %ds, want %ds", got.IdleExtensionSec, want.IdleExtensionSec)
 	}
 }
 
@@ -236,11 +241,16 @@ func TestOpenAddsTheProfileColumnToAnExistingDatabase(t *testing.T) {
 
 	// And it can be written to.
 	st.Profile = "homestead"
+	st.IdleExtensionSec = 3600
 	if err := s.SetState(st); err != nil {
 		t.Fatalf("set: %v", err)
 	}
 	if got, _ := s.GetState(); got.Profile != "homestead" {
 		t.Fatalf("profile did not round-trip: %+v", got)
+	}
+	// The extension column arrived after the profile one, from the same list.
+	if got, _ := s.GetState(); got.IdleExtensionSec != 3600 {
+		t.Fatalf("idle_extension_sec did not round-trip on an old database: %+v", got)
 	}
 }
 

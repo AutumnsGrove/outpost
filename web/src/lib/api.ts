@@ -92,8 +92,19 @@ export interface Plan {
 	known: boolean;
 }
 
+/** This session's hold: what the hero's keep-it-up control shows and may ask for. */
+export interface Extend {
+	/** The hold, in seconds. Zero means the configured idle clock. */
+	seconds: number;
+	/** The most the stepper is allowed to offer, from `server.max_extend`. */
+	capSeconds: number;
+	/** When the extended empty period ends; empty until the clock is running. */
+	until: string;
+}
+
 export interface Overview {
 	status: Status;
+	extend: Extend;
 	health: Health;
 	events: Event[];
 	sessions: Session[];
@@ -247,7 +258,7 @@ export interface MinecraftRow {
 	booted: boolean;
 }
 
-export type ActionKind = 'start' | 'stop' | 'update';
+export type ActionKind = 'start' | 'stop' | 'update' | 'extend';
 export type PlayerAction = 'add' | 'remove' | 'op' | 'deop';
 
 async function json<T>(res: Response): Promise<T> {
@@ -278,6 +289,11 @@ export async function getOverview(): Promise<Overview> {
 
 export const act = (action: ActionKind, token: string, type = '') =>
 	post<{ message?: string }>('/api/action', { action, token, type });
+
+/** Keeps this session up for `seconds` after the last player leaves. Zero is the
+ *  way back to the configured clock, and it is the same button. */
+export const keepUp = (seconds: number, token: string) =>
+	post<{ message?: string }>('/api/action', { action: 'extend', seconds, token });
 
 export const sendConsole = (command: string, token: string) =>
 	post<{ output: string; truncated: boolean }>('/api/console', { command, token });
