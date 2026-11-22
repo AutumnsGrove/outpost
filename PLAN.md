@@ -1120,3 +1120,49 @@ only in a browser tab is unreachable from the machine running the thing.
 Deliberately not done: the in-game command surface (#13) and its per-session token, and any
 form of absolute "until 16:00" hold. The relative form is one number and one subtraction;
 the page is free to render the deadline it implies, and does.
+
+## Decision from the inventory sorter (2026-11-22)
+
+### 48. The sorter is a third jar in the same profile
+
+The ask was one more server-side mod: sort an inventory with a click, and install nothing on
+the client. The trigger is the whole question, because a sort *button* or a *keybind* is
+client code and FO's players run a stock client (PLAN 46) — no server-side install can put a
+button into a screen it does not own. So the candidates were judged on what a vanilla client
+already sends, and on the jar's server-side mixin surface:
+
+- **Inventory Sorting** (meza/Kyrptonaught, MIT, `3.0.1+fabric-26.3`) — what went in. The
+  vanilla triggers are a middle-click or a double-click on an *empty* slot (the client sends
+  the click, the server sorts) plus `/invsort sort` and `/invsort sortme`; `sortType`,
+  `sortPlayerInventory`, `priority` and `nosort` are per-player commands, so nothing about
+  the default has to be right on the first try. Its mixin config puts only `MixinContainer`
+  in `mixins` and both screen mixins in `client` — the PLAN 46 test. It needs
+  `fabric-api >=0.160.5+26.3` and `cloth-config >=26.3.158`, both already in the profile
+  (0.166.2, 26.3.159), so it is one jar rather than three; meza_core and
+  fabric-permissions-api ride inside it as nested jars.
+- **Sort It Out!** (JamCoreModding, MIT, `1.5.0+26.3.x`) — the runner-up, and the one to
+  reach for if the sorter ever misbehaves: 104 KB, one server mixin, double-click or the
+  offhand key over a slot, `/sortitout` for preferences. It costs two jars, because it needs
+  JamLib and the pack does not ship it.
+- **Smart Inventory Sorter** (`1.1.2-mc26.3`) — automatic only: it sorts when a container
+  closes, and with a vanilla client the sole manual trigger is `/sort`. All-rights-reserved,
+  no source. The wrong shape for the ask, written down so the next person does not re-find
+  it.
+
+Deployed the way PLAN 46 was, which is to say by hand: the jar joined
+`data/packs/fo-26-3-trees/mods/` on the Potato (49 → 50 mods) and that directory was
+published with `--profile fabulously-optimized-26-3`. Publishing mid-session is safe — the
+box boots from its own copy of `mods/` — but only the next boot loads a jar, so the session
+that was live (0 players, ten minutes in) was stopped and started rather than left to the
+idle clock. The world came back from R2 and the box came up with 50 mods.
+
+Verified by the server's own answer rather than by inference: `Found new data pack
+inventorysorter, loading it automatically` in the boot log, and `/help` listing `/invsort
+(sort|doubleClickSort|sortPlayerInventory|allowPlayerInventorySorting|sortHighlightedInventory|sortIntoBundles|sortme|sortType|priority|nosort|reload|screenID|admin)`
+beside the `/fallingtree toggle` that was already there. The mod wrote
+`config/inventorysorter.json` with `enableDoubleClickSort: true` and
+`sortPlayerInventory: false`; the second is the knob worth knowing about, since with it off
+sorting a chest leaves your own inventory alone, and `/invsort sortPlayerInventory true`
+sets it per player.
+
+The debt is three jars instead of two, and #59 still pays it.
