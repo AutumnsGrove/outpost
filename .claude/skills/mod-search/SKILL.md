@@ -119,11 +119,16 @@ curl -sG https://api.modrinth.com/v2/search \
   --data-urlencode "limit=15" |
 python3 -c 'import json,sys
 for h in json.load(sys.stdin)["hits"]:
-    print(f"{h[\"slug\"]:<28} {h[\"downloads\"]:>9}  server={h[\"server_side\"]:<10} client={h[\"client_side\"]:<10} {h[\"license\"]:<16} {h[\"title\"]}")'
+    print("%-28s %9d  server=%-10s client=%-10s %-16s %s" % (
+        h["slug"], h["downloads"], h["server_side"], h["client_side"],
+        h["license"], h["title"]))'
 ```
 
 A User-Agent is required or Modrinth returns 400. Facets are JSON-in-URL; `versions` must
-be exact (`26.3`, not `1.20.1`) and the loader is `fabric`.
+be exact (`26.3`, not `1.20.1`) and the loader is `fabric`. Use `%`-formatting with double
+quotes, not an f-string: the whole script sits inside shell single quotes, so a `"` inside
+an f-string expression reaches Python as a backslash and is a `SyntaxError` — and a
+heredoc cannot help, because it would take stdin away from the pipe.
 
 **Success criteria**: 8–15 candidates for this Minecraft version, fat ones and thin ones,
 including the obvious loser — the loser is how the PLAN entry explains itself later.
@@ -231,23 +236,54 @@ ssh potato-remote 'cd ~/outpost && docker exec outpost-outpost-1 /app/outpost pu
 
 Pass `--profile` even when it looks redundant. Same pack and same slug is what keeps the
 world: `SamePack` compares source and slug, so this is an update, never a question about
-the world.
+the world. Note that `publish` prints only file counts and warnings — it never names the
+profile, and publishing into a brand-new profile is silent, so its own output cannot be
+the check.
 
-**Success criteria**: the publish reports the profile, the new mod count, and no world
-warning; `outpost pack list` shows the bumped count on the `*` row.
+**Success criteria**: `outpost pack list` shows the same exact profile id, now with the old
+count + 1 mods, and **no new row**. A new row means `--profile` was wrong and a second,
+empty world now exists. Exact id, not a lookalike: two profiles for one pack is the whole
+failure being guarded.
 
 ### 8. Verify from the server's mouth
 
+The jar only runs after a boot, and `start` refuses with `server is RUNNING; stop it first`
+unless the daemon is `OFFLINE`. So the state decides the path:
+
 ```bash
-ssh potato-remote 'cd ~/outpost && docker exec outpost-outpost-1 /app/outpost start'
 ssh potato-remote 'cd ~/outpost && docker exec outpost-outpost-1 /app/outpost status'
+```
+
+- **`OFFLINE`** — start and verify now:
+  ```bash
+  ssh potato-remote 'cd ~/outpost && docker exec outpost-outpost-1 /app/outpost start'
+  ```
+- **`RUNNING`** — the jar is published but not loaded, and that is a deferral, not a
+  failure. Do not stop a session with players on it to prove a mod. With an empty server,
+  `stop` then `start` is the same thing. With players on, verification waits for the next
+  boot, and this step is not done until it happens.
+
+Two proofs, in either order: the boot log naming the mod
+(`Found new data pack <id>, loading it automatically`), and `/help` listing the mod's own
+command beside the ones already there. `/help` is the RCON path and needs no key:
+
+```bash
 ssh potato-remote 'cd ~/outpost && docker exec outpost-outpost-1 /app/outpost console "help"'
 ```
 
-Two proofs, in this order:
+The boot log is not on the daemon and there is no `outpost logs`: it lives on the ephemeral
+VPS, read over the tailnet with the daemon's own key. The MagicDNS name in `outpost status`
+is what the daemon resolves through tailscaled's LocalAPI, and it does **not** resolve on
+the Potato's system resolver — so take the address from `tailscale status` instead:
 
-- the boot log naming the mod (`Found new data pack <id>, loading it automatically`),
-- `/help` listing the mod's own command, beside the commands already there.
+```bash
+ssh potato-remote 'tailscale status | awk "/^100\\./ && /outpost-/{print \$1; exit}"'
+ssh potato-remote 'ssh -i ~/outpost/data/ssh/outpost -o StrictHostKeyChecking=accept-new root@<tailnet-ip> \
+  "grep -i \"new data pack\" /opt/minecraft/logs/latest.log | tail -5"'
+```
+
+Useful alternates on the same key: `grep -i "Loading [0-9]* mods"` for the count the
+loader saw, and `ls /opt/minecraft/crash-reports` when the boot did not finish.
 
 A mod with no command is proven by the log line alone. "It reached `RUNNING`" proves
 nothing about the jar — a mod that failed to load still boots.
