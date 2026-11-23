@@ -1229,10 +1229,14 @@ farming with nobody on needs the fake-player shape, with the billing problem abo
 Deployed the way 46 and 48 were — by hand, into the live profile's working copy
 (`data/packs/fo-26-3-trees/mods/`, 50 → 51 jars) and published with `--profile
 fabulously-optimized-26-3`. It went in mid-session with two players on, which is safe: the
-box boots from its own copy of `mods/`, so the running session was untouched. That also
-means the jar has not loaded yet. **Verification is the next boot**, and it is not done
-until the log says so: `grep -i "loadstone" /opt/minecraft/logs/latest.log`, and a
-lodestone that takes a diamond.
+box boots from its own copy of `mods/`, so the running session was untouched, and the jar
+waited for the next boot.
+
+Verified on that boot, from the server's own mouth rather than by inference: 51 jars in
+`/opt/minecraft/mods/` on the box, `Loading 93 mods:` followed by `- loadstone 3.0+26.3`
+and `Loadstone Loaded Successfully!` in `latest.log`, and `/help` listing `/loadstone
+(list|deactivate|activate)` beside the `/fallingtree toggle` and `/invsort` that were
+already there.
 
 One note on the licence: IlyRac's is all-rights-reserved, which 46 treated as a reason to
 prefer something else. It permits use on private servers explicitly, and uploading our own
