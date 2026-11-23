@@ -141,6 +141,11 @@ Write a brief description of what the PR does and why. No specific format requir
 - **When analyzing unfamiliar codebases** → Use skill: `research-strategy`
 - **For systematic investigation** → Use skill: `research-strategy`
 
+### Minecraft Mods
+- **When the user asks for a mod that must be server-side or install nothing on the client** → Use skill: `mod-search`
+- **Before recommending a jar as "server-side only"** → Use skill: `mod-search`
+- **When a server-only mod needs replacing or is misbehaving** → Use skill: `mod-search`
+
 ### Testing
 - **When deciding what to test or reviewing test quality** → Use skill: `grove-testing`
 - **Before writing Python tests** → Use skill: `python-testing`
@@ -244,6 +249,7 @@ Skills are invoked using the Skill tool. When a situation matches a skill trigge
 | `walking-through-the-grove` | Finding Grove-themed names for new services |
 | `npm-publish` | npm package publishing workflow |
 | `research-strategy` | Systematic research |
+| `mod-search` | Find, prove and install a server-side-only Fabric mod |
 
 ---
 
