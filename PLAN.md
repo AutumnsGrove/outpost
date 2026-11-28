@@ -1166,3 +1166,81 @@ sorting a chest leaves your own inventory alone, and `/invsort sortPlayerInvento
 sets it per player.
 
 The debt is three jars instead of two, and #59 still pays it.
+
+## Decision from the chunk loader (2026-11-23)
+
+### 49. The loader is a lodestone, and it survives the reboot
+
+The ask was a server-side chunk loader: keep an area simulating, install nothing on the
+client. The test is 46's and 48's, but it bites harder here, because a chunk loader is
+usually a *block* or an *item*. A modded one is invisible in a stock client's hand and
+unplaceable by it, so the candidate had to be built out of vanilla content — and the
+finalists that were not, lost before their mechanism mattered.
+
+What went in is **Loadstone `3.0+26.3`**, one jar, `depends` nothing but `fabric-api: *`
+(0.166.2 is already in the profile).
+
+- **Trigger.** Place a vanilla lodestone and right-click it holding an ingot: iron loads
+  1×1 chunks, diamond 3×3, netherite 5×5. An empty hand turns it off and drops the ingot
+  back. Every part of that is an interaction a vanilla client already sends, and every
+  block and item involved is already in its registry.
+- **Proof in the jar.** The only common mixin is `LodestoneStateMixin` on
+  `BlockBehaviour$BlockStateBase`, gated on `LODESTONE`; the client half is a separate
+  config (`loadstone.client.mixins.json`, `environment: client`) holding the tint, the
+  particles and the HUD, and `modmenu` is only a suggestion. `environment: "*"` with a
+  `main` entrypoint, so the half that loads on a server is the half that does the work.
+- **Why it won, which was not the trigger.** Loader state is a `SavedData`
+  (`loadstone_data`) in the level's `SavedDataStorage`, so it is written to the world —
+  `world/data/loadstone_data.dat` — and the loading itself is `addChunkTicket` on the
+  level. The world tarball carries it and the ticket comes back when the box boots. That
+  is the whole decision: every Outpost session is a fresh VPS, so a loader whose readme
+  says "revisit the area after a restart" is a loader that is off every time we play.
+
+Runner-up, and the one to reach for when a loader has to *move*: **Script's Chunk Loaders**
+(`mc26.3-0.12.0`, MIT, 20 KB, source available). A dispenser holding four amethyst shards
+around glowstone, shroomlight or magma turns a minecart into a 3×3 loader that travels with
+the cart — shroomlight to always load, magma to always stop. It carries a `chunkLoader` NBT
+flag and registers a `TicketType` with `FLAG_PERSIST | FLAG_LOADING | FLAG_SIMULATION |
+FLAG_KEEP_DIMENSION_ACTIVE`, so it also survives a restart, and it has no custom items or
+blocks at all. It lost on the trigger, not on the code: a dispenser pattern and a cart on
+rails is more to build and keep than a lodestone, and it covers 3×3 where Loadstone reaches
+5×5. Loadstone cannot follow a rail line, which is the one thing it cannot do.
+
+Rejected, written down so the next session does not re-find them:
+
+- **Copper Chunk Loader** (`1.0.4+mod`, CC-BY-NC-SA-4.0) — tiers from 3×3 to 11×11 and a
+  much nicer placed look, but its own readme requires revisiting the area after a restart,
+  which is the failure above. A datapack-as-mod via `fabric-resource-loader`.
+- **Chunk Loaders** (SuperMartijn642, `1.2.9-fabric-mc26.3`) — `client_side: required`, and
+  its blocks and items are modded, so a stock client could not see what it placed.
+- **Chunk Loader data pack** (HauntedCorpse, MIT) — no source, 20 downloads, a config
+  `dialog` and nothing to read. Unprovable is not a side question.
+- **simpleAFKBot** (`1.3.0`, MIT) — the only candidate that also enables mob spawning,
+  because a fake player *is* a player. That is exactly why it cannot go here: it appears in
+  `list`, so `Tick` never sees zero players, the idle clock never starts, and the box bills
+  to the hold cap and then keeps going. If we ever want a deliberate "up and spawning" mode
+  it belongs behind the hold, not beside it.
+
+**The limit to say out loud:** no ticket-based loader spawns mobs. Forced chunks tick
+redstone and grow crops (the random-tick path, 1.21.5+), but mob spawning needs a player in
+range, so an iron farm or a mob tower will not run while the last person is offline. Mob
+farming with nobody on needs the fake-player shape, with the billing problem above.
+
+Deployed the way 46 and 48 were — by hand, into the live profile's working copy
+(`data/packs/fo-26-3-trees/mods/`, 50 → 51 jars) and published with `--profile
+fabulously-optimized-26-3`. It went in mid-session with two players on, which is safe: the
+box boots from its own copy of `mods/`, so the running session was untouched, and the jar
+waited for the next boot.
+
+Verified on that boot, from the server's own mouth rather than by inference: 51 jars in
+`/opt/minecraft/mods/` on the box, `Loading 93 mods:` followed by `- loadstone 3.0+26.3`
+and `Loadstone Loaded Successfully!` in `latest.log`, and `/help` listing `/loadstone
+(list|deactivate|activate)` beside the `/fallingtree toggle` and `/invsort` that were
+already there.
+
+One note on the licence: IlyRac's is all-rights-reserved, which 46 treated as a reason to
+prefer something else. It permits use on private servers explicitly, and uploading our own
+copy to our own bucket for our own box is that use — not redistribution. It is recorded
+here rather than glossed over because the next person should get to weigh it.
+
+The debt is four jars instead of three, and #59 still pays it.
